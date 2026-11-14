@@ -1,0 +1,505 @@
+"""Asset model shared by the GUI and the CLI: detect, inspect, preview, convert.
+
+Every conversion calls the ported pipeline functions in this package; this
+module only decides which one applies to a file and where its output goes.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Callable
+
+import numpy as np
+
+from . import audit, gct, goldsrc, images, media, sprite, studio
+from .cmpr import cmpr_decode
+
+Log = Callable[[str], None]
+Progress = Callable[[int, int, str], None]
+
+
+class Kind(str, Enum):
+	IMAGE = "Image"
+	SKYBOX = "Skybox"
+	WAD = "WAD textures"
+	BSP = "BSP map"
+	MDL = "Studio model"
+	SPR = "Sprite"
+	VIDEO = "Video"
+	AUDIO = "Audio"
+	GCT = "GX texture pack"
+	CMP = "GX CMPR (raw)"
+	GCVID = "GCVID video"
+	GCPCM = "GCPCM audio"
+	UNKNOWN = "Unsupported"
+
+
+CONVERTIBLE = {Kind.IMAGE, Kind.SKYBOX, Kind.WAD, Kind.BSP, Kind.MDL, Kind.SPR, Kind.VIDEO, Kind.AUDIO}
+
+
+def detect_kind(path: Path) -> Kind:
+	ext = path.suffix.lower()
+	if ext in images.IMAGE_EXTENSIONS:
+		return Kind.IMAGE
+	if ext in media.VIDEO_EXTENSIONS:
+		return Kind.VIDEO
+	if ext in media.AUDIO_EXTENSIONS:
+		return Kind.AUDIO
+	return {
+		".wad": Kind.WAD,
+		".bsp": Kind.BSP,
+		".mdl": Kind.MDL,
+		".spr": Kind.SPR,
+		".gct": Kind.GCT,
+		".cmp": Kind.CMP,
+		".gcvid": Kind.GCVID,
+		".gcpcm": Kind.GCPCM,
+	}.get(ext, Kind.UNKNOWN)
+
+
+@dataclass
+class Settings:
+	image: images.ImageOptions = field(default_factory=images.ImageOptions)
+	pack_images: bool = True	# loose images → one media/<pack_name>.gct
+	pack_name: str = "textures"
+	raw_cmp: bool = False	# also write level-0 .cmp per loose image
+	sky_size: int = images.GC_SKY_CMPR_SIZE
+	mdl_lean_mesh: bool = True
+	mdl_skin_companion: bool = True
+	mdl_max_edge: int = 64
+	spr_scale: int = 2
+	video_width: int = media.GCVID_WIDTH
+	video_height: int = media.GCVID_HEIGHT
+	video_fps: int = media.GCVID_FPS_NUM
+	video_still_frame: int = media.GCVID_STILL_FRAME_INDEX
+	video_audio: bool = True
+	wad_dirs: list[str] = field(default_factory=list)
+	cache_dir: str = ""
+
+	def cache(self) -> Path | None:
+		return Path(self.cache_dir) if self.cache_dir else None
+
+	def to_json(self) -> dict:
+		d = asdict(self)
+		return d
+
+	@classmethod
+	def from_json(cls, d: dict) -> "Settings":
+		d = dict(d)
+		img = images.ImageOptions(**d.pop("image", {}))
+		known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
+		return cls(image=img, **known)
+
+
+@dataclass
+class Preview:
+	"""One thing to look at: the source texels and what the GameCube will show."""
+	title: str
+	source: "np.ndarray | None" = None
+	result: "np.ndarray | None" = None
+	info: dict = field(default_factory=dict)
+
+
+@dataclass
+class OutputFile:
+	rel: str
+	size: int
+
+
+@dataclass
+class Asset:
+	path: Path
+	kind: Kind
+	extra: dict = field(default_factory=dict)	# e.g. skybox sides
+	status: str = "Ready"
+	warnings: list[str] = field(default_factory=list)
+	outputs: list[OutputFile] = field(default_factory=list)
+
+	@property
+	def name(self) -> str:
+		if self.kind == Kind.SKYBOX:
+			return f"sky: {self.extra['name']}"
+		return self.path.name
+
+	@property
+	def size(self) -> int:
+		try:
+			if self.kind == Kind.SKYBOX:
+				return sum(Path(p).stat().st_size for p in self.extra["sides"].values())
+			return self.path.stat().st_size
+		except OSError:
+			return 0
+
+	@property
+	def output_size(self) -> int:
+		return sum(o.size for o in self.outputs)
+
+
+class Project:
+	def __init__(self, settings: Settings | None = None):
+		self.settings = settings or Settings()
+		self.assets: list[Asset] = []
+
+	# -- loading ---------------------------------------------------------------
+
+	def add_path(self, path: Path) -> list[Asset]:
+		path = Path(path)
+		if path.is_dir():
+			added = []
+			for child in sorted(path.rglob("*")):
+				if child.is_file() and detect_kind(child) != Kind.UNKNOWN:
+					added += self._add_file(child, root=path)
+			return added
+		return self._add_file(path)
+
+	def _add_file(self, path: Path, root: Path | None = None) -> list[Asset]:
+		path = path.resolve()
+		if any(a.path == path for a in self.assets):
+			return []
+		kind = detect_kind(path)
+		if kind == Kind.IMAGE:
+			sky = images.find_skybox_sides(path)
+			if sky is not None:
+				name, sides = sky
+				if any(a.kind == Kind.SKYBOX and a.extra.get("name") == name for a in self.assets):
+					return []
+				asset = Asset(path, Kind.SKYBOX, {"name": name, "sides": {k: str(v) for k, v in sides.items()}})
+				self.assets.append(asset)
+				return [asset]
+		rel = path.relative_to(root.resolve()).as_posix() if root else None
+		asset = Asset(path, kind, warnings=audit.file_warnings(path, rel))
+		self.assets.append(asset)
+		return [asset]
+
+	def remove(self, asset: Asset) -> None:
+		self.assets.remove(asset)
+
+	# -- inspection ------------------------------------------------------------
+
+	def children(self, asset: Asset) -> list[str]:
+		"""Sub-items shown under an asset in the tree (textures, frames...)."""
+		try:
+			if asset.kind == Kind.WAD:
+				return sorted(goldsrc.wad_miptex(asset.path))
+			if asset.kind == Kind.BSP:
+				data = asset.path.read_bytes()
+				return list(dict.fromkeys(n for n, _ in goldsrc.bsp_miptex_offsets(data) if goldsrc.is_world_diffuse(n)))
+			if asset.kind == Kind.GCT:
+				return [e.name for e in gct.read_gct(asset.path.read_bytes())]
+			if asset.kind == Kind.MDL:
+				return [n for n, _f, _r in studio.studio_textures(asset.path.read_bytes())]
+			if asset.kind == Kind.SKYBOX:
+				return list(images.GC_SKY_SUFFIXES)
+		except (OSError, ValueError, Exception) as exc:	# noqa: BLE001 - malformed input should not crash the UI
+			asset.warnings.append(f"inspect failed: {exc}")
+		return []
+
+	def info(self, asset: Asset) -> dict:
+		d: dict = {"Type": asset.kind.value, "Path": str(asset.path), "Size": audit.human_bytes(asset.size)}
+		try:
+			if asset.kind == Kind.MDL:
+				d.update(studio.studio_info(asset.path.read_bytes()))
+			elif asset.kind == Kind.SPR:
+				d.update(sprite.spr_info(asset.path.read_bytes()))
+			elif asset.kind == Kind.BSP:
+				data = asset.path.read_bytes()
+				d["Sky"] = goldsrc.map_sky_name(data) or "-"
+				d["WADs"] = ", ".join(goldsrc.wt_bsp_wad_basenames(data)) or "-"
+			elif asset.kind == Kind.GCT:
+				entries = gct.read_gct(asset.path.read_bytes())
+				d["Textures"] = len(entries)
+				d["Alpha textures"] = sum(e.alpha for e in entries)
+			elif asset.kind == Kind.GCVID:
+				d.update(media.read_gcvid_header(asset.path.read_bytes()[:64]))
+			elif asset.kind == Kind.GCPCM:
+				d.update(media.read_gcpcm_header(asset.path.read_bytes()[:16]))
+			elif asset.kind == Kind.WAD:
+				d["Textures"] = len(goldsrc.wad_miptex(asset.path))
+		except Exception as exc:	# noqa: BLE001
+			d["Error"] = str(exc)
+		return d
+
+	def preview(self, asset: Asset, child: str | None = None) -> Preview:
+		"""Source texels next to the decoded GX result for one asset/sub-item."""
+		s = self.settings
+		k = asset.kind
+		if k == Kind.IMAGE:
+			src = images.load_rgba(asset.path)
+			entry = images.encode_image(src, s.image, asset.path.stem)
+			return _texture_preview(asset.name, src, entry)
+		if k == Kind.SKYBOX:
+			side = child or "ft"
+			src = images.load_rgba(Path(asset.extra["sides"][side]))
+			data = images.sky_side_cmpr(src, s.sky_size)
+			res = cmpr_decode(data, s.sky_size, s.sky_size)
+			return Preview(f"{asset.extra['name']}{side}", src, res, _stats(src, res, len(data), "CMPR, no mips"))
+		if k in (Kind.WAD, Kind.BSP):
+			names = self.children(asset)
+			name = child or (names[0] if names else None)
+			if name is None:
+				return Preview(asset.name, info={"Note": "no textures"})
+			mip = self._find_miptex(asset, name)
+			if mip is None:
+				return Preview(name, info={"Status": "missing: not embedded and not found in any WAD search dir"})
+			_, w, h, pixels, palette = mip
+			alpha = name.startswith("{")
+			src = goldsrc.miptex_rgba(w, h, pixels, palette, alpha)
+			key, tw, th, levels, body = gct.wt_encode_cached(w, h, pixels, palette, alpha, s.cache())
+			entry = gct.GctEntry(name, tw, th, levels, gct.GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body)
+			return _texture_preview(name, src, entry)
+		if k == Kind.GCT:
+			entries = gct.read_gct(asset.path.read_bytes())
+			e = next((x for x in entries if x.name == child), entries[0] if entries else None)
+			if e is None:
+				return Preview(asset.name)
+			res = e.decode(0)
+			return Preview(e.name, None, res, {"Size": f"{e.width}x{e.height}", "Mip levels": e.levels,
+				"Alpha": "1-bit" if e.alpha else "none", "Bytes": audit.human_bytes(len(e.data)), "Tag": f"{e.tag:04x}"})
+		if k == Kind.CMP:
+			data = asset.path.read_bytes()
+			res = images.decode_raw_cmp(data)
+			return Preview(asset.name, None, res, {"Size": f"{res.shape[1]}x{res.shape[0]}", "Bytes": audit.human_bytes(len(data))})
+		if k == Kind.MDL:
+			raw = asset.path.read_bytes()
+			skins = studio.studio_textures(raw)
+			if not skins:
+				return Preview(asset.name, info={"Note": "no embedded skins (already lean, or uses a T.mdl)"})
+			idx = next((i for i, (n, _f, _r) in enumerate(skins) if n == child), 0)
+			name, _flags, src = skins[idx]
+			comp = studio.lean_studio_tex_companion_bytes(asset.path, s.mdl_max_edge)
+			res = studio.studio_textures(comp)[idx][2] if comp else None
+			info = {"Source": f"{src.shape[1]}x{src.shape[0]}"}
+			if res is not None:
+				info["Companion"] = f"{res.shape[1]}x{res.shape[0]}"
+				info["Skin companion bytes"] = audit.human_bytes(len(comp))
+			lean = studio.lean_studio_mesh_bytes(asset.path)
+			if lean:
+				info["Lean mesh bytes"] = f"{audit.human_bytes(len(lean))} (from {audit.human_bytes(len(raw))})"
+			return Preview(name, src, res, info)
+		if k == Kind.SPR:
+			raw = asset.path.read_bytes()
+			frames = sprite.spr_frames(raw)
+			src = frames[0] if frames else None
+			lean = sprite.lean_hl_spr_bytes(asset.path, s.spr_scale)
+			res_frames = sprite.spr_frames(lean) if lean else []
+			info = {"Bytes": audit.human_bytes(len(raw))}
+			if lean:
+				info["Lean bytes"] = audit.human_bytes(len(lean))
+			else:
+				info["Lean"] = "not applicable (multi-frame, or size not divisible by scale)"
+			return Preview(asset.name, src, res_frames[0] if res_frames else None, info)
+		if k == Kind.VIDEO:
+			src = media.video_still(asset.path)
+			small = media.video_still(asset.path, width=s.video_width, height=s.video_height)
+			res = media.rgb565_quantise(small) if small is not None else None
+			info = {"Target": f"{s.video_width}x{s.video_height} @ {s.video_fps} fps RGB565 delta"}
+			if src is None:
+				info["Note"] = "ffmpeg not found; install it or set GXBAKE_FFMPEG"
+			return Preview(asset.name, src, res, info)
+		if k == Kind.GCVID:
+			data = asset.path.read_bytes()
+			return Preview(asset.name, None, media.gcvid_first_frame(data), media.read_gcvid_header(data))
+		return Preview(asset.name, info=self.info(asset))
+
+	def _find_miptex(self, asset: Asset, name: str):
+		if asset.kind == Kind.WAD:
+			found = goldsrc.wad_miptex(asset.path)
+			return goldsrc.wt_read_miptex(*found[name]) if name in found else None
+		data = asset.path.read_bytes()
+		for n, off in goldsrc.bsp_miptex_offsets(data):
+			if n == name:
+				mip = goldsrc.wt_read_miptex(data, off)
+				if mip is not None:
+					return mip
+				break
+		gamedir = asset.path.parent.parent if asset.path.parent.name.lower() == "maps" else asset.path.parent
+		wads, _ = gct.collect_wads(data, gamedir, [Path(p) for p in self.settings.wad_dirs])
+		return goldsrc.wt_read_miptex(*wads[name]) if name in wads else None
+
+	# -- conversion ------------------------------------------------------------
+
+	def convert(
+		self,
+		assets: list[Asset],
+		out_dir: Path,
+		log: Log = print,
+		progress: Progress | None = None,
+	) -> list[OutputFile]:
+		out_dir = Path(out_dir)
+		out_dir.mkdir(parents=True, exist_ok=True)
+		s = self.settings
+		written: list[OutputFile] = []
+		pack: list[gct.GctEntry] = []
+		pack_assets: list[Asset] = []
+
+		def emit(asset: Asset, rel: str, data: bytes) -> None:
+			dest = out_dir / rel
+			dest.parent.mkdir(parents=True, exist_ok=True)
+			dest.write_bytes(data)
+			of = OutputFile(rel, len(data))
+			asset.outputs.append(of)
+			written.append(of)
+			log(f"  wrote {rel} ({audit.human_bytes(len(data))})")
+
+		def emit_file(asset: Asset, rel: str) -> None:
+			dest = out_dir / rel
+			if dest.is_file():
+				of = OutputFile(rel, dest.stat().st_size)
+				asset.outputs.append(of)
+				written.append(of)
+
+		todo = [a for a in assets if a.kind in CONVERTIBLE]
+		for i, asset in enumerate(todo):
+			if progress:
+				progress(i, len(todo), asset.name)
+			asset.outputs = []
+			asset.status = "Converting"
+			log(f"{asset.name} [{asset.kind.value}]")
+			t0 = time.monotonic()
+			try:
+				stem = asset.path.stem.lower()
+				if asset.kind == Kind.IMAGE:
+					src = images.load_rgba(asset.path)
+					entry = images.encode_image(src, s.image, asset.path.stem)
+					if s.pack_images:
+						pack.append(entry)
+						pack_assets.append(asset)
+					else:
+						emit(asset, f"media/{stem}.gct", gct.write_gct([entry]))
+					if s.raw_cmp:
+						emit(asset, f"media/{stem}.cmp", entry.data[:entry.level_size(0)])
+				elif asset.kind == Kind.SKYBOX:
+					name = asset.extra["name"]
+					for sfx in images.GC_SKY_SUFFIXES:
+						src = images.load_rgba(Path(asset.extra["sides"][sfx]))
+						emit(asset, f"media/sky_{name}{sfx}.cmp", images.sky_side_cmpr(src, s.sky_size))
+				elif asset.kind == Kind.WAD:
+					data, entries = gct.build_wad_texture_pack(asset.path, cache=s.cache())
+					if data:
+						emit(asset, f"media/{stem}.gct", data)
+				elif asset.kind == Kind.BSP:
+					data, report, _entries = gct.build_world_texture_pack(
+						asset.path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache())
+					log(f"  {len(report.wads)} WADs searched, {report.entries} textures packed")
+					if report.missing:
+						msg = f"{len(report.missing)} textures unresolved: {', '.join(report.missing[:8])}"
+						asset.warnings.append(msg)
+						log("  warning: " + msg)
+					if data:
+						emit(asset, f"media/wt_{stem}.gct", data)
+					self._bsp_sky(asset, emit)
+				elif asset.kind == Kind.MDL:
+					if s.mdl_lean_mesh:
+						lean = studio.lean_studio_mesh_bytes(asset.path)
+						if lean:
+							emit(asset, f"gc_studio/{stem}.mdl", lean)
+					if s.mdl_skin_companion:
+						comp = studio.lean_studio_tex_companion_bytes(asset.path, s.mdl_max_edge)
+						if comp:
+							emit(asset, f"gc_studio/{stem}t.mdl", comp)
+						else:
+							log("  no embedded skins; companion skipped")
+				elif asset.kind == Kind.SPR:
+					lean = sprite.lean_hl_spr_bytes(asset.path, s.spr_scale)
+					if lean is None:
+						log("  sprite not leanable (multi-frame or size not divisible); copied as-is")
+						lean = asset.path.read_bytes()
+					emit(asset, f"sprites/{asset.path.name.lower()}", lean)
+				elif asset.kind == Kind.VIDEO:
+					rel = f"media/{stem}.gcvid"
+					media.build_gcvid_companion(
+						asset.path, out_dir / rel,
+						width=s.video_width, height=s.video_height,
+						fps_num=s.video_fps, fps_den=1,
+						still_frame_index=s.video_still_frame, rgb565=True, log=log)
+					emit_file(asset, rel)
+					if s.video_audio and media.build_gcpcm_companion(asset.path, out_dir / f"media/{stem}.gcpcm", log=log):
+						emit_file(asset, f"media/{stem}.gcpcm")
+				elif asset.kind == Kind.AUDIO:
+					rel = f"media/{stem}.gcpcm"
+					if media.build_gcpcm_companion(asset.path, out_dir / rel, log=log):
+						emit_file(asset, rel)
+				asset.status = f"Done ({audit.human_bytes(asset.output_size)})"
+				log(f"  done in {time.monotonic() - t0:.1f}s")
+			except Exception as exc:	# noqa: BLE001 - report and keep going
+				asset.status = "Failed"
+				asset.warnings.append(str(exc))
+				log(f"  error: {exc}")
+		if pack:
+			rel = f"media/{s.pack_name or 'textures'}.gct"
+			data = gct.write_gct(pack)
+			dest = out_dir / rel
+			dest.parent.mkdir(parents=True, exist_ok=True)
+			dest.write_bytes(data)
+			of = OutputFile(rel, len(data))
+			written.append(of)
+			for a in pack_assets:
+				a.outputs.append(OutputFile(rel, len(data) // len(pack_assets)))
+				a.status = f"Packed into {rel}"
+			log(f"packed {len(pack)} images into {rel} ({audit.human_bytes(len(data))})")
+		if progress:
+			progress(len(todo), len(todo), "")
+		self.write_manifest(out_dir, written)
+		return written
+
+	def _bsp_sky(self, asset: Asset, emit) -> None:
+		data = asset.path.read_bytes()
+		name = goldsrc.map_sky_name(data)
+		if not name:
+			return
+		gamedir = asset.path.parent.parent if asset.path.parent.name.lower() == "maps" else asset.path.parent
+		sides = {}
+		for sfx in images.GC_SKY_SUFFIXES:
+			for ext in ("tga", "bmp", "png"):
+				p = gamedir / "gfx/env" / f"{name}{sfx}.{ext}"
+				if p.is_file():
+					sides[sfx] = p
+					break
+		if len(sides) != 6:
+			return
+		for sfx, p in sides.items():
+			emit(asset, f"media/sky_{name}{sfx}.cmp", images.sky_side_cmpr(images.load_rgba(p), self.settings.sky_size))
+
+	def write_manifest(self, out_dir: Path, written: list[OutputFile]) -> None:
+		total = sum(o.size for o in written)
+		manifest = {
+			"tool": "GxBake",
+			"created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+			"settings": self.settings.to_json(),
+			"total_bytes": total,
+			"main_ram_fraction": round(total / audit.MAIN_RAM, 4),
+			"outputs": [asdict(o) for o in written],
+			"assets": [
+				{"source": str(a.path), "kind": a.kind.value, "status": a.status,
+					"warnings": a.warnings, "outputs": [asdict(o) for o in a.outputs]}
+				for a in self.assets
+			],
+		}
+		(out_dir / "gxbake-manifest.json").write_text(json.dumps(manifest, indent=2))
+
+
+def _stats(src: "np.ndarray | None", res: "np.ndarray | None", nbytes: int, fmt: str) -> dict:
+	d = {"Format": fmt, "GX bytes": audit.human_bytes(nbytes)}
+	if src is not None:
+		d["Source"] = f"{src.shape[1]}x{src.shape[0]}"
+	if res is not None:
+		d["Result"] = f"{res.shape[1]}x{res.shape[0]}"
+	if src is not None and res is not None:
+		from PIL import Image
+
+		ref = src if src.shape[:2] == res.shape[:2] else np.asarray(
+			Image.fromarray(src).resize((res.shape[1], res.shape[0]), Image.Resampling.LANCZOS))
+		d["PSNR"] = f"{images.psnr(ref, res):.1f} dB"
+		d["Source RGBA bytes"] = audit.human_bytes(src.shape[0] * src.shape[1] * 4)
+	return d
+
+
+def _texture_preview(title: str, src: "np.ndarray", entry: gct.GctEntry) -> Preview:
+	res = entry.decode(0)
+	info = _stats(src, res, len(entry.data), f"CMPR, {entry.levels} mip level{'s' * (entry.levels > 1)}")
+	info["Alpha"] = "1-bit" if entry.alpha else "none"
+	return Preview(title, src, res, info)

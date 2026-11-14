@@ -1,0 +1,50 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg libegl1 libxkbcommon0
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+  package:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pyinstaller --noconfirm packaging/gxbake.spec
+      - name: Smoke-test the frozen CLI
+        shell: bash
+        run: |
+          exe=dist/GxBake; [ -f dist/GxBake.exe ] && exe=dist/GxBake.exe
+          "$exe" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GxBake-${{ runner.os }}
+          path: |
+            dist/GxBake
+            dist/GxBake.exe
+            dist/GxBake.app
+          if-no-files-found: ignore
