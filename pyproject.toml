@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gxbake"
+dynamic = ["version"]
+description = "Convert and optimise assets for the GameCube GX renderer (desktop app + CLI)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "Pillow>=10"]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+dev = ["pytest>=8", "pyinstaller>=6.6", "PySide6>=6.6"]
+
+[project.scripts]
+gxbake = "gxbake.cli:main"
+
+[project.gui-scripts]
+gxbake-gui = "gxbake.gui.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "gxbake.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["gxbake*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
