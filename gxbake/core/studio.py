@@ -1,7 +1,8 @@
 """GoldSrc studio models (.mdl): lean mesh + downsampled skin companion.
 
 lean_studio_mesh_bytes and lean_studio_tex_companion_bytes are ported
-unchanged from scripts/build-gamecube-disc.py (G289 tip-safe studio BSS).
+unchanged from scripts/build-gamecube-disc.py (G289 tip-safe studio BSS); the
+*_from variants are the same bodies on bytes, for models baked in memory.
 studio_textures is new and feeds the GUI preview.
 """
 
@@ -23,6 +24,11 @@ def lean_studio_mesh_bytes(src: Path) -> bytes | None:
 		raw = src.read_bytes()
 	except OSError:
 		return None
+	return lean_studio_mesh_bytes_from(raw)
+
+
+def lean_studio_mesh_bytes_from(raw: bytes) -> bytes | None:
+	"""lean_studio_mesh_bytes on in-memory MDL bytes (e.g. a freshly baked model)."""
 	if len(raw) < 192 or raw[:4] not in (b"IDST", b"IDSQ"):
 		return None
 	# studiohdr_t: textureindex @184, texturedataindex @188, numtextures @180
@@ -67,6 +73,11 @@ def lean_studio_tex_companion_bytes(src: Path, max_edge: int = 64) -> bytes | No
 		raw = src.read_bytes()
 	except OSError:
 		return None
+	return lean_studio_tex_companion_bytes_from(raw, max_edge)
+
+
+def lean_studio_tex_companion_bytes_from(raw: bytes, max_edge: int = 64) -> bytes | None:
+	"""lean_studio_tex_companion_bytes on in-memory MDL bytes."""
 	if len(raw) < 244 or raw[:4] not in (b"IDST", b"IDSQ"):
 		return None
 	numtextures = struct.unpack_from("<i", raw, 180)[0]

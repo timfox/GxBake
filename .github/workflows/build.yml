@@ -40,6 +40,9 @@ jobs:
         run: |
           exe=dist/GxBake; [ -f dist/GxBake.exe ] && exe=dist/GxBake.exe
           "$exe" --version
+          printf 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n' > smoke.obj
+          "$exe" convert smoke.obj -o smoke-out
+          test -s smoke-out/gc_studio/smoke.mdl
       - uses: actions/upload-artifact@v4
         with:
           name: GxBake-${{ runner.os }}

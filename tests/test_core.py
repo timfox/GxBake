@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gxbake.core import cmpr, gct, goldsrc, images, media, sprite, studio
+from gxbake.core import audit, cmpr, gct, goldsrc, images, media, sprite, studio
 from gxbake.core.project import Kind, Project, Settings
 
 from . import fixtures as fx
@@ -189,3 +189,114 @@ def test_gcvid_and_gcpcm(tmp_path):
 	assert media.build_gcpcm_companion(src, tmp_path / "intro.gcpcm", log=lambda m: None)
 	pcm = media.read_gcpcm_header((tmp_path / "intro.gcpcm").read_bytes())
 	assert pcm["rate"] == 48000 and 0.9 < pcm["seconds"] < 1.1
+
+
+# -- Assimp model import --------------------------------------------------------
+
+from gxbake.core import models  # noqa: E402
+
+needs_assimp = pytest.mark.skipif(not models.available(), reason="assimp-py not installed")
+
+
+def _signed_volume(raw: bytes) -> float:
+	"""Volume of a closed studio mesh; > 0 when triangles are stored clockwise (outward)."""
+	vol = 0.0
+	for m in models.studio_meshes(raw):
+		v = m["verts"].astype(np.float64)
+		for a, b, c in m["tris"]:
+			pa, pb, pc = v[a[0]], v[b[0]], v[c[0]]
+			vol += np.dot(pa, np.cross(pc, pb)) / 6
+	return vol
+
+
+def test_strips_keep_every_triangle_and_winding():
+	rng = np.random.default_rng(4)
+	grid = np.arange(36).reshape(6, 6)
+	tris = []
+	for y in range(5):
+		for x in range(5):
+			a, b, c, d = grid[y, x], grid[y, x + 1], grid[y + 1, x + 1], grid[y + 1, x]
+			tris += [(a, b, c), (a, c, d)]
+	order = rng.permutation(len(tris))
+	tris = [tuple(int(v) for v in tris[i]) for i in order]
+	strips = models._strips(tris)
+	got = []
+	for s in strips:
+		for k in range(len(s) - 2):
+			t = (s[k], s[k + 1], s[k + 2]) if k % 2 == 0 else (s[k + 1], s[k], s[k + 2])
+			got.append(t)
+
+	def canon(t):
+		i = t.index(min(t))
+		return t[i:] + t[:i]	# rotation keeps winding
+
+	assert sorted(map(canon, got)) == sorted(map(canon, tris))
+	assert len(strips) < len(tris) / 2	# actually stripped, not one command per triangle
+
+
+@needs_assimp
+def test_obj_import_bakes_studio_model(tmp_path):
+	obj = fx.obj_cube(tmp_path / "src")
+	model = models.import_model(obj)
+	assert sorted(m.name for m in model.materials) == ["red", "wood"]
+	wood = next(m for m in model.materials if m.name == "wood")
+	assert wood.rgba.shape[:2] == (64, 64)	# 40x48 found by basename despite the C:\ path, padded to 2^n
+	assert model.num_triangles == 12
+	lo, hi = model.bounds()
+	assert np.allclose(lo, -1) and np.allclose(hi, 1)
+
+	raw = models.build_studio_mdl(model)
+	info = studio.studio_info(raw)
+	assert info == {"name": "crate.mdl", "version": 10, "length": len(raw), "bones": 1, "sequences": 1,
+		"textures": 2, "bodyparts": 1}
+	meshes = models.studio_meshes(raw)
+	assert sum(len(m["tris"]) for m in meshes) == 12
+	assert _signed_volume(raw) == pytest.approx(8.0, rel=1e-4)	# closed, outward-facing, unit scale
+	# texel-space s/t cover the whole skin
+	st = [c[2:] for m in meshes if m["skin"] == model.materials.index(wood) for t in m["tris"] for c in t]
+	assert {s for s, _ in st} == {0, 64} and {t for _, t in st} == {0, 64}
+	# the source +Z face (red) ends up facing GoldSrc +X (forward)
+	red = model.materials.index(next(m for m in model.materials if m.name == "red"))
+	red_x = {round(float(m["verts"][c[0]][0]), 3) for m in meshes if m["skin"] == red for t in m["tris"] for c in t}
+	assert red_x == {1.0}
+
+	lean = studio.lean_studio_mesh_bytes_from(raw)
+	comp = studio.lean_studio_tex_companion_bytes_from(raw, 32)
+	assert struct.unpack_from("<i", lean, 180)[0] == 0 and len(lean) < len(raw)
+	assert sum(len(m["tris"]) for m in models.studio_meshes(lean)) == 12	# geometry survives the cut
+	assert sorted(r.shape[:2] for _n, _f, r in studio.studio_textures(comp)) == [(8, 8), (32, 32)]
+
+
+@needs_assimp
+def test_glb_embedded_masked_texture(tmp_path):
+	p = tmp_path / "leaf.glb"
+	fx.glb_quad(p)
+	model = models.import_model(p, models.ModelOptions(scale=10))
+	(mat,) = model.materials
+	assert mat.texture == "*0" and mat.masked
+	raw = models.build_studio_mdl(model)
+	(_name, flags, rgba), = studio.studio_textures(raw)
+	assert flags & models.STUDIO_NF_MASKED
+	assert (rgba[:8, :8, 3] == 0).all() and (rgba[8:, 8:, 3] == 255).all()
+	assert np.abs(rgba[12, 12, :3].astype(int) - (0, 200, 0)).max() <= 4
+	lo, hi = model.bounds()
+	assert np.allclose(lo, (0, -10, 0)) and np.allclose(hi, (0, 10, 20))	# Y-up quad → Z-up, scaled
+
+
+@needs_assimp
+def test_project_converts_assimp_model(tmp_path):
+	obj = fx.obj_cube(tmp_path / "src")
+	proj = Project()
+	(asset,) = [a for a in proj.add_path(obj.parent) if a.kind == Kind.MODEL]
+	assert sorted(proj.children(asset)) == ["red", "wood"]
+	assert proj.info(asset)["Triangles"] == 12
+	pv = proj.preview(asset)
+	assert pv.source is not None and pv.result is not None
+	assert (pv.result[..., :3] != pv.result[0, 0, :3]).any()	# something was drawn
+	assert proj.preview(asset, "wood").result.shape[:2] == (64, 64)
+	out = tmp_path / "out"
+	proj.convert([asset], out, log=lambda _m: None)
+	assert asset.status.startswith("Done"), asset.warnings
+	for rel in ("models/crate.mdl", "gc_studio/crate.mdl", "gc_studio/cratet.mdl"):
+		assert (out / rel).is_file(), rel
+	assert [e for e in audit.validate_staged_tree(out) if "critical asset" not in e] == []

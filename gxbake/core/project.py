@@ -15,7 +15,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, gct, goldsrc, images, media, sprite, studio
+from . import audit, gct, goldsrc, images, media, models, sprite, studio
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -28,6 +28,7 @@ class Kind(str, Enum):
 	WAD = "WAD textures"
 	BSP = "BSP map"
 	MDL = "Studio model"
+	MODEL = "3D model"
 	SPR = "Sprite"
 	VIDEO = "Video"
 	AUDIO = "Audio"
@@ -38,7 +39,7 @@ class Kind(str, Enum):
 	UNKNOWN = "Unsupported"
 
 
-CONVERTIBLE = {Kind.IMAGE, Kind.SKYBOX, Kind.WAD, Kind.BSP, Kind.MDL, Kind.SPR, Kind.VIDEO, Kind.AUDIO}
+CONVERTIBLE = {Kind.IMAGE, Kind.SKYBOX, Kind.WAD, Kind.BSP, Kind.MDL, Kind.MODEL, Kind.SPR, Kind.VIDEO, Kind.AUDIO}
 
 
 def detect_kind(path: Path) -> Kind:
@@ -49,6 +50,8 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.VIDEO
 	if ext in media.AUDIO_EXTENSIONS:
 		return Kind.AUDIO
+	if ext in models.MODEL_EXTENSIONS:
+		return Kind.MODEL
 	return {
 		".wad": Kind.WAD,
 		".bsp": Kind.BSP,
@@ -71,6 +74,10 @@ class Settings:
 	mdl_lean_mesh: bool = True
 	mdl_skin_companion: bool = True
 	mdl_max_edge: int = 64
+	model_scale: float = 1.0	# Assimp import: source units → GoldSrc units
+	model_up_axis: str = "y"
+	model_skin_max_edge: int = 256
+	model_write_full: bool = True	# also write the full studio MDL to models/<name>.mdl
 	spr_scale: int = 2
 	video_width: int = media.GCVID_WIDTH
 	video_height: int = media.GCVID_HEIGHT
@@ -82,6 +89,10 @@ class Settings:
 
 	def cache(self) -> Path | None:
 		return Path(self.cache_dir) if self.cache_dir else None
+
+	def model_options(self) -> models.ModelOptions:
+		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
+			self.image.alpha_threshold)
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -143,6 +154,7 @@ class Project:
 	def __init__(self, settings: Settings | None = None):
 		self.settings = settings or Settings()
 		self.assets: list[Asset] = []
+		self._model_cache: dict = {}
 
 	# -- loading ---------------------------------------------------------------
 
@@ -192,6 +204,8 @@ class Project:
 				return [e.name for e in gct.read_gct(asset.path.read_bytes())]
 			if asset.kind == Kind.MDL:
 				return [n for n, _f, _r in studio.studio_textures(asset.path.read_bytes())]
+			if asset.kind == Kind.MODEL:
+				return [m.name for m in self.imported_model(asset)[0].materials]
 			if asset.kind == Kind.SKYBOX:
 				return list(images.GC_SKY_SUFFIXES)
 		except (OSError, ValueError, Exception) as exc:	# noqa: BLE001 - malformed input should not crash the UI
@@ -203,6 +217,15 @@ class Project:
 		try:
 			if asset.kind == Kind.MDL:
 				d.update(studio.studio_info(asset.path.read_bytes()))
+			elif asset.kind == Kind.MODEL:
+				model, mdl = self.imported_model(asset)
+				lo, hi = model.bounds()
+				d["Meshes"] = len(model.meshes)
+				d["Materials"] = len(model.materials)
+				d["Vertices"] = model.num_vertices
+				d["Triangles"] = model.num_triangles
+				d["Bounds"] = " × ".join(f"{x:.1f}" for x in hi - lo) + " units"
+				d["Studio MDL"] = audit.human_bytes(len(mdl))
 			elif asset.kind == Kind.SPR:
 				d.update(sprite.spr_info(asset.path.read_bytes()))
 			elif asset.kind == Kind.BSP:
@@ -280,6 +303,8 @@ class Project:
 			if lean:
 				info["Lean mesh bytes"] = f"{audit.human_bytes(len(lean))} (from {audit.human_bytes(len(raw))})"
 			return Preview(name, src, res, info)
+		if k == Kind.MODEL:
+			return self._model_preview(asset, child)
 		if k == Kind.SPR:
 			raw = asset.path.read_bytes()
 			frames = sprite.spr_frames(raw)
@@ -304,6 +329,48 @@ class Project:
 			data = asset.path.read_bytes()
 			return Preview(asset.name, None, media.gcvid_first_frame(data), media.read_gcvid_header(data))
 		return Preview(asset.name, info=self.info(asset))
+
+	def imported_model(self, asset: Asset) -> "tuple[models.ImportedModel, bytes]":
+		"""Assimp import + baked studio MDL, cached per file and model settings."""
+		opts = self.settings.model_options()
+		try:
+			mtime = asset.path.stat().st_mtime_ns
+		except OSError:
+			mtime = 0
+		key = (asset.path, mtime, opts.scale, opts.up_axis, opts.skin_max_edge, opts.alpha_threshold)
+		hit = self._model_cache.get(asset.path)
+		if hit and hit[0] == key:
+			return hit[1], hit[2]
+		model = models.import_model(asset.path, opts)
+		mdl = models.build_studio_mdl(model, opts)
+		for w in model.warnings:
+			if w not in asset.warnings:
+				asset.warnings.append(w)
+		self._model_cache[asset.path] = (key, model, mdl)
+		return model, mdl
+
+	def _model_preview(self, asset: Asset, child: str | None) -> Preview:
+		s = self.settings
+		model, mdl = self.imported_model(asset)
+		comp = studio.lean_studio_tex_companion_bytes_from(mdl, s.mdl_max_edge)
+		lean = studio.lean_studio_mesh_bytes_from(mdl)
+		info = {"Vertices": model.num_vertices, "Triangles": model.num_triangles,
+			"Studio MDL": audit.human_bytes(len(mdl))}
+		if lean:
+			info["Lean mesh bytes"] = audit.human_bytes(len(lean))
+		if comp:
+			info["Skin companion bytes"] = audit.human_bytes(len(comp))
+		names = [m.name for m in model.materials]
+		if child in names:
+			i = names.index(child)
+			mat = model.materials[i]
+			res = studio.studio_textures(comp)[i][2] if comp else None
+			info = {"Texture": mat.texture or "(material colour)", "Skin": f"{mat.rgba.shape[1]}x{mat.rgba.shape[0]}",
+				"Masked": "yes (index 255)" if mat.masked else "no"}
+			if res is not None:
+				info["Companion"] = f"{res.shape[1]}x{res.shape[0]}"
+			return Preview(child, mat.rgba, res, info)
+		return Preview(asset.name, models.preview_imported(model), models.preview_studio(mdl, comp), info)
 
 	def _find_miptex(self, asset: Asset, name: str):
 		if asset.kind == Kind.WAD:
@@ -403,6 +470,21 @@ class Project:
 							emit(asset, f"gc_studio/{stem}t.mdl", comp)
 						else:
 							log("  no embedded skins; companion skipped")
+				elif asset.kind == Kind.MODEL:
+					model, mdl = self.imported_model(asset)
+					log(f"  {model.num_vertices} vertices, {model.num_triangles} triangles, {len(model.materials)} skins")
+					for w in model.warnings:
+						log("  warning: " + w)
+					if s.model_write_full:
+						emit(asset, f"models/{stem}.mdl", mdl)
+					if s.mdl_lean_mesh:
+						lean = studio.lean_studio_mesh_bytes_from(mdl)
+						if lean:
+							emit(asset, f"gc_studio/{stem}.mdl", lean)
+					if s.mdl_skin_companion:
+						comp = studio.lean_studio_tex_companion_bytes_from(mdl, s.mdl_max_edge)
+						if comp:
+							emit(asset, f"gc_studio/{stem}t.mdl", comp)
 				elif asset.kind == Kind.SPR:
 					lean = sprite.lean_hl_spr_bytes(asset.path, s.spr_scale)
 					if lean is None:

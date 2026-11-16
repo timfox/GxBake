@@ -13,11 +13,20 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | WAD2/WAD3 | `media/<wad>.gct` | `wt_read_miptex`, `wt_encode` |
 | BSP v30 | `media/wt_<map>.gct` (world textures resolved through the map's WADs) and its sky | `build_world_texture_packs`, `wt_read_wads` |
 | Studio `.mdl` | `gc_studio/<name>.mdl` (lean mesh) and `gc_studio/<name>t.mdl` (downsampled skins) | `lean_studio_mesh_bytes`, `lean_studio_tex_companion_bytes` |
+| 3D models via Assimp (OBJ, FBX, glTF/GLB, DAE, 3DS, PLY, STL, X, LWO, Blend…) | `models/<name>.mdl` (static studio MDL v10, paletted skins), then the same `gc_studio/<name>.mdl` + `<name>t.mdl` as a studio model | `models.import_model`, `models.build_studio_mdl`, then the two functions above |
 | Sprite `.spr` | `sprites/<name>.spr`, downsampled, keeping thin alpha-test strokes | `lean_hl_spr_bytes` |
 | Video (AVI, MP4…) | `media/<name>.gcvid` (RGB565 delta) and `.gcpcm` | `build_gcvid_companion`, `build_gcpcm_companion` |
 | Audio (WAV, MP3, OGG) | `media/<name>.gcpcm` (48 kHz stereo, s16 big-endian) | `build_gcpcm_companion` |
 
 It also opens the outputs (`.gct`, `.cmp`, `.gcvid`, `.gcpcm`) to inspect them. Every run writes `gxbake-manifest.json` with the settings, every output and its size, and the share of GameCube main RAM it uses.
+
+## 3D model import (Assimp)
+
+Any format [Assimp](https://github.com/assimp/assimp) reads is baked into a GoldSrc studio model, because that is what the GameCube port draws. GxBake triangulates the mesh, flattens the node hierarchy into one static root bone, converts Y-up sources to GoldSrc's Z-up (+Z forward becomes +X forward), builds triangle strips, and turns each material's diffuse/base-colour texture into an 8-bit paletted skin (power-of-two, cut-out alpha as masked index 255). Textures are found next to the model, by basename when the exporter wrote an absolute path, or inside a `.glb`. A material with no texture becomes a solid skin of its colour.
+
+Settings: **Scale** (source units to GoldSrc units; glTF and most FBX are in metres, so try 39.37), **Source up axis**, **Import skin max**, and whether to also write the full `models/<name>.mdl`. The preview renders the imported mesh next to the geometry decoded back from the lean MDL; expand the model to compare each material's texture with its companion skin. Animations and bone weights are not carried over yet, and the inspector warns about anything past the studio limits (2048 vertices, 20000 triangles, 100 skins).
+
+Assimp comes from the `assimp-py` wheel, which bundles the native library, so there is nothing to install separately. It is part of the `gui` and `dev` extras, or `pip install -e ".[models]"` for the CLI alone.
 
 ## The app
 
@@ -50,7 +59,7 @@ The executable opens the app when run with no arguments or with file paths. With
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `sprite`, `media`, `audit`, `project`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `sprite`, `media`, `audit`, `project`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
 - `tests/`: builds synthetic WAD, BSP, MDL and SPR files, so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
