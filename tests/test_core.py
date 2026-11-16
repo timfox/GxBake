@@ -11,6 +11,7 @@ import pytest
 
 from gxbake.core import audit, cmpr, gct, goldsrc, images, media, sprite, studio
 from gxbake.core.project import Kind, Project, Settings
+from gxbake.core.project import detect_kind as detect_kind_of
 
 from . import fixtures as fx
 
@@ -196,6 +197,7 @@ def test_gcvid_and_gcpcm(tmp_path):
 from gxbake.core import models  # noqa: E402
 
 needs_assimp = pytest.mark.skipif(not models.available(), reason="assimp-py not installed")
+needs_skeletal = pytest.mark.skipif(not models.skeletal_supported(), reason="assimp-py < 1.2 has no bone API")
 
 
 def _signed_volume(raw: bytes) -> float:
@@ -300,3 +302,116 @@ def test_project_converts_assimp_model(tmp_path):
 	for rel in ("models/crate.mdl", "gc_studio/crate.mdl", "gc_studio/cratet.mdl"):
 		assert (out / rel).is_file(), rel
 	assert [e for e in audit.validate_staged_tree(out) if "critical asset" not in e] == []
+
+
+def test_rle_and_euler_roundtrip():
+	from gxbake.core import skeleton as sk
+
+	rng = np.random.default_rng(1)
+	q = list(rng.integers(-500, 500, 300)) + [7] * 40 + [3]
+	stream = np.array(sk.rle_encode([int(x) for x in q]), np.int16)
+	assert [sk.rle_decode(stream, k) for k in range(len(q))] == q
+	assert len(sk.rle_encode([5] * 200)) == 2	# one header + one value
+	for _ in range(50):
+		a = rng.uniform(-3, 3, 3)
+		a[1] = rng.uniform(-1.5, 1.5)
+		m = sk.angle_matrix(a)
+		assert np.allclose(sk.angle_matrix(np.array(sk.angles_from_matrix(m))), m, atol=1e-9)
+
+
+def _arm_expected(angle_deg: float) -> "np.ndarray":
+	"""Rest box of fx.glb_arm with 'lower' rotated about source +Z at y=2, in GoldSrc axes."""
+	pts = []
+	a = np.radians(angle_deg)
+	for y in (0.0, 1.0, 2.0, 3.0, 4.0):
+		for x, z in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)]:
+			if y >= 2:
+				x, y2 = x * np.cos(a) - (y - 2) * np.sin(a), x * np.sin(a) + (y - 2) * np.cos(a) + 2
+			else:
+				y2 = y
+			pts.append((z, x, y2))	# Y-up → Z-up
+	return np.array(pts)
+
+
+def _same_points(a, b, tol=1e-3):
+	a = sorted(map(tuple, np.round(a, 3)))
+	b = sorted(map(tuple, np.round(b, 3)))
+	return len(a) == len(b) and np.allclose(a, b, atol=tol)
+
+
+@needs_skeletal
+def test_skinned_animation_bakes_bones_and_sequences(tmp_path):
+	p = tmp_path / "arm.glb"
+	fx.glb_arm(p, 90.0)
+	model = models.import_model(p, models.ModelOptions(anim_fps=10))
+	assert [(b.name, b.parent) for b in model.bones][1:] == [("upper", 0), ("lower", 1)]
+	(seq,) = model.sequences
+	assert seq.name == "bend" and seq.frames.shape == (11, 3, 6)
+	raw = models.build_studio_mdl(model)
+	info = studio.studio_info(raw)
+	assert info["bones"] == 3 and info["sequences"] == 1
+	sq = models.studio_sequences(raw)[0]
+	assert sq["frames"] == 11 and sq["flags"] & 1 and sq["fps"] == 10
+	assert struct.unpack_from("<i", raw, 156)[0] == 2	# a hitbox for each bone with vertices
+	assert _same_points(models.studio_posed_vertices(raw, 0, 0), _arm_expected(0))
+	assert _same_points(models.studio_posed_vertices(raw, 0, 10), _arm_expected(90))
+	assert _same_points(models.studio_posed_vertices(raw, 0, 5), _arm_expected(45))
+	# the lean mesh keeps the skeleton and animation
+	lean = studio.lean_studio_mesh_bytes_from(raw)
+	assert _same_points(models.studio_posed_vertices(lean, 0, 10), _arm_expected(90))
+	assert sq["bbmin"][1] < -1.9	# the sequence box covers the bent pose
+
+	static = models.import_model(p, models.ModelOptions(static=True))
+	assert len(static.bones) == 1 and not static.animated
+	assert any("static" in w for w in static.warnings)
+
+
+@needs_skeletal
+def test_clip_files_become_sequences(tmp_path):
+	fx.glb_arm(tmp_path / "arm.glb", 90.0, name="bend")
+	fx.glb_arm(tmp_path / "arm@wave.glb", -45.0, name="Take 001")
+	proj = Project()
+	assets = proj.add_path(tmp_path)
+	assert [a.path.name for a in assets] == ["arm.glb"]	# the clip is not its own asset
+	model, raw = proj.imported_model(assets[0])
+	assert [s.name for s in model.sequences] == ["bend", "wave"]
+	last = model.sequences[1].frames.shape[0] - 1
+	assert _same_points(models.studio_posed_vertices(raw, 1, last), _arm_expected(-45))
+	kids = proj.children(assets[0])
+	assert "▶ wave" in kids
+	pv = proj.preview(assets[0], "▶ wave")
+	assert pv.result is not None and pv.info["Frames"] == last + 1
+
+
+@needs_assimp
+def test_gltf_data_uri_texture(tmp_path):
+	import base64
+	import io as _io
+	import json as _json
+
+	from PIL import Image
+
+	fx.glb_quad(tmp_path / "q.glb")
+	raw = (tmp_path / "q.glb").read_bytes()
+	jlen = struct.unpack_from("<I", raw, 12)[0]
+	doc = _json.loads(raw[20:20 + jlen])
+	binchunk = raw[20 + jlen + 8:]
+	png = _io.BytesIO()
+	Image.new("RGBA", (8, 8), (250, 120, 10, 255)).save(png, "PNG")
+	doc["images"] = [{"uri": "data:image/png;base64," + base64.b64encode(png.getvalue()).decode()}]
+	doc["buffers"] = [{"byteLength": len(binchunk), "uri": "data:application/octet-stream;base64,"
+		+ base64.b64encode(binchunk).decode()}]
+	(tmp_path / "q.gltf").write_text(_json.dumps(doc))
+	model = models.import_model(tmp_path / "q.gltf")
+	(mat,) = model.materials
+	assert tuple(mat.rgba[4, 4, :3]) == (250, 120, 10)
+
+
+def test_more_image_formats_detected(tmp_path):
+	from PIL import Image
+
+	Image.new("RGB", (16, 16), (1, 2, 3)).save(tmp_path / "a.tif")
+	assert detect_kind_of(tmp_path / "a.tif") == Kind.IMAGE
+	assert images.load_rgba(tmp_path / "a.tif").shape == (16, 16, 4)
+	for ext in (".dds", ".psd", ".md2", ".md5mesh", ".iqm"):
+		assert detect_kind_of(tmp_path / f"x{ext}") in (Kind.IMAGE, Kind.MODEL)

@@ -22,11 +22,20 @@ from pathlib import Path
 
 import numpy as np
 
+from . import skeleton as _sk
+
 # Extensions sent to Assimp. .mdl stays with the GoldSrc studio path.
 MODEL_EXTENSIONS = {
-	".obj", ".fbx", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl", ".x",
-	".lwo", ".lws", ".ase", ".ms3d", ".off", ".blend", ".3mf", ".ac", ".smd",
+	# interchange
+	".obj", ".fbx", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl", ".x", ".x3d", ".amf", ".3mf", ".dxf", ".off",
+	# DCC tools
+	".blend", ".lwo", ".lws", ".lxo", ".ase", ".ac", ".cob", ".csm", ".sib", ".ndo", ".q3o", ".q3s", ".xgl", ".zgl",
+	# game formats (.mdl stays with the GoldSrc studio path)
+	".smd", ".md2", ".md3", ".mdc", ".md5mesh", ".ms3d", ".b3d", ".iqm", ".irr", ".irrmesh", ".ogex", ".hmp",
+	".nff", ".ter",
 }
+# Animation-only files, used as <model>@<clip>.<ext> clips.
+CLIP_EXTENSIONS = MODEL_EXTENSIONS | {".bvh", ".md5anim"}
 
 # GoldSrc / Xash studio limits (studio.h).
 MAXSTUDIOVERTS = 2048
@@ -56,6 +65,15 @@ def available() -> bool:
 	return True
 
 
+def skeletal_supported() -> bool:
+	"""assimp-py 1.2+ exposes bones and animations; 1.1 (the last for Python 3.10/3.11) does not."""
+	try:
+		import assimp_py
+	except ImportError:
+		return False
+	return hasattr(assimp_py, "Bone") and hasattr(assimp_py, "Animation")
+
+
 def _assimp():
 	try:
 		import assimp_py
@@ -70,6 +88,9 @@ class ModelOptions:
 	up_axis: str = "y"	# y: Y-up source (glTF, OBJ, FBX via Assimp); z: already Z-up
 	skin_max_edge: int = 256	# full-quality skin in models/<name>.mdl; the companion shrinks further
 	alpha_threshold: int = 128
+	anim_fps: int = 15	# sample rate for baked sequences
+	static: bool = False	# ignore skeletons and animations: one root bone, bind pose
+	clip_files: bool = True	# merge animations from <name>@<clip>.<ext> next to the model
 
 
 @dataclass
@@ -83,10 +104,33 @@ class Material:
 @dataclass
 class Submesh:
 	material: int
-	positions: "np.ndarray"	# (n, 3) float32, GoldSrc axes, scaled
-	normals: "np.ndarray"	# (n, 3) float32
+	positions: "np.ndarray"	# (n, 3) float32, in the space of each vertex's bone
+	normals: "np.ndarray"	# (n, 3) float32, bone space
 	uvs: "np.ndarray"	# (n, 2) float32, top-left origin
 	tris: "np.ndarray"	# (m, 3) uint32, counter-clockwise like the source
+	bones: "np.ndarray | None" = None	# (n,) studio bone per vertex; None = bone 0
+	world: "np.ndarray | None" = None	# (n, 3) rest-pose model space (GoldSrc axes)
+
+	def __post_init__(self):
+		if self.bones is None:
+			self.bones = np.zeros(len(self.positions), np.int32)
+		if self.world is None:
+			self.world = self.positions
+
+
+@dataclass
+class Bone:
+	name: str
+	parent: int
+	pose: "np.ndarray"	# rest (x, y, z, roll, pitch, yaw) relative to the parent
+
+
+@dataclass
+class Sequence:
+	name: str
+	fps: float
+	frames: "np.ndarray"	# (numframes, numbones, 6) poses
+	loop: bool = True
 
 
 @dataclass
@@ -95,6 +139,8 @@ class ImportedModel:
 	materials: list[Material]
 	meshes: list[Submesh]
 	warnings: list[str] = field(default_factory=list)
+	bones: list[Bone] = field(default_factory=lambda: [Bone("root", -1, np.zeros(6))])
+	sequences: list[Sequence] = field(default_factory=list)
 
 	@property
 	def num_vertices(self) -> int:
@@ -104,86 +150,310 @@ class ImportedModel:
 	def num_triangles(self) -> int:
 		return sum(len(m.tris) for m in self.meshes)
 
+	@property
+	def animated(self) -> bool:
+		return any(len(s.frames) > 1 for s in self.sequences)
+
 	def bounds(self) -> tuple["np.ndarray", "np.ndarray"]:
 		if not self.meshes:
 			z = np.zeros(3, np.float32)
 			return z, z
-		pts = np.concatenate([m.positions for m in self.meshes])
+		pts = np.concatenate([m.world for m in self.meshes])
 		return pts.min(0), pts.max(0)
+
+	def rest_frames(self) -> "np.ndarray":
+		return np.array([b.pose for b in self.bones])[None]
 
 
 # -- import -------------------------------------------------------------------
 
 
-def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
-	"""Read any Assimp-supported file into flattened, triangulated submeshes."""
-	opts = opts or ModelOptions()
-	ai = _assimp()
-	path = Path(path)
-	flags = (
+def _flags(ai) -> int:
+	return (
 		ai.Process_Triangulate
-		| ai.Process_PreTransformVertices	# bake the node hierarchy; GoldSrc output is one static bone
 		| ai.Process_JoinIdenticalVertices
 		| ai.Process_GenSmoothNormals
 		| ai.Process_SortByPType
 		| ai.Process_FindDegenerates
 		| ai.Process_RemoveRedundantMaterials
+		| ai.Process_LimitBoneWeights
 		| ai.Process_FlipUVs	# top-left texel origin, like studio s/t
 		| ai.Process_ValidateDataStructure
 	)
+
+
+def _read_scene(ai, path: Path):
 	try:
-		scene = ai.import_file(str(path), flags)
+		scene = ai.import_file(str(path), _flags(ai))
 	except FileNotFoundError:
 		raise
 	except Exception as exc:	# noqa: BLE001 - assimp raises bare RuntimeErrors with its log text
 		raise ValueError(f"Assimp could not read {path.name}: {exc}") from exc
-	if scene is None or not scene.meshes:
-		raise ValueError(f"{path.name}: no meshes")
+	if scene is None:
+		raise ValueError(f"Assimp could not read {path.name}")
+	return scene
 
-	model = ImportedModel(path.stem, [], [])
+
+class _Nodes:
+	"""Flattened node tree: DFS order, parents, rest local matrices."""
+
+	def __init__(self, root):
+		self.nodes, self.parent, self.local = [], [], []
+		self.by_name: dict[str, int] = {}
+		stack = [(root, -1)]
+		while stack:
+			node, par = stack.pop()
+			i = len(self.nodes)
+			self.nodes.append(node)
+			self.parent.append(par)
+			self.local.append(np.array(node.transformation, np.float64))
+			self.by_name.setdefault(node.name, i)
+			for child in reversed(list(node.children or [])):
+				stack.append((child, i))
+		self.globals = []
+		for i, p in enumerate(self.parent):
+			self.globals.append(self.local[i] if p < 0 else self.globals[p] @ self.local[i])
+
+
+def _axis_matrix(opts: ModelOptions) -> "np.ndarray":
+	"""Source scene space → GoldSrc model space (axis swap and scale)."""
+	m = np.zeros((4, 4))
+	if opts.up_axis == "z":
+		m[:3, :3] = np.eye(3)
+	else:	# Y-up (+Z forward, +X left of the model) → GoldSrc (+X forward, +Y left, +Z up)
+		m[0, 2] = m[1, 0] = m[2, 1] = 1.0
+	m[:3, :3] *= opts.scale
+	m[3, 3] = 1.0
+	return m
+
+
+def clip_base(path: Path) -> "Path | None":
+	"""The model a <stem>@<clip>.<ext> clip belongs to, if it sits next to it."""
+	path = Path(path)
+	if "@" not in path.stem:
+		return None
+	base = path.stem.split("@", 1)[0].lower()
+	try:
+		for p in path.parent.iterdir():
+			if p.is_file() and p.stem.lower() == base and p.suffix.lower() in MODEL_EXTENSIONS:
+				return p
+	except OSError:
+		pass
+	return None
+
+
+def clip_files(path: Path) -> list[Path]:
+	"""Unity-style animation clips next to the model: <stem>@<clip>.<ext>."""
+	try:
+		return sorted(p for p in path.parent.iterdir()
+			if p.is_file() and p.stem.lower().startswith(path.stem.lower() + "@")
+			and p.suffix.lower() in CLIP_EXTENSIONS)
+	except OSError:
+		return []
+
+
+def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
+	"""Read any Assimp-supported file into triangulated submeshes, bones and sequences."""
+	opts = opts or ModelOptions()
+	ai = _assimp()
+	path = Path(path)
+	scene = _read_scene(ai, path)
+	if not scene.meshes:
+		raise ValueError(f"{path.name}: no meshes")
+	tree = _Nodes(scene.root_node)
+	axis = _axis_matrix(opts)
+	warnings: list[str] = []
+
+	anims = [(a.name or f"anim{i}", a) for i, a in enumerate(getattr(scene, "animations", None) or [])]
+	if not opts.static and opts.clip_files:
+		for clip in clip_files(path):
+			try:
+				cs = _read_scene(ai, clip)
+			except (ValueError, OSError) as exc:
+				warnings.append(f"clip {clip.name}: {exc}")
+				continue
+			clip_anims = getattr(cs, "animations", None) or []
+			label = clip.stem.split("@", 1)[1]
+			for i, a in enumerate(clip_anims):
+				anims.append((label if len(clip_anims) == 1 else f"{label}_{a.name or i}", a))
+	skinned = any(getattr(m, "num_bones", 0) for m in scene.meshes)
+	if not opts.static and not skeletal_supported():
+		warnings.append("this assimp-py has no bone/animation API (needs 1.2+, Python 3.12+); baked static")
+	skeletal = not opts.static and (skinned or bool(anims))
+
+	# Which nodes become studio bones: skin joints, mesh owners, animated nodes, and their ancestors.
+	mesh_nodes: list[tuple[int, int]] = []	# (node index, mesh index)
+	for i, node in enumerate(tree.nodes):
+		for mi in node.mesh_indices or ():
+			mesh_nodes.append((i, mi))
+	if skeletal:
+		# a skinned mesh's own node only matters if some vertex has no weights
+		want: set[int] = {i for i, mi in mesh_nodes if not getattr(scene.meshes[mi], "num_bones", 0)}
+		for m in scene.meshes:
+			for b in getattr(m, "bones", None) or []:
+				if b.name in tree.by_name:
+					want.add(tree.by_name[b.name])
+		for _n, a in anims:
+			for ch in a.channels:
+				if ch.node_name in tree.by_name:
+					want.add(tree.by_name[ch.node_name])
+		for i in list(want):
+			p = tree.parent[i]
+			while p >= 0 and p not in want:
+				want.add(p)
+				p = tree.parent[p]
+		order = [i for i in range(len(tree.nodes)) if i in want]	# DFS order: parents first
+		if len(order) > _sk.MAXSTUDIOBONES:
+			warnings.append(f"{len(order)} bones exceeds the studio limit of {_sk.MAXSTUDIOBONES}; baked static instead")
+			skeletal = False
+	if not skeletal:
+		order = []
+
+	model = ImportedModel(path.stem, [], [], warnings)
+	studio_of: dict[int, int] = {}	# node index → studio bone
+	rigid_world: list[np.ndarray] = [np.eye(4)]
+	if skeletal:
+		model.bones, rigid_world = [], []
+		used_names: set[str] = set()
+		for n in order:
+			studio_of[n] = len(model.bones)
+			p = tree.parent[n]
+			parent = studio_of.get(p, -1)
+			w = _sk.rigid(axis @ tree.globals[n])
+			local = w if parent < 0 else _sk.rigid_inverse(rigid_world[parent]) @ w
+			name = _unique((tree.nodes[n].name or f"bone{len(model.bones)}")[:31], used_names)
+			model.bones.append(Bone(name, parent, _sk.pose_from_matrix(local)))
+			rigid_world.append(w)
+
 	embedded = _embedded_images(path)
 	mat_map: dict[int, int] = {}
-	for mesh in scene.meshes:
+	seen_skinned: set[int] = set()
+	for node_i, mi in mesh_nodes:
+		mesh = scene.meshes[mi]
 		if mesh.num_faces == 0 or mesh.num_vertices == 0 or mesh.indices is None:
 			continue
 		idx = np.frombuffer(mesh.indices, np.uint32)
 		if len(idx) % 3:
 			continue	# points/lines left over by SortByPType
-		tris = idx.reshape(-1, 3)
+		mesh_bones = list(getattr(mesh, "bones", None) or []) if skeletal else []
+		if mesh_bones:
+			if mi in seen_skinned:
+				continue	# skinned meshes ignore their node; place them once
+			seen_skinned.add(mi)
 		pos = np.frombuffer(mesh.vertices, np.float32).reshape(-1, 3).astype(np.float64)
+		n = len(pos)
 		nrm = (np.frombuffer(mesh.normals, np.float32).reshape(-1, 3).astype(np.float64)
-			if mesh.normals is not None else np.tile([0.0, 0.0, 1.0], (len(pos), 1)))
-		uv = np.zeros((len(pos), 2), np.float32)
+			if mesh.normals is not None else np.tile([0.0, 1.0, 0.0], (n, 1)))
+		uv = np.zeros((n, 2), np.float32)
 		if mesh.texcoords and mesh.texcoords[0] is not None:
-			comps = mesh.num_uv_components[0] if mesh.num_uv_components else 2
 			t = np.frombuffer(mesh.texcoords[0], np.float32)
-			comps = len(t) // len(pos) if len(pos) else comps
-			uv = t.reshape(len(pos), comps)[:, :2].copy()
-		pos = _to_goldsrc(pos, opts.up_axis) * opts.scale
-		nrm = _to_goldsrc(nrm, opts.up_axis)
-		lens = np.linalg.norm(nrm, axis=1, keepdims=True)
-		nrm = np.where(lens > 1e-8, nrm / np.maximum(lens, 1e-8), [0.0, 0.0, 1.0])
-		mi = mesh.material_index
-		if mi not in mat_map:
-			mat_map[mi] = len(model.materials)
-			mdesc = scene.materials[mi] if 0 <= mi < len(scene.materials) else {}
-			model.materials.append(_load_material(mdesc, path, embedded, opts, model.warnings))
-		model.meshes.append(Submesh(mat_map[mi], pos.astype(np.float32), nrm.astype(np.float32), uv, tris.copy()))
+			comps = len(t) // n if n else 2
+			uv = t.reshape(n, comps)[:, :2].copy()
+
+		# Each vertex follows one bone: its heaviest joint, else the mesh's own node.
+		owner = node_i
+		while skeletal and owner >= 0 and owner not in studio_of:
+			owner = tree.parent[owner]
+		vbone = np.full(n, studio_of.get(owner, 0), np.int32)
+		vmat = np.repeat((axis @ tree.globals[node_i])[None], n, 0)	# unweighted: rigid with the mesh node
+		if mesh_bones:
+			best = np.zeros(n)
+			for b in mesh_bones:
+				if b.name not in tree.by_name:
+					warnings.append(f"skin joint {b.name} has no node; its vertices stay on the mesh node")
+					continue
+				ni = tree.by_name[b.name]
+				ids = np.frombuffer(b.weight_vertex_ids, np.uint32) if b.num_weights else np.zeros(0, np.uint32)
+				ws = np.frombuffer(b.weights, np.float32) if b.num_weights else np.zeros(0, np.float32)
+				m = axis @ tree.globals[ni] @ np.array(b.offset_matrix, np.float64)
+				take = ws > best[ids]
+				sel = ids[take]
+				best[sel] = ws[take]
+				vbone[sel] = studio_of[ni]
+				vmat[sel] = m
+			if (best < 0.999).any() and (best > 0).any():
+				warnings.append("blended skin weights are snapped to each vertex's heaviest bone (studio skinning is rigid)")
+		world = np.einsum("nij,nj->ni", vmat[:, :3, :3], pos) + vmat[:, :3, 3]
+		nmat = np.linalg.inv(vmat[:, :3, :3]).transpose(0, 2, 1)
+		wn = np.einsum("nij,nj->ni", nmat, nrm)
+		if skeletal:
+			bw = np.array(rigid_world)[vbone]
+			rel = world - bw[:, :3, 3]
+			local = np.einsum("nji,nj->ni", bw[:, :3, :3], rel)
+			ln = np.einsum("nji,nj->ni", bw[:, :3, :3], wn)
+		else:
+			local, ln = world, wn
+		lens = np.linalg.norm(ln, axis=1, keepdims=True)
+		ln = np.where(lens > 1e-8, ln / np.maximum(lens, 1e-8), [0.0, 0.0, 1.0])
+		mat_i = mesh.material_index
+		if mat_i not in mat_map:
+			mat_map[mat_i] = len(model.materials)
+			mdesc = scene.materials[mat_i] if 0 <= mat_i < len(scene.materials) else {}
+			model.materials.append(_load_material(mdesc, path, embedded, opts, warnings))
+		model.meshes.append(Submesh(mat_map[mat_i], local.astype(np.float32), ln.astype(np.float32), uv,
+			idx.reshape(-1, 3).copy(), vbone, world.astype(np.float32)))
 	if not model.meshes:
 		raise ValueError(f"{path.name}: no triangle meshes")
-	nanim = len(getattr(scene, "animations", None) or [])	# assimp-py 1.1 has no animation API
-	if nanim:
-		model.warnings.append(f"{nanim} animation(s) ignored; the model is baked in its bind pose")
-	if any(getattr(m, "num_bones", 0) for m in scene.meshes):
-		model.warnings.append("skinned mesh: bones are flattened into one static root bone")
+
+	if skeletal:
+		used: set[str] = set()
+		for name, anim in anims:
+			frames = _sample(anim, tree, order, [b.parent for b in model.bones], axis, opts.anim_fps)
+			if frames is None:
+				continue
+			label = _unique(_seq_name(name), used)
+			model.sequences.append(Sequence(label, float(opts.anim_fps), frames))
+	if not model.sequences:
+		model.sequences.append(Sequence("idle", 30.0, model.rest_frames(), loop=True))
+	if opts.static:
+		nanim = len(getattr(scene, "animations", None) or [])
+		if nanim or skinned:
+			warnings.append("baked static: skeleton and animations ignored")
 	return model
 
 
-def _to_goldsrc(v: "np.ndarray", up_axis: str) -> "np.ndarray":
-	"""Y-up (+Z forward, +X left of the model) → GoldSrc (+X forward, +Y left, +Z up)."""
-	if up_axis == "z":
-		return v
-	return v[:, [2, 0, 1]]
+def _unique(name: str, used: set[str]) -> str:
+	base, n = name, 1
+	while name.lower() in used:
+		n += 1
+		suffix = f"_{n}"
+		name = base[: 31 - len(suffix)] + suffix
+	used.add(name.lower())
+	return name
+
+
+def _seq_name(name: str) -> str:
+	name = name.split("|")[-1]	# FBX "Armature|Walk"
+	safe = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in name.strip().lower())
+	return (safe or "anim")[:31]
+
+
+def _sample(anim, tree: _Nodes, order: list[int], parents: list[int], axis: "np.ndarray",
+		fps: int) -> "np.ndarray | None":
+	"""Bake one animation into (numframes, numbones, 6) studio poses."""
+	tps = float(anim.ticks_per_second or 0) or 25.0
+	duration = float(anim.duration or 0)
+	chans = {}
+	for ch in anim.channels or []:
+		if ch.node_name in tree.by_name:
+			chans[tree.by_name[ch.node_name]] = _sk.Channel(ch)
+	if not chans:
+		return None
+	nframes = max(1, int(round(duration / tps * fps)) + 1)
+	frames = np.zeros((nframes, len(order), 6))
+	for k in range(nframes):
+		tick = min(duration, k / fps * tps)
+		world: list[np.ndarray] = []
+		g: dict[int, np.ndarray] = {}
+		for b, n in enumerate(order):
+			local = chans[n].local(tick, tree.local[n]) if n in chans else tree.local[n]
+			p = tree.parent[n]
+			g[n] = (g[p] if p in g else (tree.globals[p] if p >= 0 else np.eye(4))) @ local
+			w = _sk.rigid(axis @ g[n])
+			world.append(w)
+			rel = w if parents[b] < 0 else _sk.rigid_inverse(world[parents[b]]) @ w
+			frames[k, b] = _sk.pose_from_matrix(rel)
+	return frames
 
 
 def _load_material(desc: dict, model_path: Path, embedded: list[bytes], opts: ModelOptions,
@@ -213,62 +483,122 @@ def _load_material(desc: dict, model_path: Path, embedded: list[bytes], opts: Mo
 	return Material(name, rgba, masked, tex_ref)
 
 
-def _load_texture(ref: str, model_path: Path, embedded: list[bytes]) -> "np.ndarray | None":
+def _open_rgba(data_or_path) -> "np.ndarray | None":
 	from PIL import Image
+
+	try:
+		src = io.BytesIO(data_or_path) if isinstance(data_or_path, (bytes, bytearray)) else data_or_path
+		with Image.open(src) as img:
+			img.load()
+			return np.asarray(img.convert("RGBA")).copy()
+	except (OSError, ValueError, SyntaxError):
+		return None
+
+
+def _load_texture(ref: str, model_path: Path, embedded: list[bytes]) -> "np.ndarray | None":
+	from urllib.parse import unquote
+
+	from .images import IMAGE_EXTENSIONS
 
 	if ref.startswith("*"):
 		try:
 			data = embedded[int(ref[1:])]
 		except (ValueError, IndexError):
 			return None
-		with Image.open(io.BytesIO(data)) as img:
-			return np.asarray(img.convert("RGBA")).copy()
-	ref = ref.replace("\\", "/")
+		return _open_rgba(data) if data else None
+	if ref.startswith("data:"):
+		return _open_rgba(_data_uri(ref))
+	ref = unquote(ref.replace("\\", "/"))
 	base = model_path.parent
-	cands = [base / ref, base / Path(ref).name]
-	if ref.lower() != ref:
-		cands.append(base / Path(ref).name.lower())
+	name = Path(ref).name
+	cands = [base / ref, base / name, base / name.lower()]
 	# Exporters often leave absolute paths from the artist's machine; try the
 	# basename next to the model and in a textures/ folder.
-	cands += [base / "textures" / Path(ref).name, base.parent / "textures" / Path(ref).name]
+	for d in ("textures", "Textures", "tex", "maps"):
+		cands += [base / d / name, base.parent / d / name]
 	for c in cands:
 		try:
 			if c.is_file():
-				with Image.open(c) as img:
-					return np.asarray(img.convert("RGBA")).copy()
-		except (OSError, ValueError):
+				rgba = _open_rgba(c)
+				if rgba is not None:
+					return rgba
+		except OSError:
+			continue
+	# Same name, other format (a .psd or .tif reference with a .png beside it).
+	stem = Path(name).stem.lower()
+	for d in (base, base / "textures", base.parent / "textures"):
+		try:
+			for c in sorted(d.iterdir()):
+				if c.stem.lower() == stem and c.suffix.lower() in IMAGE_EXTENSIONS:
+					rgba = _open_rgba(c)
+					if rgba is not None:
+						return rgba
+		except OSError:
 			continue
 	return None
 
 
+def _data_uri(uri: str) -> bytes:
+	import base64
+	from urllib.parse import unquote_to_bytes
+
+	head, _, body = uri.partition(",")
+	return base64.b64decode(body) if head.endswith(";base64") else unquote_to_bytes(body)
+
+
 def _embedded_images(path: Path) -> list[bytes]:
-	"""Images packed in a .glb's binary chunk, in glTF image order ("*N" refs)."""
-	if path.suffix.lower() != ".glb":
+	"""glTF images in document order (Assimp's "*N" refs): GLB chunks, data URIs, buffers."""
+	ext = path.suffix.lower()
+	if ext not in (".glb", ".gltf"):
 		return []
 	try:
 		raw = path.read_bytes()
-		if raw[:4] != b"glTF":
-			return []
-		off = 12
 		doc, binchunk = None, b""
-		while off + 8 <= len(raw):
-			clen, ctype = struct.unpack_from("<I4s", raw, off)
-			chunk = raw[off + 8: off + 8 + clen]
-			if ctype == b"JSON":
-				doc = json.loads(chunk)
-			elif ctype == b"BIN\0":
-				binchunk = chunk
-			off += 8 + clen
+		if raw[:4] == b"glTF":
+			off = 12
+			while off + 8 <= len(raw):
+				clen, ctype = struct.unpack_from("<I4s", raw, off)
+				chunk = raw[off + 8: off + 8 + clen]
+				if ctype == b"JSON":
+					doc = json.loads(chunk)
+				elif ctype == b"BIN\0":
+					binchunk = chunk
+				off += 8 + clen
+		else:
+			doc = json.loads(raw)
 		if not doc:
 			return []
+		buffers: dict[int, bytes] = {}
+
+		def buffer(i: int) -> bytes:
+			if i not in buffers:
+				b = doc["buffers"][i]
+				uri = b.get("uri")
+				if uri is None:
+					buffers[i] = binchunk
+				elif uri.startswith("data:"):
+					buffers[i] = _data_uri(uri)
+				else:
+					from urllib.parse import unquote
+
+					buffers[i] = (path.parent / unquote(uri)).read_bytes()
+			return buffers[i]
+
 		out = []
 		for img in doc.get("images", []):
-			bv = doc["bufferViews"][img["bufferView"]] if "bufferView" in img else None
-			if bv is None:
+			try:
+				if "bufferView" in img:
+					bv = doc["bufferViews"][img["bufferView"]]
+					s = bv.get("byteOffset", 0)
+					out.append(buffer(bv["buffer"])[s: s + bv["byteLength"]])
+				elif str(img.get("uri", "")).startswith("data:"):
+					out.append(_data_uri(img["uri"]))
+				else:
+					from urllib.parse import unquote
+
+					out.append((path.parent / unquote(img.get("uri", ""))).read_bytes())
+			except (OSError, KeyError, IndexError, ValueError):
 				out.append(b"")
-				continue
-			s = bv.get("byteOffset", 0)
-			out.append(binchunk[s: s + bv["byteLength"]])
 		return out
 	except (OSError, ValueError, KeyError, IndexError, struct.error):
 		return []
@@ -353,7 +683,7 @@ def _strips(tris: list[tuple[int, int, int]]) -> list[list[int]]:
 
 
 def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> bytes:
-	"""Bake an imported model into a static GoldSrc studio MDL (v10)."""
+	"""Bake an imported model into a GoldSrc studio MDL (v10): bones, sequences, meshes, skins."""
 	opts = opts or ModelOptions()
 	if len(model.materials) > MAXSTUDIOSKINS:
 		raise ValueError(f"{len(model.materials)} materials; studio models allow {MAXSTUDIOSKINS}")
@@ -363,6 +693,8 @@ def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> 
 	pos_index: dict[tuple, int] = {}
 	positions: list[tuple[float, float, float]] = []
 	normals: list[tuple[float, float, float]] = []
+	vert_bone: list[int] = []
+	norm_bone: list[int] = []
 	meshes: list[tuple[int, int, int, list[list[tuple[int, int, int, int]]]]] = []	# (skin, numnorms, normstart, strips)
 	ntris = 0
 	for skin in range(len(model.materials)):
@@ -379,16 +711,19 @@ def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> 
 		for sm in subs:
 			cid = np.empty(len(sm.positions), np.int64)
 			for v in range(len(sm.positions)):
+				bone = int(sm.bones[v])
 				p = tuple(np.round(sm.positions[v].astype(np.float64), 4))
-				vi = pos_index.get(p)
+				vi = pos_index.get((bone, p))
 				if vi is None:
-					vi = pos_index[p] = len(positions)
+					vi = pos_index[(bone, p)] = len(positions)
 					positions.append(p)
+					vert_bone.append(bone)
 				n = tuple(np.round(sm.normals[v].astype(np.float64), 3))
-				ni = norm_index.get(n)
+				ni = norm_index.get((bone, n))
 				if ni is None:
-					ni = norm_index[n] = len(normals)
+					ni = norm_index[(bone, n)] = len(normals)
 					normals.append(n)
+					norm_bone.append(bone)
 				s = int(np.clip(round(float(sm.uvs[v, 0]) * tw), -32768, 32767))
 				t = int(np.clip(round(float(sm.uvs[v, 1]) * th), -32768, 32767))
 				key = (vi, ni, s, t)
@@ -414,10 +749,26 @@ def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> 
 	if ntris > MAXSTUDIOTRIANGLES:
 		model.warnings.append(f"{ntris} triangles exceeds the studio limit of {MAXSTUDIOTRIANGLES}")
 
-	pts = np.array(positions, np.float32).reshape(-1, 3)
-	bmin = pts.min(0) if len(pts) else np.zeros(3, np.float32)
-	bmax = pts.max(0) if len(pts) else np.zeros(3, np.float32)
-	radius = float(np.linalg.norm(pts, axis=1).max()) if len(pts) else 0.0
+	nb = len(model.bones)
+	parents = [b.parent for b in model.bones]
+	rest = np.array([b.pose for b in model.bones], np.float64)
+	seqs = model.sequences or [Sequence("idle", 30.0, rest[None])]
+	pts = np.array(positions, np.float64).reshape(-1, 3)
+	vb = np.array(vert_bone, np.int64)
+
+	def posed(frame: "np.ndarray") -> "np.ndarray":
+		mats = np.array(_sk.world_matrices(frame, parents))
+		return np.einsum("nij,nj->ni", mats[vb, :3, :3], pts) + mats[vb, :3, 3] if len(pts) else pts
+
+	def box(frames: "np.ndarray") -> tuple["np.ndarray", "np.ndarray"]:
+		step = max(1, len(frames) // 16)	# a sample of frames is plenty for culling boxes
+		w = np.concatenate([posed(f) for f in frames[::step]] + [posed(frames[-1])]) if len(pts) else np.zeros((1, 3))
+		return w.min(0), w.max(0)
+
+	bmin, bmax = box(rest[None])
+	rest_world = posed(rest)
+	radius = float(np.linalg.norm(rest_world, axis=1).max()) if len(pts) else 0.0
+	scales = _sk.bone_scales(rest, [sq.frames for sq in seqs])
 
 	out = bytearray(_HDR)
 	name = (model.name.lower() + ".mdl").encode("latin-1", "replace")[:63]
@@ -425,22 +776,38 @@ def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> 
 	def align():
 		out.extend(bytes((-len(out)) % 4))
 
-	# bones: one static root
 	bone_off = len(out)
-	out += struct.pack("<32sii6i6f6f", b"root", -1, 0, *([-1] * 6), *([0.0] * 6), *([1.0] * 6))
+	for b, bone in enumerate(model.bones):
+		out += struct.pack("<32sii6i6f6f", bone.name.encode("latin-1", "replace")[:31], bone.parent, 0,
+			*([-1] * 6), *rest[b], *scales[b])
 
-	# sequence 0 "idle", one frame, all-zero anim offsets (bone value[] holds the pose)
-	anim_off = len(out)
-	out += bytes(12)	# mstudioanim_t: 6 unsigned short offsets for the single bone
+	# one hitbox per bone that owns vertices, so traces and damage work on animated models
+	hit_off = len(out)
+	nhit = 0
+	for b in range(nb):
+		sel = pts[vb == b]
+		if len(sel):
+			out += struct.pack("<ii3f3f", b, 0, *sel.min(0), *sel.max(0))
+			nhit += 1
+
+	anim_offs = []
+	for sq in seqs:
+		align()
+		anim_offs.append(len(out))
+		out += _sk.encode_anim_block(sq.frames, rest, scales)
 	align()
 	seq_off = len(out)
-	seq = bytearray(_SEQ)
-	struct.pack_into("<32sfiiiiiiii", seq, 0, b"idle", 30.0, 0, 0, 0, 0, 0, 1, 0, 0)
-	struct.pack_into("<ii", seq, 68, 0, 0)	# motiontype, motionbone
-	struct.pack_into("<3f3f", seq, 96, *bmin, *bmax)	# bbmin, bbmax
-	struct.pack_into("<ii", seq, 120, 1, anim_off)	# numblends, animindex
-	struct.pack_into("<2f", seq, 144, 0.0, 1.0)	# blendend
-	out += seq
+	for sq, anim_off in zip(seqs, anim_offs):
+		smin, smax = box(sq.frames)
+		bmin, bmax = np.minimum(bmin, smin), np.maximum(bmax, smax)
+		seq = bytearray(_SEQ)
+		struct.pack_into("<32sfiiiiiiii", seq, 0, sq.name.encode("latin-1", "replace")[:31], float(sq.fps),
+			_sk.STUDIO_LOOPING if sq.loop else 0, 0, 0, 0, 0, len(sq.frames), 0, 0)
+		struct.pack_into("<ii", seq, 68, 0, 0)	# motiontype, motionbone
+		struct.pack_into("<3f3f", seq, 96, *smin, *smax)	# bbmin, bbmax
+		struct.pack_into("<ii", seq, 120, 1, anim_off)	# numblends, animindex
+		struct.pack_into("<2f", seq, 144, 0.0, 1.0)	# blendend
+		out += seq
 	group_off = len(out)
 	out += struct.pack("<32s64sii", b"default", b"", 0, 0)
 
@@ -450,10 +817,10 @@ def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> 
 	model_off = len(out)
 	out += bytes(_MODEL)
 	vertinfo_off = len(out)
-	out += bytes(len(positions))
+	out += bytes(vert_bone)
 	align()
 	norminfo_off = len(out)
-	out += bytes(len(normals))
+	out += bytes(norm_bone)
 	align()
 	verts_off = len(out)
 	for p in positions:
@@ -499,7 +866,7 @@ def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> 
 	struct.pack_into("<4si64si", out, 0, b"IDST", STUDIO_VERSION, name, len(out))
 	struct.pack_into("<3f3f3f3f3f", out, 76, 0.0, 0.0, 0.0, *bmin, *bmax, *bmin, *bmax)
 	struct.pack_into("<i", out, 136, 0)	# flags
-	struct.pack_into("<10i", out, 140, 1, bone_off, 0, 0, 0, 0, 1, seq_off, 1, group_off)
+	struct.pack_into("<10i", out, 140, nb, bone_off, 0, 0, nhit, hit_off, len(seqs), seq_off, 1, group_off)
 	struct.pack_into("<6i", out, 180, len(model.materials), tex_off, texdata_off,
 		len(model.materials), 1, skin_off)
 	struct.pack_into("<2i", out, 204, 1, bodypart_off)
@@ -527,6 +894,8 @@ def studio_meshes(raw: bytes) -> list[dict]:
 		return []
 	_nm, _base, model_off = struct.unpack_from("<iii", raw, body_off + 64)
 	(nmesh, mesh_off, nverts, _vi, verts_off, nnorms, _ni, norms_off) = struct.unpack_from("<8i", raw, model_off + 72)
+	(vertinfo_off,) = struct.unpack_from("<i", raw, model_off + 84)
+	vertbone = np.frombuffer(raw, np.uint8, nverts, vertinfo_off).astype(np.int64)
 	verts = np.frombuffer(raw, np.float32, nverts * 3, verts_off).reshape(-1, 3)
 	norms = np.frombuffer(raw, np.float32, nnorms * 3, norms_off).reshape(-1, 3)
 	out = []
@@ -550,8 +919,56 @@ def studio_meshes(raw: bytes) -> list[dict]:
 					tris.append((cmd[k], cmd[k + 1], cmd[k + 2]))
 				else:
 					tris.append((cmd[k + 1], cmd[k], cmd[k + 2]))
-		out.append({"skin": skin, "tris": tris, "verts": verts, "norms": norms})
+		out.append({"skin": skin, "tris": tris, "verts": verts, "norms": norms, "vertbone": vertbone})
 	return out
+
+
+def studio_bones(raw: bytes) -> list[dict]:
+	nbones, bone_off = struct.unpack_from("<ii", raw, 140)
+	out = []
+	for b in range(nbones):
+		f = struct.unpack_from("<32sii6i6f6f", raw, bone_off + b * _BONE)
+		out.append({"name": f[0].split(b"\0")[0].decode("latin-1"), "parent": f[1],
+			"value": np.array(f[9:15]), "scale": np.array(f[15:21])})
+	return out
+
+
+def studio_sequences(raw: bytes) -> list[dict]:
+	nseq, seq_off = struct.unpack_from("<ii", raw, 164)
+	out = []
+	for i in range(nseq):
+		base = seq_off + i * _SEQ
+		label, fps, flags = struct.unpack_from("<32sfi", raw, base)
+		(numframes,) = struct.unpack_from("<i", raw, base + 56)
+		bb = struct.unpack_from("<3f3f", raw, base + 96)
+		numblends, animindex = struct.unpack_from("<ii", raw, base + 120)
+		out.append({"name": label.split(b"\0")[0].decode("latin-1"), "fps": fps, "flags": flags,
+			"frames": numframes, "bbmin": np.array(bb[:3]), "bbmax": np.array(bb[3:]), "animindex": animindex})
+	return out
+
+
+def studio_pose(raw: bytes, seq: int = 0, frame: int = 0) -> list["np.ndarray"]:
+	"""World matrix of every bone at one frame, decoded as the engine does."""
+	bones = studio_bones(raw)
+	seqs = studio_sequences(raw)
+	values = np.array([b["value"] for b in bones])
+	scales = np.array([b["scale"] for b in bones])
+	poses = values
+	if seqs:
+		sq = seqs[min(seq, len(seqs) - 1)]
+		f = max(0, min(frame, sq["frames"] - 1))
+		poses = _sk.decode_anim_frame(raw, sq["animindex"], len(bones), f, values, scales)
+	return _sk.world_matrices(poses, [b["parent"] for b in bones])
+
+
+def studio_posed_vertices(raw: bytes, seq: int = 0, frame: int = 0) -> "np.ndarray":
+	meshes = studio_meshes(raw)
+	if not meshes:
+		return np.zeros((0, 3))
+	mats = np.array(studio_pose(raw, seq, frame))
+	v = meshes[0]["verts"].astype(np.float64)
+	vb = meshes[0]["vertbone"]
+	return np.einsum("nij,nj->ni", mats[vb, :3, :3], v) + mats[vb, :3, 3]
 
 
 # -- preview ------------------------------------------------------------------
@@ -608,7 +1025,7 @@ def preview_imported(model: ImportedModel, size: int = 384) -> "np.ndarray":
 	tris, cols = [], []
 	for m in model.meshes:
 		col = _mean_colour(model.materials[m.material].rgba)
-		t = m.positions[m.tris][:, [0, 2, 1]]	# to clockwise, like the studio output
+		t = m.world[m.tris][:, [0, 2, 1]]	# to clockwise, like the studio output
 		tris.append(t)
 		cols.append(np.tile(col, (len(t), 1)))
 	if not tris:
@@ -616,16 +1033,17 @@ def preview_imported(model: ImportedModel, size: int = 384) -> "np.ndarray":
 	return render_preview(np.concatenate(tris), np.concatenate(cols), size)
 
 
-def preview_studio(raw: bytes, skins_raw: bytes | None = None, size: int = 384) -> "np.ndarray":
+def preview_studio(raw: bytes, skins_raw: bytes | None = None, size: int = 384,
+		seq: int = 0, frame: int = 0) -> "np.ndarray":
 	"""Render the geometry the engine will load, coloured from the (companion) skins."""
 	from .studio import studio_textures
 
 	skins = studio_textures(skins_raw if skins_raw is not None else raw)
 	skin_cols = [_mean_colour(rgba) for _n, _f, rgba in skins]
 	tris, cols = [], []
+	v = studio_posed_vertices(raw, seq, frame)
 	for m in studio_meshes(raw):
 		col = skin_cols[m["skin"]] if m["skin"] < len(skin_cols) else np.array([255.0, 255.0, 255.0])
-		v = m["verts"]
 		for tri in m["tris"]:
 			tris.append(v[[c[0] for c in tri]])
 			cols.append(col)

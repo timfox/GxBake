@@ -182,3 +182,81 @@ def glb_quad(path, rgba: "np.ndarray | None" = None) -> None:
 	body = struct.pack("<I4s", len(js), b"JSON") + js + struct.pack("<I4s", len(binchunk), b"BIN\0") + binchunk
 	with open(path, "wb") as f:
 		f.write(struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body)
+
+
+def glb_arm(path, angle_deg: float = 90.0, name: str = "bend") -> None:
+	"""Skinned two-bone glTF: a 1x4x1 box along +Y; joint 'upper' at y=0, 'lower' at y=2.
+
+	Vertices with y < 2 are weighted to upper, the rest to lower. One animation
+	rotates 'lower' about +Z from 0 to angle_deg over one second (2 keys).
+	"""
+	import json
+	import math
+
+	pos, idx, joints, weights = [], [], [], []
+	ys = (0.0, 1.0, 2.0, 3.0, 4.0)
+	ring = [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)]
+	for y in ys:
+		for x, z in ring:
+			pos.append((x, y, z))
+			joints.append((0 if y < 2 else 1, 0, 0, 0))
+			weights.append((1.0, 0.0, 0.0, 0.0))
+	for r in range(len(ys) - 1):
+		for k in range(4):
+			a, b = r * 4 + k, r * 4 + (k + 1) % 4
+			c, d = a + 4, b + 4
+			idx += [a, b, d, a, d, c]	# outward when viewed from outside (CCW)
+	idx += [0, 2, 1, 0, 3, 2]	# bottom cap
+	top = (len(ys) - 1) * 4
+	idx += [top, top + 1, top + 2, top, top + 2, top + 3]
+	pos = np.array(pos, np.float32)
+	idx = np.array(idx, np.uint16)
+	joints = np.array(joints, np.uint16)
+	weights = np.array(weights, np.float32)
+	# inverse bind matrices (column-major): translate by -joint position
+	ibm = np.zeros((2, 16), np.float32)
+	for i, jy in enumerate((0.0, 2.0)):
+		m = np.eye(4, dtype=np.float32)
+		m[1, 3] = -jy
+		ibm[i] = m.T.reshape(-1)
+	times = np.array([0.0, 1.0], np.float32)
+	h = math.radians(angle_deg) / 2
+	rots = np.array([[0, 0, 0, 1], [0, 0, math.sin(h), math.cos(h)]], np.float32)
+	blobs = [pos.tobytes(), idx.tobytes(), joints.tobytes(), weights.tobytes(), ibm.tobytes(), times.tobytes(), rots.tobytes()]
+	views, off, binchunk = [], 0, b""
+	for b in blobs:
+		pad = b + bytes(-len(b) % 4)
+		views.append({"buffer": 0, "byteOffset": off, "byteLength": len(b)})
+		binchunk += pad
+		off += len(pad)
+	doc = {
+		"asset": {"version": "2.0"},
+		"scenes": [{"nodes": [0, 1]}], "scene": 0,
+		"nodes": [
+			{"name": "arm", "mesh": 0, "skin": 0},
+			{"name": "upper", "children": [2]},
+			{"name": "lower", "translation": [0, 2, 0]},
+		],
+		"skins": [{"joints": [1, 2], "inverseBindMatrices": 4, "skeleton": 1}],
+		"meshes": [{"primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 2, "WEIGHTS_0": 3}, "indices": 1, "material": 0}]}],
+		"materials": [{"name": "skin", "pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.9, 1]}}],
+		"animations": [{"name": name, "channels": [{"sampler": 0, "target": {"node": 2, "path": "rotation"}}],
+			"samplers": [{"input": 5, "output": 6, "interpolation": "LINEAR"}]}],
+		"buffers": [{"byteLength": len(binchunk)}],
+		"bufferViews": views,
+		"accessors": [
+			{"bufferView": 0, "componentType": 5126, "count": len(pos), "type": "VEC3",
+				"min": pos.min(0).tolist(), "max": pos.max(0).tolist()},
+			{"bufferView": 1, "componentType": 5123, "count": len(idx), "type": "SCALAR"},
+			{"bufferView": 2, "componentType": 5123, "count": len(pos), "type": "VEC4"},
+			{"bufferView": 3, "componentType": 5126, "count": len(pos), "type": "VEC4"},
+			{"bufferView": 4, "componentType": 5126, "count": 2, "type": "MAT4"},
+			{"bufferView": 5, "componentType": 5126, "count": 2, "type": "SCALAR", "min": [0.0], "max": [1.0]},
+			{"bufferView": 6, "componentType": 5126, "count": 2, "type": "VEC4"},
+		],
+	}
+	js = json.dumps(doc).encode()
+	js += b" " * (-len(js) % 4)
+	body = struct.pack("<I4s", len(js), b"JSON") + js + struct.pack("<I4s", len(binchunk), b"BIN\0") + binchunk
+	with open(path, "wb") as f:
+		f.write(struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body)

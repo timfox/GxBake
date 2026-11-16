@@ -22,6 +22,9 @@ Log = Callable[[str], None]
 Progress = Callable[[int, int, str], None]
 
 
+SEQ_PREFIX = "▶ "	# tree children of a 3D model that are sequences, not materials
+
+
 class Kind(str, Enum):
 	IMAGE = "Image"
 	SKYBOX = "Skybox"
@@ -78,6 +81,9 @@ class Settings:
 	model_up_axis: str = "y"
 	model_skin_max_edge: int = 256
 	model_write_full: bool = True	# also write the full studio MDL to models/<name>.mdl
+	model_anim_fps: int = 15
+	model_static: bool = False	# ignore skeletons/animations
+	model_clip_files: bool = True	# merge <name>@<clip>.<ext> animations
 	spr_scale: int = 2
 	video_width: int = media.GCVID_WIDTH
 	video_height: int = media.GCVID_HEIGHT
@@ -92,7 +98,7 @@ class Settings:
 
 	def model_options(self) -> models.ModelOptions:
 		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
-			self.image.alpha_threshold)
+			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files)
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -173,6 +179,8 @@ class Project:
 		if any(a.path == path for a in self.assets):
 			return []
 		kind = detect_kind(path)
+		if kind == Kind.MODEL and models.clip_base(path) is not None:
+			return []	# an animation clip; it is merged into its base model
 		if kind == Kind.IMAGE:
 			sky = images.find_skybox_sides(path)
 			if sky is not None:
@@ -205,7 +213,11 @@ class Project:
 			if asset.kind == Kind.MDL:
 				return [n for n, _f, _r in studio.studio_textures(asset.path.read_bytes())]
 			if asset.kind == Kind.MODEL:
-				return [m.name for m in self.imported_model(asset)[0].materials]
+				model = self.imported_model(asset)[0]
+				kids = [m.name for m in model.materials]
+				if model.animated or len(model.bones) > 1:
+					kids += [SEQ_PREFIX + sq.name for sq in model.sequences]
+				return kids
 			if asset.kind == Kind.SKYBOX:
 				return list(images.GC_SKY_SUFFIXES)
 		except (OSError, ValueError, Exception) as exc:	# noqa: BLE001 - malformed input should not crash the UI
@@ -225,6 +237,8 @@ class Project:
 				d["Vertices"] = model.num_vertices
 				d["Triangles"] = model.num_triangles
 				d["Bounds"] = " × ".join(f"{x:.1f}" for x in hi - lo) + " units"
+				d["Bones"] = len(model.bones)
+				d["Sequences"] = ", ".join(f"{sq.name} ({len(sq.frames)})" for sq in model.sequences)
 				d["Studio MDL"] = audit.human_bytes(len(mdl))
 			elif asset.kind == Kind.SPR:
 				d.update(sprite.spr_info(asset.path.read_bytes()))
@@ -337,7 +351,9 @@ class Project:
 			mtime = asset.path.stat().st_mtime_ns
 		except OSError:
 			mtime = 0
-		key = (asset.path, mtime, opts.scale, opts.up_axis, opts.skin_max_edge, opts.alpha_threshold)
+		clips = tuple((p.name, p.stat().st_mtime_ns) for p in models.clip_files(asset.path)) if opts.clip_files else ()
+		key = (asset.path, mtime, clips, opts.scale, opts.up_axis, opts.skin_max_edge, opts.alpha_threshold,
+			opts.anim_fps, opts.static)
 		hit = self._model_cache.get(asset.path)
 		if hit and hit[0] == key:
 			return hit[1], hit[2]
@@ -360,7 +376,17 @@ class Project:
 			info["Lean mesh bytes"] = audit.human_bytes(len(lean))
 		if comp:
 			info["Skin companion bytes"] = audit.human_bytes(len(comp))
+		info["Bones"] = len(model.bones)
 		names = [m.name for m in model.materials]
+		if child and child.startswith(SEQ_PREFIX):
+			seqs = [sq.name for sq in model.sequences]
+			i = seqs.index(child[len(SEQ_PREFIX):]) if child[len(SEQ_PREFIX):] in seqs else 0
+			sq = model.sequences[i]
+			frame = (len(sq.frames) - 1) // 2
+			info = {"Frames": len(sq.frames), "Frame rate": f"{sq.fps:g} fps",
+				"Length": f"{(len(sq.frames) - 1) / sq.fps:.2f} s", "Looping": "yes" if sq.loop else "no",
+				"Shown": f"source rest pose / frame {frame} as the engine decodes it", "Studio MDL": audit.human_bytes(len(mdl))}
+			return Preview(child, models.preview_imported(model), models.preview_studio(mdl, comp, seq=i, frame=frame), info)
 		if child in names:
 			i = names.index(child)
 			mat = model.materials[i]
