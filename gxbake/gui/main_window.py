@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 	QCheckBox,
 	QComboBox,
 	QDockWidget,
+	QDoubleSpinBox,
 	QFileDialog,
 	QFormLayout,
 	QGroupBox,
@@ -37,15 +38,18 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..core import audit
+from ..core import audit, models
 from ..core.project import CONVERTIBLE, Asset, Kind, Project, Settings
 from .widgets import ImagePane, Task
 
 ASSET_ROLE = Qt.ItemDataRole.UserRole
 CHILD_ROLE = Qt.ItemDataRole.UserRole + 1
-HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.SKYBOX}
+HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.MODEL, Kind.SKYBOX}
+_MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS))
 FILE_FILTER = (
-	"Source assets (*.png *.tga *.bmp *.jpg *.jpeg *.wad *.bsp *.mdl *.spr *.avi *.mp4 *.mkv *.mov *.webm *.wav *.mp3 *.ogg);;"
+	"Source assets (*.png *.tga *.bmp *.jpg *.jpeg *.wad *.bsp *.mdl *.spr *.avi *.mp4 *.mkv *.mov *.webm *.wav *.mp3 *.ogg "
+	f"{_MODEL_GLOBS});;"
+	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
 )
 
@@ -102,6 +106,29 @@ class SettingsPanel(QWidget):
 		f.addRow("Sprite scale ÷", self.spr_scale)
 		outer.addWidget(mdl)
 
+		imp = QGroupBox("3D model import (Assimp)")
+		f = QFormLayout(imp)
+		if not models.available():
+			warn = QLabel("assimp-py is not installed, so OBJ/FBX/glTF files can't be read.\npip install assimp-py")
+			warn.setStyleSheet("color: #d9a63c;")
+			f.addRow(warn)
+		self.model_scale = QDoubleSpinBox()
+		self.model_scale.setRange(0.001, 10000.0)
+		self.model_scale.setDecimals(3)
+		self.model_scale.setValue(settings.model_scale)
+		self.model_scale.setToolTip("Source units → GoldSrc units (about an inch each). glTF/FBX in metres: try 39.37.")
+		f.addRow("Scale", self.model_scale)
+		self.model_up = self._combo(["y", "z"], settings.model_up_axis)
+		self.model_up.setToolTip("y: Y-up source (glTF, OBJ, Assimp's FBX), +Z forward becomes the model's +X forward.\nz: already Z-up like GoldSrc.")
+		f.addRow("Source up axis", self.model_up)
+		self.model_skin = self._combo(["64", "128", "256", "512"], str(settings.model_skin_max_edge))
+		self.model_skin.setToolTip("Skin size in the full models/<name>.mdl. The gc_studio companion uses 'Skin max edge' above.")
+		f.addRow("Import skin max", self.model_skin)
+		self.model_full = QCheckBox("Also write full studio model → models/<name>.mdl")
+		self.model_full.setChecked(settings.model_write_full)
+		f.addRow(self.model_full)
+		outer.addWidget(imp)
+
 		vid = QGroupBox("Video and audio")
 		f = QFormLayout(vid)
 		self.vw = self._spin(8, 640, settings.video_width, step=8)
@@ -145,11 +172,11 @@ class SettingsPanel(QWidget):
 		outer.addWidget(maps)
 		outer.addStretch(1)
 
-		for w in (self.max_edge, self.alpha, self.resample, self.sky, self.mdl_edge, self.spr_scale):
+		for w in (self.max_edge, self.alpha, self.resample, self.sky, self.mdl_edge, self.spr_scale, self.model_up, self.model_skin):
 			w.currentTextChanged.connect(self._sync)
-		for w in (self.mipmaps, self.pack, self.raw_cmp, self.lean_mesh, self.skin_comp, self.vaudio):
+		for w in (self.mipmaps, self.pack, self.raw_cmp, self.lean_mesh, self.skin_comp, self.vaudio, self.model_full):
 			w.toggled.connect(self._sync)
-		for w in (self.threshold, self.vw, self.vh, self.fps):
+		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
@@ -199,6 +226,10 @@ class SettingsPanel(QWidget):
 		s.mdl_skin_companion = self.skin_comp.isChecked()
 		s.mdl_max_edge = int(self.mdl_edge.currentText())
 		s.spr_scale = int(self.spr_scale.currentText())
+		s.model_scale = self.model_scale.value()
+		s.model_up_axis = self.model_up.currentText()
+		s.model_skin_max_edge = int(self.model_skin.currentText())
+		s.model_write_full = self.model_full.isChecked()
 		s.video_width = self.vw.value()
 		s.video_height = self.vh.value()
 		s.video_fps = self.fps.value()

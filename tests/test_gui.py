@@ -35,3 +35,28 @@ def test_main_window_round_trip(tmp_path):
 	assert (tmp_path / "out/media/wt_demo.gct").is_file()
 	assert "main RAM" in w.budget.text(), (w.written, [a.outputs for a in w.project.assets], w.log_view.toPlainText()[-800:])
 	w.close()
+
+
+def test_assimp_model_preview(tmp_path):
+	from gxbake.core import models
+	from gxbake.gui.main_window import MainWindow
+
+	from . import fixtures as fx
+
+	if not models.available():
+		pytest.skip("assimp-py not installed")
+	app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+	w = MainWindow()
+	w.qsettings.clear()
+	w.add_paths([str(fx.obj_cube(tmp_path / "src"))])
+	item = w.tree.topLevelItem(0)
+	item.setExpanded(True)
+	assert item.childCount() == 2	# one row per material
+	w.tree.setCurrentItem(item)
+	end = time.time() + 10
+	while time.time() < end and ("rendering" in w.preview_title.text() or w.inspector_form.rowCount() == 0):
+		app.processEvents()
+		time.sleep(0.01)
+	assert w.preview_title.text() == "crate.obj"
+	assert w.src_pane.canvas._image is not None and w.gx_pane.canvas._image is not None
+	w.close()

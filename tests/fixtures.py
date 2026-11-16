@@ -96,3 +96,89 @@ def sprite(w: int = 32, h: int = 32, texformat: int = 3) -> bytes:
 	out += struct.pack("<ii", w, h) + struct.pack("<iii", 1, 0, 0) + struct.pack("<h", 256) + palette(3)
 	out += struct.pack("<i", 0) + struct.pack("<iiii", -w // 2, h // 2, w, h) + pix.tobytes()
 	return out
+
+
+# Unit cube, outward counter-clockwise faces, Y-up; the -Z face is the "back".
+_CUBE_FACES = {
+	"px": [(1, -1, 1), (1, -1, -1), (1, 1, -1), (1, 1, 1)],
+	"nx": [(-1, -1, -1), (-1, -1, 1), (-1, 1, 1), (-1, 1, -1)],
+	"py": [(-1, 1, 1), (1, 1, 1), (1, 1, -1), (-1, 1, -1)],
+	"ny": [(-1, -1, -1), (1, -1, -1), (1, -1, 1), (-1, -1, 1)],
+	"pz": [(-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1)],
+	"nz": [(1, -1, -1), (-1, -1, -1), (-1, 1, -1), (1, 1, -1)],
+}
+
+
+def obj_cube(directory, name: str = "crate", texture: bool = True) -> "Path":
+	"""crate.obj + .mtl: textured top/bottom/sides material and a plain red one."""
+	from pathlib import Path
+
+	from PIL import Image
+
+	directory = Path(directory)
+	directory.mkdir(parents=True, exist_ok=True)
+	lines = [f"mtllib {name}.mtl"]
+	vt = [(0, 0), (1, 0), (1, 1), (0, 1)]
+	lines += [f"vt {u} {v}" for u, v in vt]
+	n = 0
+	for i, (face, quad) in enumerate(_CUBE_FACES.items()):
+		lines += [f"v {x} {y} {z}" for x, y, z in quad]
+		lines.append(f"usemtl {'red' if face == 'pz' else 'wood'}")
+		lines.append("f " + " ".join(f"{n + k + 1}/{k + 1}" for k in range(4)))
+		n += 4
+	(directory / f"{name}.obj").write_text("\n".join(lines) + "\n")
+	mtl = "newmtl red\nKd 1 0 0\n\nnewmtl wood\nKd 1 1 1\n"
+	if texture:
+		mtl += "map_Kd C:\\Users\\artist\\Desktop\\wood.png\n"	# absolute path from another machine
+		y, x = np.mgrid[0:48, 0:40]
+		rgb = np.stack(((x * 6) % 256, (y * 5) % 256, np.full_like(x, 60)), -1).astype(np.uint8)
+		Image.fromarray(rgb).save(directory / "wood.png")
+	(directory / f"{name}.mtl").write_text(mtl)
+	return directory / f"{name}.obj"
+
+
+def glb_quad(path, rgba: "np.ndarray | None" = None) -> None:
+	"""Minimal glTF 2.0 binary: one textured quad with the PNG embedded in the BIN chunk."""
+	import io
+	import json
+
+	from PIL import Image
+
+	if rgba is None:
+		rgba = np.zeros((16, 16, 4), np.uint8)
+		rgba[...] = (0, 200, 0, 255)
+		rgba[:8, :8, 3] = 0	# a cut-out corner → masked skin
+	png = io.BytesIO()
+	Image.fromarray(rgba).save(png, "PNG")
+	png = png.getvalue()
+	pos = np.array([[-1, 0, 0], [1, 0, 0], [1, 2, 0], [-1, 2, 0]], np.float32)
+	uv = np.array([[0, 1], [1, 1], [1, 0], [0, 0]], np.float32)
+	idx = np.array([0, 1, 2, 0, 2, 3], np.uint16)
+	blobs = [pos.tobytes(), uv.tobytes(), idx.tobytes() + b"\0\0", png]
+	views, off = [], 0
+	for b in blobs:
+		views.append({"buffer": 0, "byteOffset": off, "byteLength": len(b)})
+		off += len(b) + (-len(b) % 4)
+	binchunk = b"".join(b + bytes(-len(b) % 4) for b in blobs)
+	views[2]["byteLength"] = 12
+	doc = {
+		"asset": {"version": "2.0"},
+		"scenes": [{"nodes": [0]}], "scene": 0,
+		"nodes": [{"mesh": 0}],
+		"meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1}, "indices": 2, "material": 0}]}],
+		"materials": [{"name": "leaf", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}, "alphaMode": "MASK"}],
+		"textures": [{"source": 0}],
+		"images": [{"bufferView": 3, "mimeType": "image/png"}],
+		"buffers": [{"byteLength": len(binchunk)}],
+		"bufferViews": views,
+		"accessors": [
+			{"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3", "min": [-1, 0, 0], "max": [1, 2, 0]},
+			{"bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC2"},
+			{"bufferView": 2, "componentType": 5123, "count": 6, "type": "SCALAR"},
+		],
+	}
+	js = json.dumps(doc).encode()
+	js += b" " * (-len(js) % 4)
+	body = struct.pack("<I4s", len(js), b"JSON") + js + struct.pack("<I4s", len(binchunk), b"BIN\0") + binchunk
+	with open(path, "wb") as f:
+		f.write(struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body)
