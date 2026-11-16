@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..core import audit, models
+from ..core import audit, images, models
 from ..core.project import CONVERTIBLE, Asset, Kind, Project, Settings
 from .widgets import ImagePane, Task
 
@@ -46,8 +46,9 @@ ASSET_ROLE = Qt.ItemDataRole.UserRole
 CHILD_ROLE = Qt.ItemDataRole.UserRole + 1
 HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.MODEL, Kind.SKYBOX}
 _MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS))
+_IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
 FILE_FILTER = (
-	"Source assets (*.png *.tga *.bmp *.jpg *.jpeg *.wad *.bsp *.mdl *.spr *.avi *.mp4 *.mkv *.mov *.webm *.wav *.mp3 *.ogg "
+	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.avi *.mp4 *.mkv *.mov *.webm *.wav *.mp3 *.ogg "
 	f"{_MODEL_GLOBS});;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
@@ -112,6 +113,10 @@ class SettingsPanel(QWidget):
 			warn = QLabel("assimp-py is not installed, so OBJ/FBX/glTF files can't be read.\npip install assimp-py")
 			warn.setStyleSheet("color: #d9a63c;")
 			f.addRow(warn)
+		elif not models.skeletal_supported():
+			warn = QLabel("This assimp-py has no bone API (needs 1.2+ on Python 3.12+);\nmodels import static.")
+			warn.setStyleSheet("color: #d9a63c;")
+			f.addRow(warn)
 		self.model_scale = QDoubleSpinBox()
 		self.model_scale.setRange(0.001, 10000.0)
 		self.model_scale.setDecimals(3)
@@ -127,6 +132,15 @@ class SettingsPanel(QWidget):
 		self.model_full = QCheckBox("Also write full studio model → models/<name>.mdl")
 		self.model_full.setChecked(settings.model_write_full)
 		f.addRow(self.model_full)
+		self.model_static = QCheckBox("Bake static (ignore skeleton and animations)")
+		self.model_static.setChecked(settings.model_static)
+		f.addRow(self.model_static)
+		self.model_fps = self._spin(1, 60, settings.model_anim_fps)
+		self.model_fps.setToolTip("Sample rate for baked sequences. Lower is smaller; GoldSrc models are usually 10-30.")
+		f.addRow("Animation fps", self.model_fps)
+		self.model_clips = QCheckBox("Merge clip files (<name>@<clip>.fbx/.bvh…)")
+		self.model_clips.setChecked(settings.model_clip_files)
+		f.addRow(self.model_clips)
 		outer.addWidget(imp)
 
 		vid = QGroupBox("Video and audio")
@@ -174,9 +188,10 @@ class SettingsPanel(QWidget):
 
 		for w in (self.max_edge, self.alpha, self.resample, self.sky, self.mdl_edge, self.spr_scale, self.model_up, self.model_skin):
 			w.currentTextChanged.connect(self._sync)
-		for w in (self.mipmaps, self.pack, self.raw_cmp, self.lean_mesh, self.skin_comp, self.vaudio, self.model_full):
+		for w in (self.mipmaps, self.pack, self.raw_cmp, self.lean_mesh, self.skin_comp, self.vaudio, self.model_full,
+				self.model_static, self.model_clips):
 			w.toggled.connect(self._sync)
-		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale):
+		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
@@ -230,6 +245,9 @@ class SettingsPanel(QWidget):
 		s.model_up_axis = self.model_up.currentText()
 		s.model_skin_max_edge = int(self.model_skin.currentText())
 		s.model_write_full = self.model_full.isChecked()
+		s.model_static = self.model_static.isChecked()
+		s.model_anim_fps = self.model_fps.value()
+		s.model_clip_files = self.model_clips.isChecked()
 		s.video_width = self.vw.value()
 		s.video_height = self.vh.value()
 		s.video_fps = self.fps.value()
