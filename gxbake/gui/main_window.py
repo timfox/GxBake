@@ -96,6 +96,36 @@ class SettingsPanel(QWidget):
 		f.addRow("Sky side size", self.sky)
 		outer.addWidget(tex)
 
+		sky = QGroupBox("Skies from panoramas")
+		f = QFormLayout(sky)
+		self.sky_detect = QCheckBox("Treat panoramas, crosses, strips and .hdr as skies")
+		self.sky_detect.setToolTip("2:1 images 1024+ wide, 6:1 strips, 4:3/3:4 crosses with empty corners and .hdr files "
+			"become skyboxes when added. Use Add Skybox… for anything else.")
+		self.sky_detect.setChecked(settings.detect_panoramas)
+		f.addRow(self.sky_detect)
+		self.sky_yaw = QDoubleSpinBox()
+		self.sky_yaw.setRange(0.0, 359.0)
+		self.sky_yaw.setDecimals(0)
+		self.sky_yaw.setSingleStep(90.0)
+		self.sky_yaw.setWrapping(True)
+		self.sky_yaw.setValue(settings.sky_yaw % 360)
+		self.sky_yaw.setToolTip("Engine yaw the panorama centre (or the cross's front face) looks along: "
+			"0 = rt (+X), 90 = bk (+Y), 180 = lf (-X), 270 = ft (-Y).")
+		f.addRow("Centre faces yaw", self.sky_yaw)
+		self.sky_fov = QDoubleSpinBox()
+		self.sky_fov.setRange(30.0, 360.0)
+		self.sky_fov.setDecimals(0)
+		self.sky_fov.setValue(settings.sky_fov)
+		self.sky_fov.setToolTip("A flat photo made into a sky covers this many degrees; mirrored copies fill the rest.")
+		f.addRow("Photo width (°)", self.sky_fov)
+		self.sky_exposure = QDoubleSpinBox()
+		self.sky_exposure.setRange(-8.0, 8.0)
+		self.sky_exposure.setSingleStep(0.5)
+		self.sky_exposure.setValue(settings.sky_exposure)
+		self.sky_exposure.setToolTip(".hdr panoramas are tone-mapped with automatic exposure; this adds stops.")
+		f.addRow("HDR exposure (stops)", self.sky_exposure)
+		outer.addWidget(sky)
+
 		mdl = QGroupBox("Models and sprites")
 		f = QFormLayout(mdl)
 		self.lean_mesh = QCheckBox("Lean mesh (strip skins) → gc_studio/<name>.mdl")
@@ -214,9 +244,10 @@ class SettingsPanel(QWidget):
 		for w in (self.max_edge, self.alpha, self.resample, self.sky, self.mdl_edge, self.spr_scale, self.model_up, self.model_skin):
 			w.currentTextChanged.connect(self._sync)
 		for w in (self.mipmaps, self.pack, self.raw_cmp, self.lean_mesh, self.skin_comp, self.vaudio, self.model_full,
-				self.model_static, self.model_clips, self.model_blend):
+				self.model_static, self.model_clips, self.model_blend, self.sky_detect):
 			w.toggled.connect(self._sync)
-		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw):
+		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw,
+				self.sky_yaw, self.sky_fov, self.sky_exposure):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
@@ -262,6 +293,10 @@ class SettingsPanel(QWidget):
 		s.pack_name = self.pack_name.text().strip() or "textures"
 		s.raw_cmp = self.raw_cmp.isChecked()
 		s.sky_size = int(self.sky.currentText())
+		s.detect_panoramas = self.sky_detect.isChecked()
+		s.sky_yaw = self.sky_yaw.value()
+		s.sky_fov = self.sky_fov.value()
+		s.sky_exposure = self.sky_exposure.value()
 		s.mdl_lean_mesh = self.lean_mesh.isChecked()
 		s.mdl_skin_companion = self.skin_comp.isChecked()
 		s.mdl_max_edge = int(self.mdl_edge.currentText())
@@ -325,6 +360,8 @@ class MainWindow(QMainWindow):
 
 		self.a_add = act("Add Files…", self.add_files, "Ctrl+O")
 		self.a_add_dir = act("Add Folder…", self.add_folder, "Ctrl+Shift+O", "Scan a gamedir for convertible assets")
+		self.a_add_sky = act("Add Skybox…", self.add_skybox, None,
+			"A panorama, cubemap cross or strip, photo, or six face images → the six 128² CMPR sky sides")
 		self.a_remove = act("Remove", self.remove_selected, "Del")
 		self.a_clear = act("Clear", self.clear_assets)
 		tb.addSeparator()
@@ -507,6 +544,28 @@ class MainWindow(QMainWindow):
 		if files:
 			self.qsettings.setValue("last_dir", str(Path(files[0]).parent))
 			self.add_paths(files)
+
+	def add_skybox(self):
+		files, _ = QFileDialog.getOpenFileNames(self, "Panorama, cross, strip, photo, or six faces",
+			self.qsettings.value("last_dir", ""), f"Images ({_IMAGE_GLOBS});;All files (*)")
+		if not files:
+			return
+		self.qsettings.setValue("last_dir", str(Path(files[0]).parent))
+		if len(files) not in (1, 6):
+			QMessageBox.warning(self, "Add Skybox", "Pick one image, or the six face images.")
+			return
+		try:
+			added = self.project.add_skybox([Path(f) for f in files], "faces" if len(files) == 6 else "auto")
+		except (OSError, ValueError) as exc:
+			QMessageBox.warning(self, "Add Skybox", str(exc))
+			return
+		for asset in added:
+			self._add_item(asset)
+		if added:
+			self.log(f"Added sky {added[0].extra['name']}.")
+			self.tree.setCurrentItem(self.tree.topLevelItem(self.tree.topLevelItemCount() - 1))
+		self._update_buttons()
+		self._update_budget()
 
 	def add_folder(self):
 		d = QFileDialog.getExistingDirectory(self, "Add folder (scanned recursively)", self.qsettings.value("last_dir", ""))

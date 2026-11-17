@@ -7,6 +7,7 @@ module only decides which one applies to a file and where its output goes.
 from __future__ import annotations
 
 import json
+import re
 import struct
 import time
 from dataclasses import asdict, dataclass, field
@@ -16,7 +17,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, budget, gct, goldsrc, images, media, models, quake, rose, sprite, studio, studio_slim
+from . import audit, budget, gct, goldsrc, images, media, models, quake, rose, skybox, sprite, studio, studio_slim
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -24,6 +25,7 @@ Progress = Callable[[int, int, str], None]
 
 
 SEQ_PREFIX = "▶ "	# tree children of a 3D model that are sequences, not materials
+SKY_NET = "all sides"	# tree child of a panorama sky: the six sides as a cross
 
 
 class Kind(str, Enum):
@@ -93,6 +95,10 @@ class Settings:
 	pack_name: str = "textures"
 	raw_cmp: bool = False	# also write level-0 .cmp per loose image
 	sky_size: int = images.GC_SKY_CMPR_SIZE
+	sky_yaw: float = skybox.DEFAULT_YAW	# panoramas: engine yaw the image centre faces (270 = ft)
+	sky_fov: float = 180.0	# flat photos used as skies: horizontal degrees they cover
+	sky_exposure: float = 0.0	# .hdr panoramas: stops over auto exposure
+	detect_panoramas: bool = True	# big 2:1 images, .hdr, crosses and strips become skies
 	mdl_lean_mesh: bool = True
 	mdl_skin_companion: bool = True
 	mdl_max_edge: int = 64
@@ -118,6 +124,9 @@ class Settings:
 	wt_pool: int = 448 * 1024	# that pool (GC_WT_POOL_BYTES)
 	wad_dirs: list[str] = field(default_factory=list)
 	cache_dir: str = ""
+
+	def sky_options(self, layout: str = "auto") -> skybox.SkyOptions:
+		return skybox.SkyOptions(layout=layout, yaw=self.sky_yaw, fov=self.sky_fov, exposure=self.sky_exposure, size=self.sky_size)
 
 	def cache(self) -> Path | None:
 		return Path(self.cache_dir) if self.cache_dir else None
@@ -189,10 +198,17 @@ class Asset:
 	def size(self) -> int:
 		try:
 			if self.kind == Kind.SKYBOX:
-				return sum(Path(p).stat().st_size for p in self.extra["sides"].values())
+				return sum(Path(p).stat().st_size for p in self.sky_files)
 			return self.path.stat().st_size
 		except OSError:
 			return 0
+
+	@property
+	def sky_files(self) -> list[Path]:
+		"""A skybox's source files: six GoldSrc sides, or a panorama/cross/strip/six faces."""
+		if "source" in self.extra:
+			return [Path(p) for p in self.extra["source"]]
+		return [Path(p) for p in self.extra["sides"].values()]
 
 	@property
 	def output_size(self) -> int:
@@ -204,6 +220,7 @@ class Project:
 		self.settings = settings or Settings()
 		self.assets: list[Asset] = []
 		self._model_cache: dict = {}
+		self._sky_cache: dict = {}
 
 	# -- loading ---------------------------------------------------------------
 
@@ -235,10 +252,44 @@ class Project:
 				asset = Asset(path, Kind.SKYBOX, {"name": name, "sides": {k: str(v) for k, v in sides.items()}})
 				self.assets.append(asset)
 				return [asset]
+			faces = skybox.find_faces(path)
+			if faces is not None and faces[1] == "view":
+				return self.add_skybox(list(faces[2].values()), "faces", faces[0])
+			if self.settings.detect_panoramas and skybox.looks_like_panorama(path):
+				return self.add_skybox([path])
 		rel = path.relative_to(root.resolve()).as_posix() if root else None
 		asset = Asset(path, kind, warnings=audit.file_warnings(path, rel))
 		self.assets.append(asset)
 		return [asset]
+
+	def add_skybox(self, paths: list[Path], layout: str = "auto", name: str | None = None) -> list[Asset]:
+		"""A sky made from a panorama, cross, strip, photo or six face files (see core/skybox.py)."""
+		paths = [Path(p).resolve() for p in paths]
+		if any(a.kind == Kind.SKYBOX and set(a.sky_files) & set(paths) for a in self.assets):
+			return []
+		if name is None:
+			found = skybox.find_faces(paths[0]) if layout in ("auto", "faces") and len(paths) == 1 else None
+			name = found[0] if found and len(paths) > 1 else re.sub(r"[^a-z0-9_]+", "_", paths[0].stem.lower()).strip("_") or "sky"
+		asset = Asset(paths[0], Kind.SKYBOX, {"name": name.lower(), "source": [str(p) for p in paths], "layout": layout})
+		asset.warnings += skybox.check_name(name)
+		self.assets.append(asset)
+		return [asset]
+
+	def sky(self, asset: Asset) -> skybox.Skybox:
+		"""Render and encode a panorama-style skybox, cached per file and sky settings."""
+		opts = self.settings.sky_options(asset.extra.get("layout", "auto"))
+		files = asset.sky_files
+		key = (tuple((str(p), p.stat().st_mtime_ns) for p in files), asset.extra["name"], opts.layout, opts.yaw,
+			opts.fov, opts.exposure, opts.size)
+		hit = self._sky_cache.get(id(asset))
+		if hit and hit[0] == key:
+			return hit[1]
+		sky = skybox.build(files, opts, asset.extra["name"])
+		for n in sky.notes:
+			if n not in asset.warnings:
+				asset.warnings.append(n)
+		self._sky_cache[id(asset)] = (key, sky)
+		return sky
 
 	def _add_rose_list(self, path: Path) -> list[Asset]:
 		"""One asset per object of a .zsc or character of a .chr."""
@@ -285,7 +336,7 @@ class Project:
 					kids += [SEQ_PREFIX + sq.name for sq in model.sequences]
 				return kids
 			if asset.kind == Kind.SKYBOX:
-				return list(images.GC_SKY_SUFFIXES)
+				return list(images.GC_SKY_SUFFIXES) + ([SKY_NET] if "source" in asset.extra else [])
 		except (OSError, ValueError, Exception) as exc:	# noqa: BLE001 - malformed input should not crash the UI
 			asset.warnings.append(f"inspect failed: {exc}")
 		return []
@@ -352,6 +403,21 @@ class Project:
 			src = images.load_rgba(asset.path, asset.warnings)
 			entry = images.encode_image(src, s.image, asset.path.stem)
 			return _texture_preview(asset.name, src, entry)
+		if k == Kind.SKYBOX and "source" in asset.extra:
+			sky = self.sky(asset)
+			info = {"Layout": sky.layout, "Sky name": sky.name, "Yaw": f"{s.sky_yaw:g}° (centre → "
+				f"{skybox.SIDES[round(s.sky_yaw / 90) % 4]})", "Files": f"media/sky_{sky.name}{{rt,bk,lf,ft,up,dn}}.cmp"}
+			dec = sky.decoded()
+			if child in (None, SKY_NET):
+				src = skybox.cross_preview(sky.sides, s.sky_yaw)
+				res = skybox.cross_preview(dec, s.sky_yaw)
+				info.update(_stats(src, res, sum(map(len, sky.cmpr.values())), "6 × CMPR, no mips"))
+				info["View"] = "cross, front in the middle"
+				return Preview(f"sky {sky.name}", src, res, info)
+			src = sky.sides[child]
+			res = dec[child]
+			info.update(_stats(src, res, len(sky.cmpr[child]), "CMPR, no mips"))
+			return Preview(f"{sky.name}{child}", src, res, info)
 		if k == Kind.SKYBOX:
 			side = child or "ft"
 			src = images.load_rgba(Path(asset.extra["sides"][side]))
@@ -574,6 +640,13 @@ class Project:
 						emit(asset, f"media/{stem}.gct", gct.write_gct([entry]))
 					if s.raw_cmp:
 						emit(asset, f"media/{stem}.cmp", entry.data[:entry.level_size(0)])
+				elif asset.kind == Kind.SKYBOX and "source" in asset.extra:
+					sky = self.sky(asset)
+					log(f"  {sky.layout} → 6 sides, yaw {s.sky_yaw:g}°")
+					for n in sky.notes:
+						log("  note: " + n)
+					for rel, data in sky.files().items():
+						emit(asset, rel, data)
 				elif asset.kind == Kind.SKYBOX:
 					name = asset.extra["name"]
 					for sfx in images.GC_SKY_SUFFIXES:

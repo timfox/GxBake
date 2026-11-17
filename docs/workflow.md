@@ -54,6 +54,22 @@ gxbake convert src/valve -o staged/valve --cache ~/.cache/gxbake \
 - `--mdl-anim-step 2` halves the animation frames in every `gc_studio` model (see step 6).
 - `--cache` keeps encoded CMPR between runs, so a second run only encodes what changed.
 
+### Skies
+
+A map's sky comes from `gfx/env/<skyname><side>.tga` when the BSP is converted.
+To give a map a new sky, or to bring one in from a panorama, make the sides with
+`sky` and set the map's worldspawn `"skyname"` to the same name:
+
+```sh
+gxbake sky art/sunset_4k.hdr -o staged/valve --name sunset --preview sunset.png
+```
+
+It reads equirectangular panoramas (including `.hdr`), cubemap crosses and strips,
+six face images and flat photos, and writes the six 8 KiB sides. `--yaw` turns
+the sky (270, the default, puts the panorama's centre on the `ft` side). The six
+sides live in a fixed 48 KiB block, so a sky never counts against a map's texture
+pool.
+
 ## 4. Check the budget
 
 ```sh
