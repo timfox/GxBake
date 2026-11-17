@@ -49,10 +49,12 @@ _MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS))
 _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
 _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
 _ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
+_USD_GLOBS = " ".join(f"*{e}" for e in sorted(models.USD_EXTENSIONS))
 FILE_FILTER = (
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"{_MODEL_GLOBS} {_ROSE_GLOBS});;"
+	f"{_MODEL_GLOBS} {_USD_GLOBS} {_ROSE_GLOBS});;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
+	f"USD scenes via FreeUSD ({_USD_GLOBS});;"
 	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
 	f"ROSE Online models ({_ROSE_GLOBS});;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
@@ -141,7 +143,7 @@ class SettingsPanel(QWidget):
 		f.addRow("Sprite scale ÷", self.spr_scale)
 		outer.addWidget(mdl)
 
-		imp = QGroupBox("3D model import (Assimp, Source, Quake)")
+		imp = QGroupBox("3D model import (Assimp, USD, Source, Quake)")
 		f = QFormLayout(imp)
 		if not models.available():
 			warn = QLabel("assimp-py is not installed, so OBJ/FBX/glTF files can't be read.\npip install assimp-py")
@@ -149,6 +151,12 @@ class SettingsPanel(QWidget):
 			f.addRow(warn)
 		elif not models.skeletal_supported():
 			warn = QLabel("This assimp-py has no bone API (needs 1.2+ on Python 3.12+);\nmodels import static.")
+			warn.setStyleSheet("color: #d9a63c;")
+			f.addRow(warn)
+		from ..core import usd as _usd
+
+		if not _usd.available():
+			warn = QLabel("FreeUSD is not installed, so .usd/.usda/.usdz files can't be read.\npip install 'gxbake[usd]'")
 			warn.setStyleSheet("color: #d9a63c;")
 			f.addRow(warn)
 		self.model_scale = QDoubleSpinBox()

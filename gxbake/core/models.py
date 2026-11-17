@@ -36,6 +36,8 @@ MODEL_EXTENSIONS = {
 }
 # Animation-only files, used as <model>@<clip>.<ext> clips.
 CLIP_EXTENSIONS = MODEL_EXTENSIONS | {".bvh", ".md5anim"}
+# USD stages, read through FreeUSD (usd.py) rather than Assimp. Their clips are USD files too.
+USD_EXTENSIONS = {".usd", ".usda", ".usdc", ".usdz"}
 
 # GoldSrc / Xash studio limits (studio.h).
 MAXSTUDIOVERTS = 2048
@@ -236,9 +238,10 @@ def clip_base(path: Path) -> "Path | None":
 	if "@" not in path.stem:
 		return None
 	base = path.stem.split("@", 1)[0].lower()
+	exts = USD_EXTENSIONS if path.suffix.lower() in USD_EXTENSIONS else MODEL_EXTENSIONS
 	try:
 		for p in path.parent.iterdir():
-			if p.is_file() and p.stem.lower() == base and p.suffix.lower() in MODEL_EXTENSIONS:
+			if p.is_file() and p.stem.lower() == base and p.suffix.lower() in exts:
 				return p
 	except OSError:
 		pass
@@ -247,10 +250,12 @@ def clip_base(path: Path) -> "Path | None":
 
 def clip_files(path: Path) -> list[Path]:
 	"""Unity-style animation clips next to the model: <stem>@<clip>.<ext>."""
+	path = Path(path)
+	exts = USD_EXTENSIONS if path.suffix.lower() in USD_EXTENSIONS else CLIP_EXTENSIONS
 	try:
 		return sorted(p for p in path.parent.iterdir()
 			if p.is_file() and p.stem.lower().startswith(path.stem.lower() + "@")
-			and p.suffix.lower() in CLIP_EXTENSIONS)
+			and p.suffix.lower() in exts)
 	except OSError:
 		return []
 
@@ -275,11 +280,15 @@ def native_format(path: Path) -> str | None:
 def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
 	"""Read a model into triangulated submeshes, bones and sequences.
 
-	Source (.mdl v44-49) and Quake (.mdl IDPO) models are parsed natively;
-	everything else goes through Assimp.
+	Source (.mdl v44-49) and Quake (.mdl IDPO) models are parsed natively,
+	USD stages go through FreeUSD, and everything else goes through Assimp.
 	"""
 	opts = opts or ModelOptions()
 	path = Path(path)
+	if path.suffix.lower() in USD_EXTENSIONS:
+		from .usd import import_usd
+
+		return import_usd(path, opts)
 	native = native_format(path)
 	if native == "source":
 		from .source_mdl import import_source

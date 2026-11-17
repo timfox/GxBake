@@ -15,6 +15,7 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | BSP v30, Quake BSP v29 | `media/wt_<map>.gct` (world textures resolved through the map's WADs, or embedded with the Quake palette) and its sky | `build_world_texture_packs`, `wt_read_wads` |
 | Studio `.mdl` | `gc_studio/<name>.mdl` (lean mesh) and `gc_studio/<name>t.mdl` (downsampled skins) | `lean_studio_mesh_bytes`, `lean_studio_tex_companion_bytes` |
 | 3D models via Assimp (OBJ, FBX, glTF/GLB, DAE, 3DS, Blend, MD2/MD3/MD5, IQM, B3D, SMD, MS3D and ~25 more) | `models/<name>.mdl` (studio MDL v10 with bones, sequences and paletted skins), then the same `gc_studio/<name>.mdl` + `<name>t.mdl` as a studio model | `models.import_model`, `models.build_studio_mdl`, then the two functions above |
+| USD stages via FreeUSD (`.usda`, `.usd`, `.usdz`; skinned meshes, UsdPreviewSurface textures, UsdSkel animation) | the same `models/` and `gc_studio/` outputs as an Assimp model | `usd.import_usd`, then `models.build_studio_mdl` |
 | Source `.mdl` (v44–49) + `.vvd` + `.vtx`, Quake `.mdl` | the same `models/` and `gc_studio/` outputs as an Assimp model | `source_mdl.import_source`, `quake.import_alias`, then `models.build_studio_mdl` |
 | Sprite `.spr` (Half-Life, Quake), Quake II `.sp2` | `sprites/<name>.spr`: a Half-Life sprite, downsampled, keeping thin alpha-test strokes | `quake.hl_sprite_bytes`, `lean_hl_spr_bytes` |
 | ROSE Online `.zms` meshes, `.zsc` object lists, `.chr` character lists (with `.zmd` skeletons, `.zmo` motions, `.dds` textures) | the same `models/` + `gc_studio/` studio models, one per object or character | `rose.import_rose`, then as above |
@@ -137,6 +138,12 @@ ROSE is Z-up like GoldSrc. Settings: **Units per metre** (39.37 keeps real size)
 - Expand a WAD, BSP, model, texture pack or skybox to preview each texture in it.
 - **Add Skybox…** makes the six sky sides from a panorama, cubemap cross or strip, photo, or six face images (see [Skies from panoramas](#skies-from-panoramas)).
 - The middle panes show the source next to the decoded GameCube result, with PSNR and byte counts in the **Inspector** tab.
+## USD import (FreeUSD)
+
+`.usda`, `.usd` and `.usdz` files are read with [FreeUSD](https://github.com/gopexllc/freeusd), a clean-room OpenUSD implementation, and baked into the same studio model as an Assimp import. GxBake opens and composes the stage (sublayers, references, payloads), then reads every visible mesh with its normals and UVs, the UsdPreviewSurface colour texture of each bound material (GeomSubsets included), UsdSkel skeletons with the skinned points on their heaviest joint, the SkelAnimation on the stage timeline, and xformOp animation of rigid meshes. `<model>@<clip>.usda` files beside the model add sequences. The stage's `upAxis` and `metersPerUnit` set the axis swap and scale, so a centimetre Y-up character arrives at its real size in inches; **Scale** multiplies on top.
+
+FreeUSD builds a C++ extension, so it is an optional extra: `pip install -e ".[usd]"` (needs CMake and a C++17 compiler; the first build takes several minutes). Binary `.usdc` layers, and `.usdz` packages that hold one, aren't decoded by FreeUSD yet: save them as USDA first (`usdcat -o model.usda model.usdc`). [docs/usd.md](docs/usd.md) lists what is read and the FreeUSD gaps GxBake works around.
+
 - The **Settings** tab holds the optimisation knobs: max texture size, mipmaps, alpha mode and cutoff, resize filter, packing, sky size, model skin size, sprite scale, GCVID size and frame rate, extra WAD search folders, and an encode cache. Changes re-render the preview.
 - **Convert Selected** or **Convert All** writes into the output folder. The status bar shows the total against the 24 MiB of main RAM.
 
@@ -170,7 +177,7 @@ The executable opens the app when run with no arguments or with file paths. With
 ## Layout
 
 - `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, the native readers `source_mdl`, `vtf`, `quake`, `archives`, and `usd` for FreeUSD).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
 - `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.

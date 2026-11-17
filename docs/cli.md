@@ -56,8 +56,8 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--mdl-max-edge MDL_MAX_EDGE` | `64` | largest skin side in gc_studio/<name>t.mdl |
 | `--mdl-anim-step MDL_ANIM_STEP` | `1` | keep every Nth animation frame in gc_studio/<name>.mdl (seqgroup 0 only) |
 | `--spr-scale SPR_SCALE` | `2` | sprite downscale factor |
-| `--model-scale MODEL_SCALE` | `1.0` | 3D model import: source units → GoldSrc units |
-| `--model-up {y,z}` | `y` | 3D model import: source up axis |
+| `--model-scale MODEL_SCALE` | `1.0` | 3D model import: source units → GoldSrc units (USD: multiplies the stage's metersPerUnit scale) |
+| `--model-up {y,z}` | `y` | 3D model import: source up axis (USD files use their own upAxis) |
 | `--model-skin-max-edge MODEL_SKIN_MAX_EDGE` | `256` | 3D model import: largest skin side in models/<name>.mdl |
 | `--no-model-full` |  | skip models/<name>.mdl for imported 3D models |
 | `--model-static` |  | 3D model import: ignore skeletons and animations |

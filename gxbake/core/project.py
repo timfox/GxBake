@@ -74,7 +74,7 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.VIDEO
 	if ext in media.AUDIO_EXTENSIONS:
 		return Kind.AUDIO
-	if ext in models.MODEL_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
+	if ext in models.MODEL_EXTENSIONS or ext in models.USD_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
 		return Kind.MODEL
 	return {
 		".wad": Kind.WAD,
@@ -354,6 +354,8 @@ class Project:
 					d.update(source_mdl.source_info(asset.path))
 				elif native == "quake":
 					d["Source format"] = "Quake alias model (IDPO v6)"
+				elif asset.path.suffix.lower() in models.USD_EXTENSIONS:
+					d["Source format"] = "USD stage (read with FreeUSD)"
 				model, mdl = self.imported_model(asset)
 				lo, hi = model.bounds()
 				d["Meshes"] = len(model.meshes)
