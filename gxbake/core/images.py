@@ -20,7 +20,8 @@ GC_SKY_SUFFIXES = ("rt", "bk", "lf", "ft", "up", "dn")
 IMAGE_EXTENSIONS = {".png", ".tga", ".bmp", ".jpg", ".jpeg", ".gif", ".webp", ".dds", ".tif", ".tiff", ".psd", ".pcx", ".qoi", ".ppm",
 	".vtf",	# Source (vtf.py)
 	".wal",	# Quake II (quake.py)
-	".blp", ".ftc", ".ftu"}	# Blizzard BLP1/BLP2 and Fat textures, through Pillow
+	".blp", ".ftc", ".ftu",	# Blizzard BLP1/BLP2 and Fat textures, through Pillow
+	".hdr"}	# Radiance HDR, tone-mapped (skybox.py)
 
 
 def load_rgba(path: Path, warnings: list[str] | None = None) -> "np.ndarray":
@@ -35,6 +36,11 @@ def load_rgba(path: Path, warnings: list[str] | None = None) -> "np.ndarray":
 		from .quake import load_wal
 
 		return load_wal(path, warnings)
+	if ext == ".hdr":
+		from .skybox import read_hdr, tonemap
+
+		rgb = tonemap(read_hdr(path))
+		return np.dstack([rgb, np.full(rgb.shape[:2], 255, np.uint8)])
 	with Image.open(path) as img:
 		return np.asarray(img.convert("RGBA")).copy()
 

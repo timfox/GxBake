@@ -9,6 +9,7 @@
 	gxbake slim <model.mdl> [-o OUT] [--step 2] [--stub 'death*']
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
+	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
 	gxbake gui [files...]
 """
 
@@ -21,7 +22,7 @@ from pathlib import Path
 from . import __version__
 import json
 
-from .core import audit, budget, disc, sfx
+from .core import audit, budget, disc, sfx, skybox
 from .core.project import CONVERTIBLE, Project, Settings
 
 
@@ -50,6 +51,8 @@ def _convert(args) -> int:
 	s.rose_yaw = args.rose_yaw
 	s.rose_entries = args.rose_entry or []
 	s.video_width, s.video_height, s.video_fps = args.video_width, args.video_height, args.video_fps
+	s.sky_yaw, s.sky_fov, s.sky_exposure = args.sky_yaw, args.sky_fov, args.sky_exposure
+	s.detect_panoramas = not args.no_sky_detect
 	proj = Project(s)
 	for p in args.paths:
 		proj.add_path(Path(p))
@@ -223,6 +226,42 @@ def _extract(args) -> int:
 	for p in args.archives:
 		total += archives.extract(Path(p), Path(args.output), args.match)
 	return 0 if total else 1
+
+
+def _sky(args) -> int:
+	opts = skybox.SkyOptions(layout=args.layout, yaw=args.yaw, fov=args.fov, exposure=args.exposure, size=args.size)
+	paths = [Path(p) for p in args.inputs]
+	try:
+		sky = skybox.build(paths, opts, args.name)
+	except (OSError, ValueError) as exc:
+		print(f"error: {exc}", file=sys.stderr)
+		return 1
+	out = Path(args.output)
+	for rel, data in sky.files().items():
+		dest = out / rel
+		dest.parent.mkdir(parents=True, exist_ok=True)
+		dest.write_bytes(data)
+	from PIL import Image
+
+	if args.env:
+		src = skybox.open_source(paths, opts, sky.name)
+		for side in skybox.SIDES:
+			dest = out / "gfx/env" / f"{sky.name}{side}.tga"
+			dest.parent.mkdir(parents=True, exist_ok=True)
+			Image.fromarray(skybox.render_side(src, side, args.env, opts.supersample)).save(dest)
+	if args.preview:
+		Image.fromarray(skybox.cross_preview(sky.decoded(), args.yaw)).save(args.preview)
+	total = sum(map(len, sky.cmpr.values()))
+	print(f"sky {sky.name}: {sky.layout} → media/sky_{sky.name}{{{','.join(skybox.SIDES)}}}.cmp, "
+		f"6 × {sky.sides['rt'].shape[0]}² CMPR, {audit.human_bytes(total)}")
+	if args.env:
+		print(f"  also gfx/env/{sky.name}<side>.tga at {args.env}²")
+	if args.preview:
+		print(f"  preview (decoded, front in the middle): {args.preview}")
+	for n in sky.notes:
+		print(f"  note: {n}", file=sys.stderr)
+	print(f'  maps use it with worldspawn "skyname" "{sky.name}"')
+	return 0
 
 
 def _image_opts(args):
@@ -424,6 +463,12 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--wt-pool", default="448K", help="pool size for --fit-world")
 	c.add_argument("--wad-dir", action="append", help="extra WAD search folder (repeatable)")
 	c.add_argument("--cache", help="CMPR encode cache folder")
+	c.add_argument("--no-sky-detect", action="store_true",
+		help="keep big 2:1 images, crosses, strips and .hdr files as textures instead of making skies of them")
+	c.add_argument("--sky-yaw", type=float, default=skybox.DEFAULT_YAW,
+		help="panorama skies: engine yaw the image centre faces (0 rt, 90 bk, 180 lf, 270 ft)")
+	c.add_argument("--sky-fov", type=float, default=180.0, help="flat photos as skies: horizontal degrees the photo covers")
+	c.add_argument("--sky-exposure", type=float, default=0.0, help=".hdr panoramas: stops brighter (+) or darker (-) than auto")
 	c.set_defaults(fn=_convert)
 
 	i = sub.add_parser("inspect", help="print what GxBake sees in a file or folder")
@@ -485,6 +530,24 @@ def build_parser() -> argparse.ArgumentParser:
 	sl.add_argument("--stub", action="append", metavar="PATTERN", help="reduce matching sequences to one frame")
 	sl.add_argument("--keep", action="append", metavar="PATTERN", help="never touch matching sequences")
 	sl.set_defaults(fn=_slim)
+
+	sk = sub.add_parser("sky", help="turn a panorama, cubemap cross/strip, photo or six faces into the port's sky sides")
+	sk.add_argument("inputs", nargs="+",
+		help="one image (equirectangular panorama, .hdr, 4:3/3:4 cross, 6:1 strip or a photo), "
+		"six face images, or a folder holding them")
+	sk.add_argument("-o", "--output", required=True, help="staged gamedir; sides go to media/sky_<name><side>.cmp")
+	sk.add_argument("--name", help="sky name (worldspawn \"skyname\"); default from the file name")
+	sk.add_argument("--layout", choices=skybox.LAYOUTS, default="auto", help="how to read the input; auto guesses from its shape")
+	sk.add_argument("--yaw", type=float, default=skybox.DEFAULT_YAW,
+		help="engine yaw the image centre (or the cross's front) faces: 0 rt, 90 bk, 180 lf, 270 ft")
+	sk.add_argument("--fov", type=float, default=180.0,
+		help="photo layout: horizontal degrees the photo covers; mirrored copies fill the rest")
+	sk.add_argument("--exposure", type=float, default=0.0, help=".hdr input: stops brighter (+) or darker (-) than auto")
+	sk.add_argument("--size", type=int, default=skybox.SKY_SIZE, help="side size; the port loads only 128")
+	sk.add_argument("--env", type=int, metavar="SIZE",
+		help="also write gfx/env/<name><side>.tga at SIZE (PC builds, the disc builder)")
+	sk.add_argument("--preview", metavar="PNG", help="write the decoded sides as a cross to check seams and orientation")
+	sk.set_defaults(fn=_sky)
 
 	_add_pack_parser(sub)
 

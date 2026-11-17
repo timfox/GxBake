@@ -23,6 +23,7 @@ build or CI job.
 | [`disc`](#gxbake-disc) | disc usage: sector cost, duplicate files and textures, files no map names |
 | [`extract`](#gxbake-extract) | unpack a Quake/GoldSrc .pak, Source .vpk or .pk3 archive |
 | [`slim`](#gxbake-slim) | show where a studio model's bytes go and thin its animation |
+| [`sky`](#gxbake-sky) | turn a panorama, cubemap cross/strip, photo or six faces into the port's sky sides |
 | [`pack`](#gxbake-pack) | list, extract, build and edit .gct texture packs |
 | [`gui`](#gxbake-gui) | open the desktop app |
 
@@ -38,7 +39,8 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale ROSE_SCALE]
     [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--video-width VIDEO_WIDTH] [--video-height
     VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR]
-    [--cache CACHE]
+    [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure
+    SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |
@@ -72,6 +74,10 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--wt-pool WT_POOL` | `448K` | pool size for --fit-world |
 | `--wad-dir WAD_DIR` |  | extra WAD search folder (repeatable) |
 | `--cache CACHE` |  | CMPR encode cache folder |
+| `--no-sky-detect` |  | keep big 2:1 images, crosses, strips and .hdr files as textures instead of making skies of them |
+| `--sky-yaw SKY_YAW` | `270.0` | panorama skies: engine yaw the image centre faces (0 rt, 90 bk, 180 lf, 270 ft) |
+| `--sky-fov SKY_FOV` | `180.0` | flat photos as skies: horizontal degrees the photo covers |
+| `--sky-exposure SKY_EXPOSURE` |  | .hdr panoramas: stops brighter (+) or darker (-) than auto |
 
 ## `gxbake inspect`
 
@@ -202,6 +208,29 @@ gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTER
 | `--step STEP` | `1` | keep every Nth animation frame (fps adjusted, same duration) |
 | `--stub PATTERN` |  | reduce matching sequences to one frame (repeatable) |
 | `--keep PATTERN` |  | never touch matching sequences (repeatable) |
+
+## `gxbake sky`
+
+Turn a panorama, cubemap cross/strip, photo or six faces into the port's sky sides.
+
+```
+gxbake sky inputs [inputs ...] --output OUTPUT [--name NAME] [--layout
+    {auto,equirect,cross,strip,faces,photo}] [--yaw YAW] [--fov FOV] [--exposure EXPOSURE] [--size
+    SIZE] [--env SIZE] [--preview PNG]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `inputs` … |  | one image (equirectangular panorama, .hdr, 4:3/3:4 cross, 6:1 strip or a photo), six face images, or a folder holding them |
+| `-o OUTPUT`, `--output OUTPUT` |  | **Required.** staged gamedir; sides go to media/sky_<name><side>.cmp |
+| `--name NAME` |  | sky name (worldspawn "skyname"); default from the file name |
+| `--layout {auto,equirect,cross,strip,faces,photo}` | `auto` | how to read the input; auto guesses from its shape |
+| `--yaw YAW` | `270.0` | engine yaw the image centre (or the cross's front) faces: 0 rt, 90 bk, 180 lf, 270 ft |
+| `--fov FOV` | `180.0` | photo layout: horizontal degrees the photo covers; mirrored copies fill the rest |
+| `--exposure EXPOSURE` |  | .hdr input: stops brighter (+) or darker (-) than auto |
+| `--size SIZE` | `128` | side size; the port loads only 128 |
+| `--env SIZE` |  | also write gfx/env/<name><side>.tga at SIZE (PC builds, the disc builder) |
+| `--preview PNG` |  | write the decoded sides as a cross to check seams and orientation |
 
 ## `gxbake pack`
 

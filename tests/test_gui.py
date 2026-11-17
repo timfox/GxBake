@@ -84,3 +84,36 @@ def test_rose_character_preview(tmp_path):
 	assert w.preview_title.text().endswith("▶ attack")
 	assert w.gx_pane.canvas._image is not None
 	w.close()
+
+
+def test_panorama_sky_preview(tmp_path):
+	from PIL import Image
+
+	from gxbake.gui.main_window import MainWindow
+
+	from .test_skybox import direction_panorama
+
+	Image.fromarray(direction_panorama(1024)).save(tmp_path / "noon.png")
+	app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+	w = MainWindow()
+	w.qsettings.clear()
+	w.out_edit.setText(str(tmp_path / "out"))
+	w.add_paths([str(tmp_path / "noon.png")])
+	item = w.tree.topLevelItem(0)
+	assert item.text(1) == "Skybox"
+	item.setExpanded(True)
+	assert item.child(item.childCount() - 1).text(0) == "all sides"
+	w.tree.setCurrentItem(item.child(item.childCount() - 1))
+	end = time.time() + 20
+	while time.time() < end and ("rendering" in w.preview_title.text() or w.inspector_form.rowCount() == 0):
+		app.processEvents()
+		time.sleep(0.01)
+	assert w.preview_title.text() == "sky noon"
+	assert w.gx_pane.canvas._image is not None
+	w.convert(selected_only=False)
+	end = time.time() + 30
+	while time.time() < end and w.busy:
+		app.processEvents()
+		time.sleep(0.01)
+	assert (tmp_path / "out/media/sky_noonft.cmp").stat().st_size == 8192
+	w.close()

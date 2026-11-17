@@ -10,6 +10,7 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | --- | --- | --- |
 | PNG / TGA / BMP / JPG / DDS / TIFF / PSD / PCX / QOI, Source `.vtf`, Quake II `.wal`, Blizzard `.blp` | `media/<pack>.gct`: CMPR, power-of-two, mip chain, 1-bit alpha | `gx_cmpr_encode_blocks`, `wt_encode` mip loop |
 | Skybox (`<name>rt/bk/lf/ft/up/dn`) | `media/sky_<name><side>.cmp`: 128² CMPR, 8 KiB per side | `gx_cmpr_encode`, `build_sky_cmpr_overlays` |
+| Panoramas (equirectangular, Radiance `.hdr`), cubemap crosses and strips, six named faces, flat photos | the same six `media/sky_<name><side>.cmp`, rendered in the engine's orientation | `skybox.build` |
 | WAD3, Quake WAD2 | `media/<wad>.gct` | `wt_read_miptex`, `wt_encode` |
 | BSP v30, Quake BSP v29 | `media/wt_<map>.gct` (world textures resolved through the map's WADs, or embedded with the Quake palette) and its sky | `build_world_texture_packs`, `wt_read_wads` |
 | Studio `.mdl` | `gc_studio/<name>.mdl` (lean mesh) and `gc_studio/<name>t.mdl` (downsampled skins) | `lean_studio_mesh_bytes`, `lean_studio_tex_companion_bytes` |
@@ -75,6 +76,31 @@ It also lists sprites, the sky and the BSP size, anything referenced but not sta
 
 Sequences are never removed, so the game DLL's sequence numbers and names stay valid. Only animation stored in the model itself is changed; sequences in external `<name>01.mdl` seqgroup files are left alone. Without `-o` it is a dry run. `gxbake convert --mdl-anim-step 2` applies the frame step to every `gc_studio/<name>.mdl` it writes.
 
+## Skies from panoramas
+
+`gxbake sky` (or **Add Skybox…** in the app) turns one image, or six, into the six sides the port's `R_GXSkyLoad` reads: `media/sky_<name>{rt,bk,lf,ft,up,dn}.cmp`, each exactly 128×128 CMPR with no mips (8 KiB; the engine refuses any other length and keeps all six in a 48 KiB block). Maps use the sky through worldspawn `"skyname" "<name>"`.
+
+```sh
+gxbake sky sunset.hdr -o staged/valve                       # equirectangular panorama
+gxbake sky alps_cross.png -o staged/valve --name alps        # 4:3 or 3:4 cross
+gxbake sky cube/ -o staged/valve --preview alps.png          # six faces in a folder
+gxbake sky vista.jpg -o staged/valve --fov 120 --env 512     # a flat photo, plus gfx/env TGAs
+```
+
+The input layout is guessed from its shape, or set with `--layout`:
+
+| Layout | Input |
+| --- | --- |
+| `equirect` | a 2:1 latitude/longitude panorama; `.hdr` files are tone-mapped (auto exposure, `--exposure` adds stops) |
+| `cross` | a 4:3 horizontal or 3:4 vertical cross, front face in the middle |
+| `strip` | six square faces in a row or column, in the order right, left, up, down, front, back (+X −X +Y −Y +Z −Z) |
+| `faces` | six files: `<name>rt/bk/lf/ft/up/dn` (GoldSrc sides, used as they are), `<name>_right/left/front/back/up/down` (or `top`/`bottom`), or `<name>_px/nx/py/ny/pz/nz` |
+| `photo` | any other single image: it covers `--fov` degrees of the horizon (180 by default), mirrored copies fill the rest so there is no seam, and its top and bottom rows fade into the zenith and nadir |
+
+Every source is resampled by direction, so each side comes out the way `R_GXDrawSkyBox` draws it (the same tables as `gl_warp.c`; a test checks against them). GoldSrc's names are not where you would guess: facing `ft` (−Y), `rt` (+X) is on your left and `lf` on your right, and `up`/`dn` are turned 90°. The front of the source (the panorama's centre) faces `--yaw`, in the engine's yaw angles: 270 (`ft`) by default, 0 `rt`, 90 `bk`, 180 `lf`. Each side is rendered from 4×4 lookups per texel, and sources larger than that are pre-filtered, so a 16K panorama does not alias.
+
+`--preview` writes the decoded sides as a cross, front in the middle, to check seams and orientation; `--env SIZE` also writes `gfx/env/<name><side>.tga` for PC builds and the disc builder. When `convert` or the app is given a 2:1 image at least 1024 wide, a `.hdr`, a 6:1 strip or a cross with empty corners, it makes a sky of it too (`--no-sky-detect`, or the **Skies from panoramas** settings, turn that off; smaller images stay textures). Expand a sky in the app to see each side or **all sides** as a cross.
+
 ## Source, Quake and Quake II formats
 
 These are read by GxBake itself (no Assimp), and each becomes what the GameCube port loads.
@@ -109,6 +135,7 @@ ROSE is Z-up like GoldSrc. Settings: **Units per metre** (39.37 keeps real size)
 
 - Drag files or a whole gamedir onto the window, or use **Add Files…** / **Add Folder…**.
 - Expand a WAD, BSP, model, texture pack or skybox to preview each texture in it.
+- **Add Skybox…** makes the six sky sides from a panorama, cubemap cross or strip, photo, or six face images (see [Skies from panoramas](#skies-from-panoramas)).
 - The middle panes show the source next to the decoded GameCube result, with PSNR and byte counts in the **Inspector** tab.
 - The **Settings** tab holds the optimisation knobs: max texture size, mipmaps, alpha mode and cutoff, resize filter, packing, sky size, model skin size, sprite scale, GCVID size and frame rate, extra WAD search folders, and an encode cache. Changes re-render the preview.
 - **Convert Selected** or **Convert All** writes into the output folder. The status bar shows the total against the 24 MiB of main RAM.
@@ -124,6 +151,7 @@ gxbake validate staged/valve   # same checks as the disc builder
 gxbake budget staged/valve     # per-map memory report
 gxbake extract hl2_misc_dir.vpk -o unpacked --match 'models/*' --match 'materials/*'
 gxbake pack list staged/valve/media/wt_c1a0.gct --sort size
+gxbake sky sunset.hdr -o staged/valve --name sunset
 ```
 
 Every command and option is listed in the [command line reference](docs/cli.md), and [the porting workflow](docs/workflow.md) shows how they fit together, from unpacking a game to a staged tree that fits the GameCube's memory. The reference is generated from the CLI itself: after changing an option, run `python -m gxbake.clidoc` (a test fails until you do).
@@ -137,11 +165,11 @@ pip install -e ".[dev]"
 pyinstaller packaging/gxbake.spec    # → dist/GxBake (GxBake.exe on Windows, GxBake.app on macOS)
 ```
 
-The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`, `disc`, `slim`, `pack`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
+The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`, `disc`, `slim`, `pack`, `sky`, `extract`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
 - `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
