@@ -7,6 +7,7 @@
 	gxbake fit <pack.gct> [-o OUT] [--pool 448K]
 	gxbake disc <staged gamedir> [--json]
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
+	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
 	gxbake gui [files...]
 """
 
@@ -42,6 +43,7 @@ def _convert(args) -> int:
 	s.model_clip_files = not args.no_model_clips
 	s.wt_fit = args.fit_world
 	s.wt_pool = budget.parse_size(args.wt_pool)
+	s.model_blend_bones = not args.no_blend_bones
 	s.rose_scale = args.rose_scale
 	s.rose_yaw = args.rose_yaw
 	s.rose_entries = args.rose_entry or []
@@ -180,11 +182,19 @@ def _add_budget_args(p) -> None:
 		help="split dimension the pool must manage (default 64; lower accepts softer textures)")
 	p.add_argument("--budget", action="append", metavar="NAME=SIZE",
 		help="override any budget, e.g. studio_arena=1.5M (repeatable)")
+def _extract(args) -> int:
+	from .core import archives
+
+	total = 0
+	for p in args.archives:
+		total += archives.extract(Path(p), Path(args.output), args.match)
+	return 0 if total else 1
 
 
 def main(argv: list[str] | None = None) -> int:
 	argv = sys.argv[1:] if argv is None else argv
 	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "budget", "fit", "sfx", "disc", "gui"):
+	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "extract", "gui"):
 		argv = ["gui", *argv]	# "Open with GxBake" / drag onto the executable
 	parser = argparse.ArgumentParser(prog="gxbake", description="Convert and optimise assets for the GameCube GX renderer.")
 	parser.add_argument("--version", action="version", version=f"GxBake {__version__}")
@@ -208,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
 	c.add_argument("--model-static", action="store_true", help="3D model import: ignore skeletons and animations")
 	c.add_argument("--model-fps", type=int, default=15, help="3D model import: animation sample rate")
 	c.add_argument("--no-model-clips", action="store_true", help="don't merge <name>@<clip>.<ext> animation files")
+	c.add_argument("--no-blend-bones", action="store_true",
+		help="Source models: snap blended vertices to one bone instead of adding helper bones")
 	c.add_argument("--rose-scale", type=float, default=39.37, help="ROSE Online models: GoldSrc units per metre")
 	c.add_argument("--rose-yaw", type=float, default=90.0, help="ROSE Online models: degrees to turn about Z (90 faces them +X)")
 	c.add_argument("--rose-entry", type=int, action="append",
@@ -267,6 +279,11 @@ def main(argv: list[str] | None = None) -> int:
 	dk.add_argument("--limit", type=int, default=15, help="rows per section")
 	dk.add_argument("--json", action="store_true")
 	dk.set_defaults(fn=_disc)
+	x = sub.add_parser("extract", help="unpack a Quake/GoldSrc .pak, Source .vpk or .pk3 archive")
+	x.add_argument("archives", nargs="+")
+	x.add_argument("-o", "--output", required=True)
+	x.add_argument("--match", action="append", help="only members matching this glob, e.g. 'models/*' (repeatable)")
+	x.set_defaults(fn=_extract)
 
 	g = sub.add_parser("gui", help="open the desktop app")
 	g.add_argument("paths", nargs="*")

@@ -65,8 +65,11 @@ def wad_entries(data: bytes) -> list[WadEntry]:
 	return out
 
 
-def wt_ingest_wad_file(found: dict, wad: Path) -> int:
-	"""Index every miptex (type 0x43) from one WAD; first entry wins. Returns new count."""
+def wt_ingest_wad_file(found: dict, wad: Path, kinds: tuple[int, ...] = (0x43,)) -> int:
+	"""Index every miptex (type 0x43) from one WAD; first entry wins. Returns new count.
+
+	kinds=(0x43, 0x44) also takes Quake WAD2 miptex, which carry no palette.
+	"""
 	try:
 		data = wad.read_bytes()
 	except OSError:
@@ -77,7 +80,7 @@ def wt_ingest_wad_file(found: dict, wad: Path) -> int:
 	added = 0
 	for i in range(count):
 		pos, disk, size, kind, comp, _pad, raw = struct.unpack_from("<iiibbh16s", data, table + i * 32)
-		if kind != 0x43 or comp:
+		if kind not in kinds or comp:
 			continue
 		name = raw.split(b"\0")[0].decode("latin-1").lower()
 		if name not in found:
@@ -87,10 +90,20 @@ def wt_ingest_wad_file(found: dict, wad: Path) -> int:
 
 
 def wad_miptex(path: Path) -> dict:
-	"""name -> (data, offset) for every miptex in one WAD."""
+	"""name -> (data, offset) for every miptex in one WAD (WAD3, or WAD2 with Quake miptex)."""
 	found: dict = {}
-	wt_ingest_wad_file(found, path)
+	wt_ingest_wad_file(found, path, (0x43, 0x44))
 	return found
+
+
+def read_miptex(data: bytes, offset: int, fallback_palette: "bytes | None" = None):
+	"""wt_read_miptex, falling back to a palette-less (Quake) miptex read with `fallback_palette`."""
+	mip = wt_read_miptex(data, offset)
+	if mip is None and fallback_palette is not None:
+		from .quake import quake_miptex
+
+		mip = quake_miptex(data, offset, fallback_palette)
+	return mip
 
 
 def wad_lump(wad: Path, name: str) -> bytes | None:

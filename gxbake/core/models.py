@@ -91,6 +91,7 @@ class ModelOptions:
 	anim_fps: int = 15	# sample rate for baked sequences
 	static: bool = False	# ignore skeletons and animations: one root bone, bind pose
 	clip_files: bool = True	# merge animations from <name>@<clip>.<ext> next to the model
+	blend_bones: bool = True	# native Source import: helper bones stand in for two-bone weights
 	rose_scale: float = 39.37	# ROSE Online models: GoldSrc units per metre (scale above is for Assimp only)
 	rose_yaw: float = 90.0	# ROSE Online models face -Y; turn about Z so they face GoldSrc's +X
 
@@ -254,11 +255,41 @@ def clip_files(path: Path) -> list[Path]:
 		return []
 
 
+def native_format(path: Path) -> str | None:
+	"""'source' or 'quake' when GxBake reads the file itself instead of Assimp."""
+	try:
+		with Path(path).open("rb") as f:
+			head = f.read(8)
+	except OSError:
+		return None
+	from .quake import is_alias_mdl
+	from .source_mdl import is_source_mdl
+
+	if is_source_mdl(head):
+		return "source"
+	if is_alias_mdl(head):
+		return "quake"
+	return None
+
+
 def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
-	"""Read any Assimp-supported file into triangulated submeshes, bones and sequences."""
+	"""Read a model into triangulated submeshes, bones and sequences.
+
+	Source (.mdl v44-49) and Quake (.mdl IDPO) models are parsed natively;
+	everything else goes through Assimp.
+	"""
 	opts = opts or ModelOptions()
-	ai = _assimp()
 	path = Path(path)
+	native = native_format(path)
+	if native == "source":
+		from .source_mdl import import_source
+
+		return import_source(path, opts)
+	if native == "quake":
+		from .quake import import_alias
+
+		return import_alias(path, opts)
+	ai = _assimp()
 	scene = _read_scene(ai, path)
 	if not scene.meshes:
 		raise ValueError(f"{path.name}: no meshes")

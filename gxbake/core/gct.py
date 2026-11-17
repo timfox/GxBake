@@ -26,6 +26,7 @@ from .cmpr import cmpr_decode, cmpr_size, gx_cmpr_encode_blocks
 from .goldsrc import (
 	bsp_miptex_offsets,
 	is_world_diffuse,
+	read_miptex,
 	wt_bsp_wad_basenames,
 	wt_ingest_wad_file,
 	wt_read_miptex,
@@ -224,6 +225,7 @@ class WorldPackReport:
 	blob_bytes: int = 0
 	missing: list[str] = field(default_factory=list)
 	wads: list[str] = field(default_factory=list)
+	notes: list[str] = field(default_factory=list)
 
 
 def build_world_texture_pack(
@@ -238,8 +240,18 @@ def build_world_texture_pack(
 	data = bsp.read_bytes()
 	if gamedir is None:
 		gamedir = bsp.parent.parent if bsp.parent.name.lower() == "maps" else bsp.parent
-	wads, loaded = collect_wads(data, gamedir, wad_dirs)
+	quake_pal = None
+	if data[:4] == struct.pack("<i", 29):	# Quake BSP: miptex without palettes, WADs not referenced
+		from .quake import GREY_PALETTE, quake_palette
+
+		quake_pal = quake_palette(bsp)
+		wads, loaded = {}, []
+	else:
+		wads, loaded = collect_wads(data, gamedir, wad_dirs)
 	report = WorldPackReport(wads=loaded)
+	if data[:4] == struct.pack("<i", 29) and quake_pal is None:
+		report.notes.append("Quake palette (gfx/palette.lmp) not found; greyscale used")
+		quake_pal = GREY_PALETTE
 	names = bsp_miptex_offsets(data)
 	todo = []
 	seen = set()
@@ -252,7 +264,7 @@ def build_world_texture_pack(
 	for i, (name, off) in enumerate(todo):
 		if progress:
 			progress(i, len(todo), name)
-		mip = wt_read_miptex(data, off)
+		mip = read_miptex(data, off, quake_pal)
 		if mip is None and name in wads:
 			mip = wt_read_miptex(*wads[name])
 		if mip is None:
@@ -278,16 +290,20 @@ def build_wad_texture_pack(
 	cache: Path | None = None,
 	include: set[str] | None = None,
 	progress: Callable[[int, int, str], None] | None = None,
+	palette: bytes | None = None,
 ) -> tuple[bytes | None, list[GctEntry]]:
-	"""A GCWT pack holding every miptex in one WAD (or the `include` subset)."""
+	"""A GCWT pack holding every miptex in one WAD (or the `include` subset).
+
+	Quake WAD2 miptex have no palette; `palette` (Quake's palette.lmp) colours them.
+	"""
 	found: dict = {}
-	wt_ingest_wad_file(found, wad)
+	wt_ingest_wad_file(found, wad, (0x43, 0x44))
 	names = [n for n in found if include is None or n in include]
 	entries = []
 	for i, name in enumerate(names):
 		if progress:
 			progress(i, len(names), name)
-		mip = wt_read_miptex(*found[name])
+		mip = read_miptex(*found[name], palette)
 		if mip is None:
 			continue
 		_, w, h, pixels, palette = mip

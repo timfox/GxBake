@@ -7,6 +7,7 @@ module only decides which one applies to a file and where its output goes.
 from __future__ import annotations
 
 import json
+import struct
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -16,6 +17,7 @@ from typing import Callable
 import numpy as np
 
 from . import audit, budget, gct, goldsrc, images, media, models, rose, sprite, studio
+from . import audit, gct, goldsrc, images, media, models, quake, rose, sprite, studio
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -45,8 +47,26 @@ class Kind(str, Enum):
 CONVERTIBLE = {Kind.IMAGE, Kind.SKYBOX, Kind.WAD, Kind.BSP, Kind.MDL, Kind.MODEL, Kind.SPR, Kind.VIDEO, Kind.AUDIO}
 
 
+def _head(path: Path, n: int = 8) -> bytes:
+	try:
+		with path.open("rb") as f:
+			return f.read(n)
+	except OSError:
+		return b""
+
+
 def detect_kind(path: Path) -> Kind:
 	ext = path.suffix.lower()
+	if ext == ".mdl":
+		# GoldSrc studio (IDST v10), Source studio (IDST v44-49) and Quake alias (IDPO) share .mdl.
+		head = _head(path)
+		if models.native_format(path):
+			return Kind.MODEL
+		if head[:4] == b"IDSQ":
+			return Kind.UNKNOWN	# a GoldSrc sequence group (<name>01.mdl), read with its model
+		return Kind.MDL
+	if ext == ".sp2":
+		return Kind.SPR
 	if ext in images.IMAGE_EXTENSIONS:
 		return Kind.IMAGE
 	if ext in media.VIDEO_EXTENSIONS:
@@ -84,6 +104,7 @@ class Settings:
 	model_anim_fps: int = 15
 	model_static: bool = False	# ignore skeletons/animations
 	model_clip_files: bool = True	# merge <name>@<clip>.<ext> animations
+	model_blend_bones: bool = True	# Source models: helper bones for two-bone weights
 	rose_scale: float = 39.37	# ROSE Online: GoldSrc units per metre
 	rose_yaw: float = 90.0	# ROSE Online: turn about Z (ROSE models face -Y, GoldSrc +X)
 	rose_entries: list[int] = field(default_factory=list)	# only these ZSC objects / CHR characters ([] = all)
@@ -104,7 +125,7 @@ class Settings:
 	def model_options(self) -> models.ModelOptions:
 		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
 			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files,
-			self.rose_scale, self.rose_yaw)
+			self.model_blend_bones, self.rose_scale, self.rose_yaw)
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -275,6 +296,13 @@ class Project:
 			if asset.kind == Kind.MDL:
 				d.update(studio.studio_info(asset.path.read_bytes()))
 			elif asset.kind == Kind.MODEL:
+				native = models.native_format(asset.path)
+				if native == "source":
+					from . import source_mdl
+
+					d.update(source_mdl.source_info(asset.path))
+				elif native == "quake":
+					d["Source format"] = "Quake alias model (IDPO v6)"
 				model, mdl = self.imported_model(asset)
 				lo, hi = model.bounds()
 				d["Meshes"] = len(model.meshes)
@@ -288,9 +316,18 @@ class Project:
 				if asset.is_rose:
 					d["Source"] = "ROSE Online" + (f", entry {asset.entry}" if asset.entry is not None else "")
 			elif asset.kind == Kind.SPR:
-				d.update(sprite.spr_info(asset.path.read_bytes()))
+				raw = asset.path.read_bytes()
+				if raw[:4] == b"IDS2" or (raw[:4] == b"IDSP" and struct.unpack_from("<i", raw, 4)[0] == 1):
+					d["Source format"] = "Quake II sprite" if raw[:4] == b"IDS2" else "Quake sprite (v1)"
+					raw = quake.hl_sprite_bytes(asset.path, asset.warnings)
+				d.update(sprite.spr_info(raw))
+			elif asset.kind == Kind.IMAGE and asset.path.suffix.lower() == ".vtf":
+				from . import vtf
+
+				d.update(vtf.vtf_info(asset.path.read_bytes()))
 			elif asset.kind == Kind.BSP:
 				data = asset.path.read_bytes()
+				d["BSP version"] = quake.bsp_version(data)
 				d["Sky"] = goldsrc.map_sky_name(data) or "-"
 				d["WADs"] = ", ".join(goldsrc.wt_bsp_wad_basenames(data)) or "-"
 			elif asset.kind == Kind.GCT:
@@ -312,7 +349,7 @@ class Project:
 		s = self.settings
 		k = asset.kind
 		if k == Kind.IMAGE:
-			src = images.load_rgba(asset.path)
+			src = images.load_rgba(asset.path, asset.warnings)
 			entry = images.encode_image(src, s.image, asset.path.stem)
 			return _texture_preview(asset.name, src, entry)
 		if k == Kind.SKYBOX:
@@ -367,10 +404,10 @@ class Project:
 		if k == Kind.MODEL:
 			return self._model_preview(asset, child)
 		if k == Kind.SPR:
-			raw = asset.path.read_bytes()
+			raw = quake.hl_sprite_bytes(asset.path, asset.warnings)
 			frames = sprite.spr_frames(raw)
 			src = frames[0] if frames else None
-			lean = sprite.lean_hl_spr_bytes(asset.path, s.spr_scale)
+			lean = sprite.lean_hl_spr_bytes_from(raw, s.spr_scale)
 			res_frames = sprite.spr_frames(lean) if lean else []
 			info = {"Bytes": audit.human_bytes(len(raw))}
 			if lean:
@@ -398,6 +435,10 @@ class Project:
 			mtime = asset.path.stat().st_mtime_ns
 		except OSError:
 			mtime = 0
+		clips = tuple((p.name, p.stat().st_mtime_ns) for p in models.clip_files(asset.path)) if opts.clip_files else ()
+		key = (asset.path, mtime, clips, opts.scale, opts.up_axis, opts.skin_max_edge, opts.alpha_threshold,
+			opts.anim_fps, opts.static, opts.blend_bones)
+		hit = self._model_cache.get(asset.path)
 		if asset.is_rose:
 			clips: tuple = (opts.rose_scale, opts.rose_yaw)
 		else:
@@ -452,14 +493,28 @@ class Project:
 			return Preview(child, mat.rgba, res, info)
 		return Preview(asset.name, models.preview_imported(model), models.preview_studio(mdl, comp), info)
 
+	def _quake_palette(self, asset: Asset) -> bytes:
+		pal = quake.quake_palette(asset.path)
+		if pal is None:
+			msg = "Quake palette (gfx/palette.lmp) not found; greyscale used"
+			if msg not in asset.warnings:
+				asset.warnings.append(msg)
+			pal = quake.GREY_PALETTE
+		return pal
+
+	def _needs_quake_palette(self, asset: Asset) -> bool:
+		head = _head(asset.path, 4)
+		return head == b"WAD2" or (asset.kind == Kind.BSP and head == struct.pack("<i", 29))
+
 	def _find_miptex(self, asset: Asset, name: str):
+		pal = self._quake_palette(asset) if self._needs_quake_palette(asset) else None
 		if asset.kind == Kind.WAD:
 			found = goldsrc.wad_miptex(asset.path)
-			return goldsrc.wt_read_miptex(*found[name]) if name in found else None
+			return goldsrc.read_miptex(*found[name], pal) if name in found else None
 		data = asset.path.read_bytes()
 		for n, off in goldsrc.bsp_miptex_offsets(data):
 			if n == name:
-				mip = goldsrc.wt_read_miptex(data, off)
+				mip = goldsrc.read_miptex(data, off, pal)
 				if mip is not None:
 					return mip
 				break
@@ -510,7 +565,7 @@ class Project:
 			try:
 				stem = asset.stem
 				if asset.kind == Kind.IMAGE:
-					src = images.load_rgba(asset.path)
+					src = images.load_rgba(asset.path, asset.warnings)
 					entry = images.encode_image(src, s.image, asset.path.stem)
 					if s.pack_images:
 						pack.append(entry)
@@ -525,13 +580,17 @@ class Project:
 						src = images.load_rgba(Path(asset.extra["sides"][sfx]))
 						emit(asset, f"media/sky_{name}{sfx}.cmp", images.sky_side_cmpr(src, s.sky_size))
 				elif asset.kind == Kind.WAD:
-					data, entries = gct.build_wad_texture_pack(asset.path, cache=s.cache())
+					pal = self._quake_palette(asset) if self._needs_quake_palette(asset) else None
+					data, entries = gct.build_wad_texture_pack(asset.path, cache=s.cache(), palette=pal)
 					if data:
 						emit(asset, f"media/{stem}.gct", data)
 				elif asset.kind == Kind.BSP:
 					data, report, _entries = gct.build_world_texture_pack(
 						asset.path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache())
 					log(f"  {len(report.wads)} WADs searched, {report.entries} textures packed")
+					for note in report.notes:
+						asset.warnings.append(note)
+						log("  warning: " + note)
 					if report.missing:
 						msg = f"{len(report.missing)} textures unresolved: {', '.join(report.missing[:8])}"
 						asset.warnings.append(msg)
@@ -573,11 +632,14 @@ class Project:
 						if comp:
 							emit(asset, f"gc_studio/{stem}t.mdl", comp)
 				elif asset.kind == Kind.SPR:
-					lean = sprite.lean_hl_spr_bytes(asset.path, s.spr_scale)
+					raw = quake.hl_sprite_bytes(asset.path, asset.warnings)
+					if raw[:8] != asset.path.read_bytes()[:8]:
+						log("  converted to a Half-Life (v2) sprite")
+					lean = sprite.lean_hl_spr_bytes_from(raw, s.spr_scale)
 					if lean is None:
 						log("  sprite not leanable (multi-frame or size not divisible); copied as-is")
-						lean = asset.path.read_bytes()
-					emit(asset, f"sprites/{asset.path.name.lower()}", lean)
+						lean = raw
+					emit(asset, f"sprites/{asset.path.stem.lower()}.spr", lean)
 				elif asset.kind == Kind.VIDEO:
 					rel = f"media/{stem}.gcvid"
 					media.build_gcvid_companion(

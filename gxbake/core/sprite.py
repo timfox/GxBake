@@ -20,12 +20,17 @@ def lean_hl_spr_bytes(src: Path, scale: int = 2) -> bytes | None:
 	G187: for SPR_ALPHATEST sheets, prefer any non-255 texel in the scale×scale
 	block so thin crosshair strokes survive 128→64 (plain NN often empties them).
 	"""
-	import math
-
 	try:
 		d = src.read_bytes()
 	except OSError:
 		return None
+	return lean_hl_spr_bytes_from(d, scale)
+
+
+def lean_hl_spr_bytes_from(d: bytes, scale: int = 2) -> bytes | None:
+	"""lean_hl_spr_bytes on sprite bytes (e.g. a Quake sprite converted to v2)."""
+	import math
+
 	if len(d) < 44 or d[:4] != b"IDSP":
 		return None
 	ver = struct.unpack_from("<i", d, 4)[0]
