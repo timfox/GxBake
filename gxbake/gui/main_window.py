@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..core import audit, images, models
+from ..core import audit, images, media, models
 from ..core.project import CONVERTIBLE, Asset, Kind, Project, Settings
 from .widgets import ImagePane, Task
 
@@ -47,10 +47,12 @@ CHILD_ROLE = Qt.ItemDataRole.UserRole + 1
 HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.MODEL, Kind.SKYBOX}
 _MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS))
 _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
+_AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
 FILE_FILTER = (
-	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.avi *.mp4 *.mkv *.mov *.webm *.wav *.mp3 *.ogg "
+	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
 	f"{_MODEL_GLOBS});;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
+	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
 )
 
@@ -107,7 +109,7 @@ class SettingsPanel(QWidget):
 		f.addRow("Sprite scale ÷", self.spr_scale)
 		outer.addWidget(mdl)
 
-		imp = QGroupBox("3D model import (Assimp)")
+		imp = QGroupBox("3D model import (Assimp, Source, Quake)")
 		f = QFormLayout(imp)
 		if not models.available():
 			warn = QLabel("assimp-py is not installed, so OBJ/FBX/glTF files can't be read.\npip install assimp-py")
@@ -141,6 +143,11 @@ class SettingsPanel(QWidget):
 		self.model_clips = QCheckBox("Merge clip files (<name>@<clip>.fbx/.bvh…)")
 		self.model_clips.setChecked(settings.model_clip_files)
 		f.addRow(self.model_clips)
+		self.model_blend = QCheckBox("Helper bones for blended weights (Source models)")
+		self.model_blend.setToolTip("Adds rigid helper bones that follow two-bone blends, so joints bend instead of tearing.\n"
+			"Costs a larger animation block; untick to snap each vertex to its heaviest bone.")
+		self.model_blend.setChecked(settings.model_blend_bones)
+		f.addRow(self.model_blend)
 		outer.addWidget(imp)
 
 		vid = QGroupBox("Video and audio")
@@ -189,7 +196,7 @@ class SettingsPanel(QWidget):
 		for w in (self.max_edge, self.alpha, self.resample, self.sky, self.mdl_edge, self.spr_scale, self.model_up, self.model_skin):
 			w.currentTextChanged.connect(self._sync)
 		for w in (self.mipmaps, self.pack, self.raw_cmp, self.lean_mesh, self.skin_comp, self.vaudio, self.model_full,
-				self.model_static, self.model_clips):
+				self.model_static, self.model_clips, self.model_blend):
 			w.toggled.connect(self._sync)
 		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps):
 			w.valueChanged.connect(self._sync)
@@ -248,6 +255,7 @@ class SettingsPanel(QWidget):
 		s.model_static = self.model_static.isChecked()
 		s.model_anim_fps = self.model_fps.value()
 		s.model_clip_files = self.model_clips.isChecked()
+		s.model_blend_bones = self.model_blend.isChecked()
 		s.video_width = self.vw.value()
 		s.video_height = self.vh.value()
 		s.video_fps = self.fps.value()

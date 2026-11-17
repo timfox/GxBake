@@ -35,7 +35,7 @@ GCPCM_CHANNELS = 2
 GCPCM_WIDTH = 2
 
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm", ".mpg", ".mpeg", ".wmv", ".bik"}
-AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac"}
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".voc", ".opus", ".m4a", ".wma"}
 
 
 def find_ffmpeg() -> str | None:
@@ -174,10 +174,17 @@ def build_gcpcm_companion(
 	ffmpeg: str | None = None,
 	log: Callable[[str], None] = print,
 ) -> bool:
-	"""Convert movie audio to the GameCube mixer format: 48 kHz stereo s16le."""
+	"""Convert movie audio to the GameCube mixer format: 48 kHz stereo s16le.
+
+	PCM .wav files (the GoldSrc/Source/Quake sound format) convert without
+	ffmpeg; everything else needs it.
+	"""
 	ffmpeg = ffmpeg or find_ffmpeg()
 	if ffmpeg is None:
-		raise FileNotFoundError("ffmpeg is required to build .gcpcm intro companions")
+		pcm16 = wav_to_pcm48k(source_movie) if Path(source_movie).suffix.lower() == ".wav" else None
+		if pcm16 is None:
+			raise FileNotFoundError("ffmpeg is required to build .gcpcm intro companions")
+		return _write_gcpcm(pcm16, output_audio, log)
 	raw_audio = subprocess.run(
 		[
 			ffmpeg, "-v", "error", "-i", str(source_movie), "-map", "0:a:0",
@@ -192,12 +199,14 @@ def build_gcpcm_companion(
 		raise subprocess.CalledProcessError(raw_audio.returncode, raw_audio.args, raw_audio.stdout, raw_audio.stderr)
 	if not raw_audio.stdout or len(raw_audio.stdout) % (GCPCM_CHANNELS * GCPCM_WIDTH):
 		raise ValueError(f"ffmpeg produced invalid PCM audio for {source_movie}")
+	return _write_gcpcm(raw_audio.stdout, output_audio, log)
+
+
+def _write_gcpcm(pcm_s16le: bytes, output_audio: Path, log: Callable[[str], None]) -> bool:
 	# The runtime passes this buffer directly to the native-endian mixer and
 	# ASND's VOICE_STEREO_16BIT_BE path. Keep the metadata little-endian, but
 	# store each signed-16 PCM sample in GameCube big-endian byte order.
-	pcm = bytearray(raw_audio.stdout)
-	for offset in range(0, len(pcm), GCPCM_WIDTH):
-		pcm[offset], pcm[offset + 1] = pcm[offset + 1], pcm[offset]
+	pcm = np.frombuffer(pcm_s16le, "<i2").astype(">i2").tobytes()
 	header = GCPCM_MAGIC + struct.pack(
 		"<IHHI", GCPCM_RATE, GCPCM_CHANNELS, GCPCM_WIDTH, len(pcm)
 	)
@@ -206,6 +215,44 @@ def build_gcpcm_companion(
 	log(f"Built native GCPCM {output_audio.name} ({len(pcm)} PCM bytes, 48 kHz stereo s16be/GameCube-native)")
 	return True
 
+
+
+def wav_to_pcm48k(path: Path) -> bytes | None:
+	"""Decode a PCM WAV (8/16/24/32-bit, mono or stereo) to 48 kHz stereo s16le, or None.
+
+	Resampling is linear, which is plenty for 11/22 kHz game sounds.
+	"""
+	import wave
+
+	try:
+		with wave.open(str(path), "rb") as w:
+			ch, width, rate, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
+			raw = w.readframes(n)
+	except (wave.Error, EOFError, OSError):
+		return None	# compressed (ADPCM) or broken: leave it to ffmpeg
+	if ch < 1 or rate <= 0:
+		return None
+	if width == 1:
+		x = (np.frombuffer(raw, np.uint8).astype(np.float64) - 128) / 128
+	elif width == 2:
+		x = np.frombuffer(raw, "<i2").astype(np.float64) / 32768
+	elif width == 3:
+		b = np.frombuffer(raw, np.uint8).reshape(-1, 3).astype(np.int32)
+		v = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
+		x = np.where(v >= 1 << 23, v - (1 << 24), v).astype(np.float64) / (1 << 23)
+	elif width == 4:
+		x = np.frombuffer(raw, "<i4").astype(np.float64) / 2 ** 31
+	else:
+		return None
+	x = x[: len(x) // ch * ch].reshape(-1, ch)
+	stereo = np.repeat(x[:, :1], 2, 1) if ch == 1 else x[:, :2]
+	if not len(stereo):
+		return None
+	out_n = max(1, int(round(len(stereo) * GCPCM_RATE / rate)))
+	t = np.arange(out_n) * (rate / GCPCM_RATE)
+	src = np.arange(len(stereo))
+	res = np.stack([np.interp(t, src, stereo[:, c]) for c in range(2)], 1)
+	return (res.clip(-1, 32767 / 32768) * 32768).round().astype("<i2").tobytes()
 
 
 def video_still(

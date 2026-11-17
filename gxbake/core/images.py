@@ -17,12 +17,24 @@ from .gct import GC_WT_FLAG_ALPHA, GctEntry, encode_mip_chain, wt_cache_key
 
 GC_SKY_CMPR_SIZE = 128
 GC_SKY_SUFFIXES = ("rt", "bk", "lf", "ft", "up", "dn")
-IMAGE_EXTENSIONS = {".png", ".tga", ".bmp", ".jpg", ".jpeg", ".gif", ".webp", ".dds", ".tif", ".tiff", ".psd", ".pcx", ".qoi", ".ppm"}
+IMAGE_EXTENSIONS = {".png", ".tga", ".bmp", ".jpg", ".jpeg", ".gif", ".webp", ".dds", ".tif", ".tiff", ".psd", ".pcx", ".qoi", ".ppm",
+	".vtf",	# Source (vtf.py)
+	".wal",	# Quake II (quake.py)
+	".blp", ".ftc", ".ftu"}	# Blizzard BLP1/BLP2 and Fat textures, through Pillow
 
 
-def load_rgba(path: Path) -> "np.ndarray":
+def load_rgba(path: Path, warnings: list[str] | None = None) -> "np.ndarray":
 	from PIL import Image
 
+	ext = Path(path).suffix.lower()
+	if ext == ".vtf":
+		from .vtf import load_vtf
+
+		return load_vtf(path)
+	if ext == ".wal":
+		from .quake import load_wal
+
+		return load_wal(path, warnings)
 	with Image.open(path) as img:
 		return np.asarray(img.convert("RGBA")).copy()
 
