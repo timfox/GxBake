@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..core import audit, images, media, models, rose
+from ..core import audit, images, media, models, panda, rose
 from ..core.project import CONVERTIBLE, Asset, Kind, Project, Settings
 from .widgets import ImagePane, Task
 
@@ -49,12 +49,14 @@ _MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS))
 _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
 _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
 _ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
+_PANDA_GLOBS = "*.egg *.bam *.pz *.pandactor"
 FILE_FILTER = (
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"{_MODEL_GLOBS} {_ROSE_GLOBS});;"
+	f"{_MODEL_GLOBS} {_ROSE_GLOBS} {_PANDA_GLOBS});;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
 	f"ROSE Online models ({_ROSE_GLOBS});;"
+	f"Panda3D and Toontown models ({_PANDA_GLOBS});;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
 )
 
@@ -198,6 +200,24 @@ class SettingsPanel(QWidget):
 		f.addRow("Turn (degrees)", self.rose_yaw)
 		outer.addWidget(ro)
 
+		pa = QGroupBox("Panda3D and Toontown models (.egg .bam .pandactor)")
+		f = QFormLayout(pa)
+		self.panda_scale = QDoubleSpinBox()
+		self.panda_scale.setRange(0.01, 1000.0)
+		self.panda_scale.setDecimals(2)
+		self.panda_scale.setValue(settings.panda_scale)
+		self.panda_scale.setToolTip("GoldSrc units per Panda unit. Toontown's unit is a foot, so 12 keeps GoldSrc's inch scale.")
+		f.addRow("Units per Panda unit", self.panda_scale)
+		self.panda_yaw = QDoubleSpinBox()
+		self.panda_yaw.setRange(-180.0, 180.0)
+		self.panda_yaw.setDecimals(0)
+		self.panda_yaw.setValue(settings.panda_yaw)
+		self.panda_yaw.setToolTip("Turn about the up axis. Panda models face +Y; -90 makes them face GoldSrc's +X.")
+		f.addRow("Turn (degrees)", self.panda_yaw)
+		if not panda.bam_available():
+			f.addRow(QLabel(".bam needs Panda3D (pip install panda3d) or bam2egg on PATH; .egg works as is."))
+		outer.addWidget(pa)
+
 		vid = QGroupBox("Video and audio")
 		f = QFormLayout(vid)
 		self.vw = self._spin(8, 640, settings.video_width, step=8)
@@ -247,6 +267,7 @@ class SettingsPanel(QWidget):
 				self.model_static, self.model_clips, self.model_blend, self.sky_detect):
 			w.toggled.connect(self._sync)
 		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw,
+				self.panda_scale, self.panda_yaw,
 				self.sky_yaw, self.sky_fov, self.sky_exposure):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
@@ -311,6 +332,8 @@ class SettingsPanel(QWidget):
 		s.model_blend_bones = self.model_blend.isChecked()
 		s.rose_scale = self.rose_scale.value()
 		s.rose_yaw = self.rose_yaw.value()
+		s.panda_scale = self.panda_scale.value()
+		s.panda_yaw = self.panda_yaw.value()
 		s.video_width = self.vw.value()
 		s.video_height = self.vh.value()
 		s.video_fps = self.fps.value()

@@ -21,7 +21,7 @@ build or CI job.
 | [`fit`](#gxbake-fit) | trim a .gct's top mips until it fits the world texture budget |
 | [`sfx`](#gxbake-sfx) | shrink WAVs under the port's per-file sound cap (20 KiB gameplay, 48 KiB menu) |
 | [`disc`](#gxbake-disc) | disc usage: sector cost, duplicate files and textures, files no map names |
-| [`extract`](#gxbake-extract) | unpack a Quake/GoldSrc .pak, Source .vpk or .pk3 archive |
+| [`extract`](#gxbake-extract) | unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive |
 | [`slim`](#gxbake-slim) | show where a studio model's bytes go and thin its animation |
 | [`sky`](#gxbake-sky) | turn a panorama, cubemap cross/strip, photo or six faces into the port's sky sides |
 | [`pack`](#gxbake-pack) | list, extract, build and edit .gct texture packs |
@@ -37,10 +37,10 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     [--mdl-anim-step MDL_ANIM_STEP] [--spr-scale SPR_SCALE] [--model-scale MODEL_SCALE] [--model-up
     {y,z}] [--model-skin-max-edge MODEL_SKIN_MAX_EDGE] [--no-model-full] [--model-static]
     [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale ROSE_SCALE]
-    [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--video-width VIDEO_WIDTH] [--video-height
-    VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR]
-    [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure
-    SKY_EXPOSURE]
+    [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--panda-scale PANDA_SCALE] [--panda-yaw
+    PANDA_YAW] [--video-width VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS]
+    [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR] [--cache CACHE] [--no-sky-detect]
+    [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |
@@ -67,6 +67,8 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--rose-scale ROSE_SCALE` | `39.37` | ROSE Online models: GoldSrc units per metre |
 | `--rose-yaw ROSE_YAW` | `90.0` | ROSE Online models: degrees to turn about Z (90 faces them +X) |
 | `--rose-entry ROSE_ENTRY` |  | ROSE .zsc/.chr: convert only this object/character index (repeatable; default all) |
+| `--panda-scale PANDA_SCALE` | `12.0` | Panda3D/Toontown models: GoldSrc units per Panda unit (12: a Toontown foot) |
+| `--panda-yaw PANDA_YAW` | `-90.0` | Panda3D models: degrees to turn about Z (-90 turns Panda's +Y forward to GoldSrc's +X) |
 | `--video-width VIDEO_WIDTH` | `320` | GCVID frame width |
 | `--video-height VIDEO_HEIGHT` | `240` | GCVID frame height |
 | `--video-fps VIDEO_FPS` | `15` | GCVID frame rate |
@@ -181,7 +183,7 @@ gxbake disc path [--include GLOB] [--limit LIMIT] [--json]
 
 ## `gxbake extract`
 
-Unpack a Quake/GoldSrc .pak, Source .vpk or .pk3 archive.
+Unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive.
 
 ```
 gxbake extract archives [archives ...] --output OUTPUT [--match MATCH]
@@ -189,7 +191,7 @@ gxbake extract archives [archives ...] --output OUTPUT [--match MATCH]
 
 | Argument | Default | Description |
 | --- | --- | --- |
-| `archives` … |  | .pak, .vpk or .pk3 files |
+| `archives` … |  | .pak, .vpk, .pk3 or .mf (e.g. Toontown's phase_3.mf) files |
 | `-o OUTPUT`, `--output OUTPUT` |  | **Required.** folder to extract into |
 | `--match MATCH` |  | only members matching this glob, e.g. `models/*` (repeatable) |
 
