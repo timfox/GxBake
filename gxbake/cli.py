@@ -36,6 +36,9 @@ def _convert(args) -> int:
 	s.model_anim_fps = args.model_fps
 	s.model_clip_files = not args.no_model_clips
 	s.model_blend_bones = not args.no_blend_bones
+	s.rose_scale = args.rose_scale
+	s.rose_yaw = args.rose_yaw
+	s.rose_entries = args.rose_entry or []
 	s.video_width, s.video_height, s.video_fps = args.video_width, args.video_height, args.video_fps
 	proj = Project(s)
 	for p in args.paths:
@@ -111,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
 	c.add_argument("--no-model-clips", action="store_true", help="don't merge <name>@<clip>.<ext> animation files")
 	c.add_argument("--no-blend-bones", action="store_true",
 		help="Source models: snap blended vertices to one bone instead of adding helper bones")
+	c.add_argument("--rose-scale", type=float, default=39.37, help="ROSE Online models: GoldSrc units per metre")
+	c.add_argument("--rose-yaw", type=float, default=90.0, help="ROSE Online models: degrees to turn about Z (90 faces them +X)")
+	c.add_argument("--rose-entry", type=int, action="append",
+		help="ROSE .zsc/.chr: convert only this object/character index (repeatable; default all)")
 	c.add_argument("--video-width", type=int, default=320)
 	c.add_argument("--video-height", type=int, default=240)
 	c.add_argument("--video-fps", type=int, default=15)

@@ -60,3 +60,27 @@ def test_assimp_model_preview(tmp_path):
 	assert w.preview_title.text() == "crate.obj"
 	assert w.src_pane.canvas._image is not None and w.gx_pane.canvas._image is not None
 	w.close()
+
+
+def test_rose_character_preview(tmp_path):
+	from gxbake.gui.main_window import MainWindow
+
+	from .test_rose import _arm
+
+	_arm(tmp_path)
+	app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+	w = MainWindow()
+	w.qsettings.clear()
+	w.add_paths([str(tmp_path / "3DDATA")])
+	assert w.tree.topLevelItemCount() == 1
+	item = w.tree.topLevelItem(0)
+	item.setExpanded(True)
+	assert [item.child(i).text(0) for i in range(item.childCount())] == ["arm", "▶ stop", "▶ attack"]
+	w.tree.setCurrentItem(item.child(2))
+	end = time.time() + 10
+	while time.time() < end and ("rendering" in w.preview_title.text() or w.inspector_form.rowCount() == 0):
+		app.processEvents()
+		time.sleep(0.01)
+	assert w.preview_title.text().endswith("▶ attack")
+	assert w.gx_pane.canvas._image is not None
+	w.close()

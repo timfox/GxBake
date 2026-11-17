@@ -16,6 +16,8 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | 3D models via Assimp (OBJ, FBX, glTF/GLB, DAE, 3DS, Blend, MD2/MD3/MD5, IQM, B3D, SMD, MS3D and ~25 more) | `models/<name>.mdl` (studio MDL v10 with bones, sequences and paletted skins), then the same `gc_studio/<name>.mdl` + `<name>t.mdl` as a studio model | `models.import_model`, `models.build_studio_mdl`, then the two functions above |
 | Source `.mdl` (v44–49) + `.vvd` + `.vtx`, Quake `.mdl` | the same `models/` and `gc_studio/` outputs as an Assimp model | `source_mdl.import_source`, `quake.import_alias`, then `models.build_studio_mdl` |
 | Sprite `.spr` (Half-Life, Quake), Quake II `.sp2` | `sprites/<name>.spr`: a Half-Life sprite, downsampled, keeping thin alpha-test strokes | `quake.hl_sprite_bytes`, `lean_hl_spr_bytes` |
+| ROSE Online `.zms` meshes, `.zsc` object lists, `.chr` character lists (with `.zmd` skeletons, `.zmo` motions, `.dds` textures) | the same `models/` + `gc_studio/` studio models, one per object or character | `rose.import_rose`, then as above |
+| Sprite `.spr` | `sprites/<name>.spr`, downsampled, keeping thin alpha-test strokes | `lean_hl_spr_bytes` |
 | Video (AVI, MP4…) | `media/<name>.gcvid` (RGB565 delta) and `.gcpcm` | `build_gcvid_companion`, `build_gcpcm_companion` |
 | Audio (WAV, MP3, OGG, FLAC, AIFF, VOC, Opus…) | `media/<name>.gcpcm` (48 kHz stereo, s16 big-endian); PCM WAV needs no ffmpeg | `build_gcpcm_companion` |
 
@@ -54,6 +56,18 @@ Studio skinning is rigid, so a vertex weighted between two bones would tear at t
 Without the palette files, a greyscale ramp is used and the asset warns. Neither palette is shipped with GxBake, since both are game data.
 
 **Archives.** Game data usually sits in `.pak`, `.vpk` or `.pk3` files. `gxbake extract pak0.pak -o unpacked` unpacks one (`--match 'models/*'` to pick), then convert the folder. For Source, pass the `_dir.vpk`; its numbered `_000.vpk` chunks are read from beside it.
+## ROSE Online models
+
+GxBake reads ROSE Online's own formats directly (Assimp knows none of them): ZMS meshes, ZMD skeletons, ZMO motions, ZSC object lists and LIST_NPC.CHR character lists, plus DDS textures through Pillow. Point it at an extracted client tree (the folder that holds `3DDATA`) or at single files:
+
+- **`LIST_NPC.CHR`**: one asset per character. Its meshes come from `PART_NPC.ZSC` next to it, its skeleton and motions from the paths in the CHR, so each NPC or monster becomes an animated studio model with sequences named after its motion slots (`stop`, `walk`, `attack`, `hit`, `die`, `run`…; idle and walk loop, the rest play once).
+- **`LIST_*.ZSC`**: one asset per object (map decorations, buildings, items), with every part placed by its ZSC transform.
+- **`.zms`**: a single mesh. A same-named texture next to it is used; a skinned mesh picks up the `.zmd` beside it and the `.zmo` motions in its folder (or `<mesh>@<clip>.zmo` clips).
+- **`.rosemdl`**: a small JSON file for models nothing lists, such as a player avatar assembled from body, arm, foot and face parts: `{"skeleton": "3DDATA/AVATAR/MALE.ZMD", "parts": [{"zsc": "3DDATA/AVATAR/LIST_MBODY.ZSC", "object": 1}, {"mesh": "x.zms", "texture": "x.dds", "bone": 4}], "motions": {"walk": "3DDATA/MOTION/AVATAR/EMPTY_WALK_M1.ZMO"}}`.
+
+Paths inside ZSC/CHR files are matched case-insensitively against the `3DDATA` root. Adding a whole folder lists the CHR characters and ZSC objects and leaves out the loose meshes, textures and `PART_*.ZSC` they draw from. Output names are `<list>_<index>_<name>`, e.g. `npc_33_deck16.mdl`. `--rose-entry N` (repeatable) limits a CLI run to some entries.
+
+ROSE is Z-up like GoldSrc. Settings: **Units per metre** (39.37 keeps real size) and **Turn** (ROSE models face -Y; 90° makes them face GoldSrc's +X). Skinning is rigid (each vertex follows its heaviest bone), double-sided materials get back faces, and alpha-tested materials become masked skins. Not converted yet: per-part ZSC animations, UV/alpha ZMO tracks, effects, and maps; see [docs/rose-online.md](docs/rose-online.md).
 
 ## The app
 

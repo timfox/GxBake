@@ -92,6 +92,8 @@ class ModelOptions:
 	static: bool = False	# ignore skeletons and animations: one root bone, bind pose
 	clip_files: bool = True	# merge animations from <name>@<clip>.<ext> next to the model
 	blend_bones: bool = True	# native Source import: helper bones stand in for two-bone weights
+	rose_scale: float = 39.37	# ROSE Online models: GoldSrc units per metre (scale above is for Assimp only)
+	rose_yaw: float = 90.0	# ROSE Online models face -Y; turn about Z so they face GoldSrc's +X
 
 
 @dataclass
