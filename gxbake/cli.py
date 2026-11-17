@@ -5,6 +5,7 @@
 	gxbake validate <staged gamedir>
 	gxbake budget <staged gamedir> [--map NAME] [--json]
 	gxbake fit <pack.gct> [-o OUT] [--pool 448K]
+	gxbake disc <staged gamedir> [--json]
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
 	gxbake gui [files...]
 """
@@ -18,7 +19,7 @@ from pathlib import Path
 from . import __version__
 import json
 
-from .core import audit, budget, sfx
+from .core import audit, budget, disc, sfx
 from .core.project import CONVERTIBLE, Project, Settings
 
 
@@ -161,6 +162,15 @@ def _sfx(args) -> int:
 	return 1 if refused else 0
 
 
+def _disc(args) -> int:
+	rep = disc.disc_report(Path(args.path), args.include)
+	if args.json:
+		print(json.dumps(rep.to_json(), indent=2))
+	else:
+		print(disc.format_disc(rep, args.limit))
+	return 1 if rep.on_disc > rep.capacity else 0
+
+
 def _add_budget_args(p) -> None:
 	p.add_argument("--pool", help="world texture MEM1 pool (default 448K, GC_WT_POOL_BYTES)")
 	p.add_argument("--split", type=int, choices=(64, 32, 16, 8),
@@ -171,7 +181,7 @@ def _add_budget_args(p) -> None:
 
 def main(argv: list[str] | None = None) -> int:
 	argv = sys.argv[1:] if argv is None else argv
-	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "budget", "fit", "sfx", "gui"):
+	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "budget", "fit", "sfx", "disc", "gui"):
 		argv = ["gui", *argv]	# "Open with GxBake" / drag onto the executable
 	parser = argparse.ArgumentParser(prog="gxbake", description="Convert and optimise assets for the GameCube GX renderer.")
 	parser.add_argument("--version", action="version", version=f"GxBake {__version__}")
@@ -243,6 +253,13 @@ def main(argv: list[str] | None = None) -> int:
 	x.add_argument("--truncate", action="store_true", help="cut (with a 10 ms fade) what still does not fit")
 	x.add_argument("-v", "--verbose", action="store_true", help="also list sounds that already fit")
 	x.set_defaults(fn=_sfx)
+
+	dk = sub.add_parser("disc", help="disc usage: sector cost, duplicate files and textures, files no map names")
+	dk.add_argument("path")
+	dk.add_argument("--include", action="append", metavar="GLOB", help="count these as referenced (repeatable)")
+	dk.add_argument("--limit", type=int, default=15, help="rows per section")
+	dk.add_argument("--json", action="store_true")
+	dk.set_defaults(fn=_disc)
 
 	g = sub.add_parser("gui", help="open the desktop app")
 	g.add_argument("paths", nargs="*")

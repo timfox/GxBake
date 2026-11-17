@@ -255,3 +255,26 @@ def test_sfx_cli_and_budget_cap(tmp_path, capsys):
 	capsys.readouterr()
 	rep = budget.map_budget(g, g / "maps" / "c0a0.bsp")
 	assert {ln.pool: ln for ln in rep.lines}["Entity sounds"].status == budget.OK
+
+
+# --- disc report -----------------------------------------------------------------
+
+from gxbake.core import disc  # noqa: E402
+
+
+def test_disc_report(tmp_path, capsys):
+	g = staged(tmp_path, 3000)
+	(g / "gc_studio" / "copy.mdl").write_bytes(bytes(3000))	# same bytes as barney.mdl
+	(g / "sound" / "unused.wav").write_bytes(b"x" * 10)
+	(g / "media" / "wt_c1a0.gct").write_bytes(gct.write_gct([entry("wall", 128, 128), entry("floor", 64, 64)]))
+	rep = disc.disc_report(g)
+	assert rep.on_disc % 2048 == 0 and rep.on_disc >= rep.bytes
+	assert any(set(d["paths"]) == {"gc_studio/barney.mdl", "gc_studio/copy.mdl"} for d in rep.duplicates)
+	assert [d["name"] for d in rep.shared_textures] == ["wall"]
+	unref = [r for r, _s in rep.unreferenced]
+	assert "gc_studio/copy.mdl" in unref and "sound/unused.wav" in unref
+	assert "gc_studio/barney.mdl" not in unref and "sound/ambience/wind.wav" not in unref
+	assert cli.main(["disc", str(g)]) == 0
+	assert "identical files" in capsys.readouterr().out
+	assert cli.main(["disc", str(g), "--json"]) == 0
+	assert json.loads(capsys.readouterr().out)["files"] == rep.files
