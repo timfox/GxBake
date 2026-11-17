@@ -59,9 +59,22 @@ It also lists sprites, the sky and the BSP size, anything referenced but not sta
 
 `gxbake sfx sound/ -o staged/valve/sound` shrinks WAVs under the port's per-file cap: `Sound_LoadWAV` refuses PCM data over 20 KiB in gameplay (48 KiB with `--menu`, when the menu runs the server). It only accepts 8/16-bit Microsoft PCM, so it tries, least lossy first: cutting data after the loop end (never played), stereo to mono, then the smallest step down the 22 kHz/11 kHz × 16/8-bit ladder that fits (8-bit gets TPDF dither, resampling is band-limited). Loop points are kept and rescaled. Anything that still does not fit is reported, or cut with a 10 ms fade with `--truncate`. `--in-place`, `--cap`, `--min-rate`, `--keep-stereo` and `--no-8bit` adjust it, and without `-o` it is a dry run.
 
+### Texture packs
+
+`gxbake pack` edits `.gct` packs directly, without going back to the source assets: `list` (with sizes, `--sort size`), `extract` to PNG exactly as the GameCube samples it (`--all-levels` for every mip), `build` a pack from images, `add` images (an entry of the same name is replaced in place), `remove` entries by name or glob, and `merge` packs (a later pack wins on a name clash). Names are the image file names, lowercased and cut to the engine's 15 characters, and GxBake warns past the engine's 512 entries.
+
 ### Disc usage
 
 `gxbake disc <staged gamedir>` shows what the tree costs on a disc: every file rounded up to 2 KiB ISO9660 sectors (the disc builder exposes game data through ISO9660), the share of the 1.36 GiB disc, and a breakdown by directory. It also lists byte-identical files, textures stored in more than one `.gct` (same CMPR bytes; each map loads its own pack, so this only costs disc), and files under `models/`, `gc_studio/` and `sound/` that no map names. The game DLL may still precache those, so treat that list as a place to look, and pass `--include` for models you know are needed. `--json` gives the same data.
+### Studio models
+
+`gxbake slim models/barney.mdl` shows where a studio model's bytes go (animation, meshes, bones, sequences, skins) and how big the lean `gc_studio/` mesh is, since that is what fills the 1 MiB studio arena. For NPCs and view models the animation is usually the largest part, so:
+
+- `--step 2` keeps every second frame of each sequence and scales its fps, so it lasts as long as before (the engine interpolates between frames). Events move with their frames.
+- `--stub 'death*'` reduces matching sequences to their first frame, and `--keep 'idle*'` protects others.
+
+Sequences are never removed, so the game DLL's sequence numbers and names stay valid. Only animation stored in the model itself is changed; sequences in external `<name>01.mdl` seqgroup files are left alone. Without `-o` it is a dry run. `gxbake convert --mdl-anim-step 2` applies the frame step to every `gc_studio/<name>.mdl` it writes.
+
 ## Source, Quake and Quake II formats
 
 These are read by GxBake itself (no Assimp), and each becomes what the GameCube port loads.
@@ -110,7 +123,10 @@ gxbake inspect path/to/file.gct
 gxbake validate staged/valve   # same checks as the disc builder
 gxbake budget staged/valve     # per-map memory report
 gxbake extract hl2_misc_dir.vpk -o unpacked --match 'models/*' --match 'materials/*'
+gxbake pack list staged/valve/media/wt_c1a0.gct --sort size
 ```
+
+Every command and option is listed in the [command line reference](docs/cli.md), and [the porting workflow](docs/workflow.md) shows how they fit together, from unpacking a game to a staged tree that fits the GameCube's memory. The reference is generated from the CLI itself: after changing an option, run `python -m gxbake.clidoc` (a test fails until you do).
 
 Video and audio need `ffmpeg` on `PATH`, next to the executable, or set with `GXBAKE_FFMPEG`.
 
@@ -121,11 +137,11 @@ pip install -e ".[dev]"
 pyinstaller packaging/gxbake.spec    # → dist/GxBake (GxBake.exe on Windows, GxBake.app on macOS)
 ```
 
-The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`, `disc`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
+The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`, `disc`, `slim`, `pack`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
 - `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.

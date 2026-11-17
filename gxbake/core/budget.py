@@ -63,6 +63,24 @@ class Budgets:
 		return self
 
 
+# What each Budgets field is, for --budget NAME=SIZE and docs/cli.md.
+BUDGET_HELP = {
+	"main_ram": "GameCube main RAM (MEM1)",
+	"aram": "auxiliary RAM (ARAM)",
+	"disc": "usable bytes on a GameCube disc",
+	"wt_pool": "world texture MEM1 pool: table, resident low mips and hot ring (GC_WT_POOL_BYTES)",
+	"wt_min_hot": "smallest hot ring the split rule accepts (GC_WT_MIN_HOT_BYTES)",
+	"wt_split": "split dimension a pack must fit at to count as ok (a number, not a size)",
+	"wt_aram": "world texture ARAM store (GC_WT_ARAM_BYTES)",
+	"wt_max_textures": "entries per world pack the engine reads (a count)",
+	"studio_arena": "studio model MEM1 arena per map",
+	"sfx_cache": "MEM1 sound cache (GC_SFX_BUDGET_BYTES; 320K on the menu route)",
+	"sfx_max_file": "largest WAV PCM the loader accepts (GC_SFX_MAX_FILE_BYTES; 48K on the menu route)",
+	"sfx_aram": "ARAM sound store",
+	"lightmap_atlas": "lightmap atlas",
+}
+
+
 def parse_size(text: str) -> int:
 	"""'448K', '1.5M', '6MiB', '2048' → bytes."""
 	m = re.fullmatch(r"\s*([0-9]*\.?[0-9]+)\s*([kmg]?)(i?b)?\s*", text, re.IGNORECASE)

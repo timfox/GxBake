@@ -16,8 +16,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, budget, gct, goldsrc, images, media, models, rose, sprite, studio
-from . import audit, gct, goldsrc, images, media, models, quake, rose, sprite, studio
+from . import audit, budget, gct, goldsrc, images, media, models, quake, rose, sprite, studio, studio_slim
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -97,6 +96,7 @@ class Settings:
 	mdl_lean_mesh: bool = True
 	mdl_skin_companion: bool = True
 	mdl_max_edge: int = 64
+	mdl_anim_step: int = 1	# keep every Nth animation frame in gc_studio/<name>.mdl
 	model_scale: float = 1.0	# Assimp import: source units → GoldSrc units
 	model_up_axis: str = "y"
 	model_skin_max_edge: int = 256
@@ -608,6 +608,14 @@ class Project:
 				elif asset.kind == Kind.MDL:
 					if s.mdl_lean_mesh:
 						lean = studio.lean_studio_mesh_bytes(asset.path)
+						if lean and s.mdl_anim_step > 1:
+							try:
+								slim = studio_slim.slim_studio(lean, s.mdl_anim_step)
+								if slim.changed:
+									log(f"  animation: every {s.mdl_anim_step}th frame, {len(lean) // 1024} → {len(slim.data) // 1024} KiB")
+								lean = slim.data
+							except ValueError as exc:
+								log(f"  animation left as is: {exc}")
 						if lean:
 							emit(asset, f"gc_studio/{stem}.mdl", lean)
 					if s.mdl_skin_companion:
