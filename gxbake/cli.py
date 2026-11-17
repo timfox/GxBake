@@ -3,6 +3,10 @@
 	gxbake convert <files or folders...> -o OUT [options]
 	gxbake inspect <file>
 	gxbake validate <staged gamedir>
+	gxbake budget <staged gamedir> [--map NAME] [--json]
+	gxbake fit <pack.gct> [-o OUT] [--pool 448K]
+	gxbake disc <staged gamedir> [--json]
+	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
 	gxbake gui [files...]
 """
@@ -14,7 +18,9 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .core import audit
+import json
+
+from .core import audit, budget, disc, sfx
 from .core.project import CONVERTIBLE, Project, Settings
 
 
@@ -35,6 +41,8 @@ def _convert(args) -> int:
 	s.model_static = args.model_static
 	s.model_anim_fps = args.model_fps
 	s.model_clip_files = not args.no_model_clips
+	s.wt_fit = args.fit_world
+	s.wt_pool = budget.parse_size(args.wt_pool)
 	s.model_blend_bones = not args.no_blend_bones
 	s.rose_scale = args.rose_scale
 	s.rose_yaw = args.rose_yaw
@@ -77,6 +85,103 @@ def _validate(args) -> int:
 	return 1 if errors else 0
 
 
+def _budgets(args) -> budget.Budgets:
+	b = budget.Budgets()
+	if getattr(args, "pool", None):
+		b.wt_pool = budget.parse_size(args.pool)
+	if getattr(args, "split", None):
+		b.wt_split = args.split
+	return b.override(args.budget or [])
+
+
+def _budget(args) -> int:
+	rep = budget.gamedir_budget(Path(args.path), _budgets(args), args.map, args.include)
+	if args.json:
+		print(json.dumps(rep.to_json(), indent=2))
+	else:
+		print(budget.format_report(rep, args.verbose))
+	worst = rep.status
+	return 1 if worst == budget.OVER or (args.strict and worst == budget.WARN) else 0
+
+
+def _fit(args) -> int:
+	src = Path(args.path)
+	b = _budgets(args)
+	data, res = budget.fit_pack_bytes(src.read_bytes(), b, args.max_edge)
+	hb = audit.human_bytes
+
+	def line(f: budget.PackFit) -> str:
+		split = f"split {f.split}" if f.split else "does not fit"
+		return f"{hb(f.data_bytes)} in ARAM, {hb(f.table_bytes + f.resident)} resident in MEM1, {split}"
+
+	print(f"before: {line(res.before)}")
+	print(f"after:  {line(res.after)}")
+	for name, (ow, oh, nw, nh) in sorted(res.trimmed.items(), key=lambda t: -t[1][0] * t[1][1]):
+		print(f"  {name:<16} {ow}x{oh} -> {nw}x{nh}")
+	if not res.ok:
+		print(f"still over budget: {res.reason}", file=sys.stderr)
+	if args.output:
+		Path(args.output).write_bytes(data)
+		print(f"wrote {args.output} ({hb(len(data))})")
+	elif res.trimmed:
+		print("dry run; pass -o to write the fitted pack")
+	return 0 if res.ok else 1
+
+
+def _sfx(args) -> int:
+	cap = budget.parse_size(args.cap) if args.cap else (sfx.MENU_MAX_FILE if args.menu else sfx.GAMEPLAY_MAX_FILE)
+	jobs: list[tuple[Path, Path]] = []
+	for p in map(Path, args.paths):
+		if p.is_dir():
+			jobs += [(f, f.relative_to(p)) for f in sorted(p.rglob("*")) if f.suffix.lower() == ".wav"]
+		else:
+			jobs.append((p, Path(p.name)))
+	if not jobs:
+		print("no .wav files", file=sys.stderr)
+		return 1
+	if not args.output and not args.in_place:
+		print("dry run; pass -o OUT or --in-place to write", file=sys.stderr)
+	hb = audit.human_bytes
+	refused = before = after = 0
+	for src, rel in jobs:
+		try:
+			data, rep = sfx.fit_wav_bytes(src.read_bytes(), cap, min_rate=args.min_rate,
+				keep_stereo=args.keep_stereo, allow_8bit=not args.no_8bit, truncate=args.truncate)
+		except ValueError as exc:
+			print(f"  skip  {rel}: {exc}")
+			refused += 1
+			continue
+		before += rep.before
+		after += rep.after
+		state = "ok" if rep.ok else "OVER"
+		refused += not rep.ok
+		if rep.steps or not rep.ok or args.verbose:
+			print(f"  {state:>4}  {rel}: {hb(rep.before)} -> {hb(rep.after)}"
+				+ (f" ({', '.join(rep.steps)})" if rep.steps else ""))
+		dest = src if args.in_place else (Path(args.output) / rel if args.output else None)
+		if dest is not None:
+			dest.parent.mkdir(parents=True, exist_ok=True)
+			dest.write_bytes(data)
+	print(f"{len(jobs)} sounds, {hb(before)} -> {hb(after)} of PCM; cap {hb(cap)} per file"
+		+ (f"; {refused} still over (try --truncate)" if refused else ""))
+	return 1 if refused else 0
+
+
+def _disc(args) -> int:
+	rep = disc.disc_report(Path(args.path), args.include)
+	if args.json:
+		print(json.dumps(rep.to_json(), indent=2))
+	else:
+		print(disc.format_disc(rep, args.limit))
+	return 1 if rep.on_disc > rep.capacity else 0
+
+
+def _add_budget_args(p) -> None:
+	p.add_argument("--pool", help="world texture MEM1 pool (default 448K, GC_WT_POOL_BYTES)")
+	p.add_argument("--split", type=int, choices=(64, 32, 16, 8),
+		help="split dimension the pool must manage (default 64; lower accepts softer textures)")
+	p.add_argument("--budget", action="append", metavar="NAME=SIZE",
+		help="override any budget, e.g. studio_arena=1.5M (repeatable)")
 def _extract(args) -> int:
 	from .core import archives
 
@@ -88,6 +193,7 @@ def _extract(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
 	argv = sys.argv[1:] if argv is None else argv
+	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "budget", "fit", "sfx", "disc", "gui"):
 	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "extract", "gui"):
 		argv = ["gui", *argv]	# "Open with GxBake" / drag onto the executable
 	parser = argparse.ArgumentParser(prog="gxbake", description="Convert and optimise assets for the GameCube GX renderer.")
@@ -121,6 +227,9 @@ def main(argv: list[str] | None = None) -> int:
 	c.add_argument("--video-width", type=int, default=320)
 	c.add_argument("--video-height", type=int, default=240)
 	c.add_argument("--video-fps", type=int, default=15)
+	c.add_argument("--fit-world", action="store_true",
+		help="trim world texture packs' top mips until they fit the engine's MEM1 pool")
+	c.add_argument("--wt-pool", default="448K", help="pool size for --fit-world")
 	c.add_argument("--wad-dir", action="append", help="extra WAD search folder (repeatable)")
 	c.add_argument("--cache", help="CMPR encode cache folder")
 	c.set_defaults(fn=_convert)
@@ -133,6 +242,43 @@ def main(argv: list[str] | None = None) -> int:
 	v.add_argument("path")
 	v.set_defaults(fn=_validate)
 
+	bd = sub.add_parser("budget", help="per-map memory report against the GameCube port's windows")
+	bd.add_argument("path", help="staged gamedir (the output of convert)")
+	bd.add_argument("--map", action="append", help="only this map (repeatable)")
+	bd.add_argument("--include", action="append", metavar="GLOB",
+		help="models every map loads, e.g. 'models/v_*.mdl' (repeatable)")
+	bd.add_argument("--json", action="store_true")
+	bd.add_argument("--strict", action="store_true", help="exit 1 on warnings too")
+	bd.add_argument("-v", "--verbose", action="store_true", help="list the biggest items on every line")
+	_add_budget_args(bd)
+	bd.set_defaults(fn=_budget)
+
+	f = sub.add_parser("fit", help="trim a .gct's top mips until it fits the world texture budget")
+	f.add_argument("path")
+	f.add_argument("-o", "--output", help="write the fitted pack here (otherwise a dry run)")
+	f.add_argument("--max-edge", type=int, help="also cap every texture to this size first")
+	_add_budget_args(f)
+	f.set_defaults(fn=_fit)
+
+	x = sub.add_parser("sfx", help="shrink WAVs under the port's per-file sound cap (20 KiB gameplay, 48 KiB menu)")
+	x.add_argument("paths", nargs="+")
+	x.add_argument("-o", "--output", help="write fitted WAVs here, keeping relative paths")
+	x.add_argument("--in-place", action="store_true")
+	x.add_argument("--menu", action="store_true", help="use the 48 KiB menu-route cap")
+	x.add_argument("--cap", help="explicit cap, e.g. 16K")
+	x.add_argument("--min-rate", type=int, default=11025, help="lowest sample rate to fall back to")
+	x.add_argument("--keep-stereo", action="store_true")
+	x.add_argument("--no-8bit", action="store_true")
+	x.add_argument("--truncate", action="store_true", help="cut (with a 10 ms fade) what still does not fit")
+	x.add_argument("-v", "--verbose", action="store_true", help="also list sounds that already fit")
+	x.set_defaults(fn=_sfx)
+
+	dk = sub.add_parser("disc", help="disc usage: sector cost, duplicate files and textures, files no map names")
+	dk.add_argument("path")
+	dk.add_argument("--include", action="append", metavar="GLOB", help="count these as referenced (repeatable)")
+	dk.add_argument("--limit", type=int, default=15, help="rows per section")
+	dk.add_argument("--json", action="store_true")
+	dk.set_defaults(fn=_disc)
 	x = sub.add_parser("extract", help="unpack a Quake/GoldSrc .pak, Source .vpk or .pk3 archive")
 	x.add_argument("archives", nargs="+")
 	x.add_argument("-o", "--output", required=True)

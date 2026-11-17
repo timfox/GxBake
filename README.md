@@ -39,6 +39,29 @@ Not carried over: morph/vertex animation (MD2/MD3 import their first frame), ble
 
 Assimp comes from the `assimp-py` wheel, which bundles the native library, so there is nothing to install separately. Skeletons and animations need assimp-py 1.2, which ships for Python 3.12 and newer; on 3.10 and 3.11 models import static. It is part of the `gui` and `dev` extras, or `pip install -e ".[models]"` for the CLI alone.
 
+## Memory budgets
+
+`gxbake budget <staged gamedir>` checks every map against the windows the GameCube port actually gives each kind of data at map load, not just the 24 MiB / 16 MiB totals:
+
+| Window | Budget | What GxBake counts |
+| --- | --- | --- |
+| World textures, MEM1 pool | 448 KiB (`GC_WT_POOL_BYTES`) | the `.gct` table, every texture's resident low mips and the hot ring, using the engine's own split rule (`Mod_GCWorldPackSplitDim`) |
+| World textures, ARAM store | 6 MiB, 512 entries | the whole `media/wt_<map>.gct` blob |
+| Studio models, MEM1 arena | 1 MiB per map | `gc_studio/<name>.mdl` + `<name>t.mdl` for every model the entities name, plus the Half-Life classname defaults (`monster_barney` → `barney.mdl`) and anything given with `--include 'models/v_*.mdl'` |
+| Entity sounds | 20 KiB per file, 128 KiB MEM1 cache, 2 MiB ARAM | the PCM bytes of `.wav` files the entities name; one over the per-file cap is refused and never plays |
+| Lightmaps | 800 KiB atlas | the BSP lighting lump (an upper bound) |
+
+It also lists sprites, the sky and the BSP size, anything referenced but not staged, and the whole tree against the 1.36 GiB disc. A map is `WARN` when the texture pool only fits at a softer split (big textures draw from low mips until they stream in) and `OVER` when something will be refused. The exit code is 1 when anything is over (`--strict` adds warnings), so it can gate CI. `--json` prints the same report as data, and `--budget studio_arena=1.5M` (repeatable), `--pool` and `--split` change the limits.
+
+`gxbake fit media/wt_c1a0.gct -o media/wt_c1a0.gct` makes a world pack fit: it drops the top mip level of the largest textures until the pack fits the pool at split 64 and the ARAM store. Level 1 is already encoded, so there is no re-encode and no new artefacts. Without `-o` it is a dry run that lists what it would halve. `gxbake convert --fit-world` does the same while converting BSPs.
+
+### Sound effects
+
+`gxbake sfx sound/ -o staged/valve/sound` shrinks WAVs under the port's per-file cap: `Sound_LoadWAV` refuses PCM data over 20 KiB in gameplay (48 KiB with `--menu`, when the menu runs the server). It only accepts 8/16-bit Microsoft PCM, so it tries, least lossy first: cutting data after the loop end (never played), stereo to mono, then the smallest step down the 22 kHz/11 kHz × 16/8-bit ladder that fits (8-bit gets TPDF dither, resampling is band-limited). Loop points are kept and rescaled. Anything that still does not fit is reported, or cut with a 10 ms fade with `--truncate`. `--in-place`, `--cap`, `--min-rate`, `--keep-stereo` and `--no-8bit` adjust it, and without `-o` it is a dry run.
+
+### Disc usage
+
+`gxbake disc <staged gamedir>` shows what the tree costs on a disc: every file rounded up to 2 KiB ISO9660 sectors (the disc builder exposes game data through ISO9660), the share of the 1.36 GiB disc, and a breakdown by directory. It also lists byte-identical files, textures stored in more than one `.gct` (same CMPR bytes; each map loads its own pack, so this only costs disc), and files under `models/`, `gc_studio/` and `sound/` that no map names. The game DLL may still precache those, so treat that list as a place to look, and pass `--include` for models you know are needed. `--json` gives the same data.
 ## Source, Quake and Quake II formats
 
 These are read by GxBake itself (no Assimp), and each becomes what the GameCube port loads.
@@ -85,6 +108,7 @@ gxbake            # opens the app
 gxbake convert path/to/valve -o out --cache ~/.cache/gxbake
 gxbake inspect path/to/file.gct
 gxbake validate staged/valve   # same checks as the disc builder
+gxbake budget staged/valve     # per-map memory report
 gxbake extract hl2_misc_dir.vpk -o unpacked --match 'models/*' --match 'materials/*'
 ```
 
@@ -97,10 +121,11 @@ pip install -e ".[dev]"
 pyinstaller packaging/gxbake.spec    # → dist/GxBake (GxBake.exe on Windows, GxBake.app on macOS)
 ```
 
-The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
+The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`, `disc`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
 
 ## Layout
 
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
 - `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.

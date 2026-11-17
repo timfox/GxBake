@@ -16,6 +16,7 @@ from typing import Callable
 
 import numpy as np
 
+from . import audit, budget, gct, goldsrc, images, media, models, rose, sprite, studio
 from . import audit, gct, goldsrc, images, media, models, quake, rose, sprite, studio
 from .cmpr import cmpr_decode
 
@@ -113,6 +114,8 @@ class Settings:
 	video_fps: int = media.GCVID_FPS_NUM
 	video_still_frame: int = media.GCVID_STILL_FRAME_INDEX
 	video_audio: bool = True
+	wt_fit: bool = False	# trim world packs' top mips until they fit the engine's MEM1 pool
+	wt_pool: int = 448 * 1024	# that pool (GC_WT_POOL_BYTES)
 	wad_dirs: list[str] = field(default_factory=list)
 	cache_dir: str = ""
 
@@ -592,6 +595,13 @@ class Project:
 						msg = f"{len(report.missing)} textures unresolved: {', '.join(report.missing[:8])}"
 						asset.warnings.append(msg)
 						log("  warning: " + msg)
+					if data and s.wt_fit:
+						data, res = budget.fit_pack_bytes(data, budget.Budgets(wt_pool=s.wt_pool))
+						if res.trimmed:
+							log(f"  fitted to the {s.wt_pool // 1024} KiB pool: {len(res.trimmed)} textures halved or more, "
+								f"{res.before.data_bytes // 1024} → {res.after.data_bytes // 1024} KiB")
+						if not res.ok:
+							asset.warnings.append(f"world pack still over budget: {res.reason}")
 					if data:
 						emit(asset, f"media/wt_{stem}.gct", data)
 					self._bsp_sky(asset, emit)
