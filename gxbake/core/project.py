@@ -15,7 +15,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, gct, goldsrc, images, media, models, sprite, studio
+from . import audit, gct, goldsrc, images, media, models, rose, sprite, studio
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -53,7 +53,7 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.VIDEO
 	if ext in media.AUDIO_EXTENSIONS:
 		return Kind.AUDIO
-	if ext in models.MODEL_EXTENSIONS:
+	if ext in models.MODEL_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
 		return Kind.MODEL
 	return {
 		".wad": Kind.WAD,
@@ -84,6 +84,9 @@ class Settings:
 	model_anim_fps: int = 15
 	model_static: bool = False	# ignore skeletons/animations
 	model_clip_files: bool = True	# merge <name>@<clip>.<ext> animations
+	rose_scale: float = 39.37	# ROSE Online: GoldSrc units per metre
+	rose_yaw: float = 90.0	# ROSE Online: turn about Z (ROSE models face -Y, GoldSrc +X)
+	rose_entries: list[int] = field(default_factory=list)	# only these ZSC objects / CHR characters ([] = all)
 	spr_scale: int = 2
 	video_width: int = media.GCVID_WIDTH
 	video_height: int = media.GCVID_HEIGHT
@@ -98,7 +101,8 @@ class Settings:
 
 	def model_options(self) -> models.ModelOptions:
 		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
-			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files)
+			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files,
+			self.rose_scale, self.rose_yaw)
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -140,7 +144,23 @@ class Asset:
 	def name(self) -> str:
 		if self.kind == Kind.SKYBOX:
 			return f"sky: {self.extra['name']}"
+		if "entry" in self.extra:
+			return f"{self.path.name} › {self.extra['entry']} {self.extra.get('label', '')}".rstrip()
 		return self.path.name
+
+	@property
+	def entry(self) -> "int | None":
+		"""Which object/character of a ROSE list file (.zsc/.chr) this asset is."""
+		return self.extra.get("entry")
+
+	@property
+	def stem(self) -> str:
+		"""Output file stem."""
+		return self.extra.get("stem") or self.path.stem.lower()
+
+	@property
+	def is_rose(self) -> bool:
+		return self.path.suffix.lower() in rose.ROSE_EXTENSIONS
 
 	@property
 	def size(self) -> int:
@@ -167,15 +187,17 @@ class Project:
 	def add_path(self, path: Path) -> list[Asset]:
 		path = Path(path)
 		if path.is_dir():
+			files = [c for c in sorted(path.rglob("*")) if c.is_file() and detect_kind(c) != Kind.UNKNOWN]
 			added = []
-			for child in sorted(path.rglob("*")):
-				if child.is_file() and detect_kind(child) != Kind.UNKNOWN:
-					added += self._add_file(child, root=path)
+			for child in _skip_rose_parts(files):
+				added += self._add_file(child, root=path)
 			return added
 		return self._add_file(path)
 
 	def _add_file(self, path: Path, root: Path | None = None) -> list[Asset]:
 		path = path.resolve()
+		if path.suffix.lower() in rose.LIST_EXTENSIONS:
+			return self._add_rose_list(path)
 		if any(a.path == path for a in self.assets):
 			return []
 		kind = detect_kind(path)
@@ -194,6 +216,27 @@ class Project:
 		asset = Asset(path, kind, warnings=audit.file_warnings(path, rel))
 		self.assets.append(asset)
 		return [asset]
+
+	def _add_rose_list(self, path: Path) -> list[Asset]:
+		"""One asset per object of a .zsc or character of a .chr."""
+		have = {a.entry for a in self.assets if a.path == path}
+		try:
+			found = rose.entries(path)
+		except (OSError, ValueError) as exc:
+			if None in have:
+				return []
+			asset = Asset(path, Kind.MODEL, status="Failed", warnings=[f"could not read: {exc}"])
+			self.assets.append(asset)
+			return [asset]
+		want = set(self.settings.rose_entries)
+		added = []
+		for e in found:
+			if e.index in have or (want and e.index not in want):
+				continue
+			asset = Asset(path, Kind.MODEL, {"entry": e.index, "label": e.label, "stem": rose.entry_stem(path, e)})
+			self.assets.append(asset)
+			added.append(asset)
+		return added
 
 	def remove(self, asset: Asset) -> None:
 		self.assets.remove(asset)
@@ -240,6 +283,8 @@ class Project:
 				d["Bones"] = len(model.bones)
 				d["Sequences"] = ", ".join(f"{sq.name} ({len(sq.frames)})" for sq in model.sequences)
 				d["Studio MDL"] = audit.human_bytes(len(mdl))
+				if asset.is_rose:
+					d["Source"] = "ROSE Online" + (f", entry {asset.entry}" if asset.entry is not None else "")
 			elif asset.kind == Kind.SPR:
 				d.update(sprite.spr_info(asset.path.read_bytes()))
 			elif asset.kind == Kind.BSP:
@@ -351,18 +396,25 @@ class Project:
 			mtime = asset.path.stat().st_mtime_ns
 		except OSError:
 			mtime = 0
-		clips = tuple((p.name, p.stat().st_mtime_ns) for p in models.clip_files(asset.path)) if opts.clip_files else ()
-		key = (asset.path, mtime, clips, opts.scale, opts.up_axis, opts.skin_max_edge, opts.alpha_threshold,
-			opts.anim_fps, opts.static)
-		hit = self._model_cache.get(asset.path)
+		if asset.is_rose:
+			clips: tuple = (opts.rose_scale, opts.rose_yaw)
+		else:
+			clips = tuple((p.name, p.stat().st_mtime_ns) for p in models.clip_files(asset.path)) if opts.clip_files else ()
+		key = (asset.path, asset.entry, mtime, clips, opts.scale, opts.up_axis, opts.skin_max_edge,
+			opts.alpha_threshold, opts.anim_fps, opts.static)
+		ck = (asset.path, asset.entry)
+		hit = self._model_cache.get(ck)
 		if hit and hit[0] == key:
 			return hit[1], hit[2]
-		model = models.import_model(asset.path, opts)
+		if asset.is_rose:
+			model = rose.import_rose(asset.path, opts, asset.entry)
+		else:
+			model = models.import_model(asset.path, opts)
 		mdl = models.build_studio_mdl(model, opts)
 		for w in model.warnings:
 			if w not in asset.warnings:
 				asset.warnings.append(w)
-		self._model_cache[asset.path] = (key, model, mdl)
+		self._model_cache[ck] = (key, model, mdl)
 		return model, mdl
 
 	def _model_preview(self, asset: Asset, child: str | None) -> Preview:
@@ -454,7 +506,7 @@ class Project:
 			log(f"{asset.name} [{asset.kind.value}]")
 			t0 = time.monotonic()
 			try:
-				stem = asset.path.stem.lower()
+				stem = asset.stem
 				if asset.kind == Kind.IMAGE:
 					src = images.load_rgba(asset.path)
 					entry = images.encode_image(src, s.image, asset.path.stem)
@@ -588,6 +640,24 @@ class Project:
 			],
 		}
 		(out_dir / "gxbake-manifest.json").write_text(json.dumps(manifest, indent=2))
+
+
+def _skip_rose_parts(files: list[Path]) -> list[Path]:
+	"""A folder scan of ROSE data keeps the list files (.zsc/.chr) and drops what they
+	reference: loose .zms meshes and .dds textures, and the PART_*.ZSC beside a .chr."""
+	lists = [f for f in files if f.suffix.lower() in rose.LIST_EXTENSIONS]
+	if not lists:
+		return files
+	chr_dirs = {f.parent for f in lists if f.suffix.lower() == ".chr"}
+	out = []
+	for f in files:
+		ext = f.suffix.lower()
+		if ext in (".zms", ".dds"):
+			continue
+		if ext == ".zsc" and f.parent in chr_dirs and f.name.lower().startswith("part_"):
+			continue
+		out.append(f)
+	return out
 
 
 def _stats(src: "np.ndarray | None", res: "np.ndarray | None", nbytes: int, fmt: str) -> dict:

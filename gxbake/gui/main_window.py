@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..core import audit, images, models
+from ..core import audit, images, models, rose
 from ..core.project import CONVERTIBLE, Asset, Kind, Project, Settings
 from .widgets import ImagePane, Task
 
@@ -47,10 +47,12 @@ CHILD_ROLE = Qt.ItemDataRole.UserRole + 1
 HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.MODEL, Kind.SKYBOX}
 _MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS))
 _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
+_ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
 FILE_FILTER = (
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.avi *.mp4 *.mkv *.mov *.webm *.wav *.mp3 *.ogg "
-	f"{_MODEL_GLOBS});;"
+	f"{_MODEL_GLOBS} {_ROSE_GLOBS});;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
+	f"ROSE Online models ({_ROSE_GLOBS});;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
 )
 
@@ -143,6 +145,22 @@ class SettingsPanel(QWidget):
 		f.addRow(self.model_clips)
 		outer.addWidget(imp)
 
+		ro = QGroupBox("ROSE Online models (.zms .zsc .chr .rosemdl)")
+		f = QFormLayout(ro)
+		self.rose_scale = QDoubleSpinBox()
+		self.rose_scale.setRange(0.01, 1000.0)
+		self.rose_scale.setDecimals(2)
+		self.rose_scale.setValue(settings.rose_scale)
+		self.rose_scale.setToolTip("GoldSrc units per metre. 39.37 keeps real size (a ROSE avatar is about 55 units tall).")
+		f.addRow("Units per metre", self.rose_scale)
+		self.rose_yaw = QDoubleSpinBox()
+		self.rose_yaw.setRange(-180.0, 180.0)
+		self.rose_yaw.setDecimals(0)
+		self.rose_yaw.setValue(settings.rose_yaw)
+		self.rose_yaw.setToolTip("Turn about the up axis. ROSE models face -Y; 90 makes them face GoldSrc's +X.")
+		f.addRow("Turn (degrees)", self.rose_yaw)
+		outer.addWidget(ro)
+
 		vid = QGroupBox("Video and audio")
 		f = QFormLayout(vid)
 		self.vw = self._spin(8, 640, settings.video_width, step=8)
@@ -191,7 +209,7 @@ class SettingsPanel(QWidget):
 		for w in (self.mipmaps, self.pack, self.raw_cmp, self.lean_mesh, self.skin_comp, self.vaudio, self.model_full,
 				self.model_static, self.model_clips):
 			w.toggled.connect(self._sync)
-		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps):
+		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
@@ -248,6 +266,8 @@ class SettingsPanel(QWidget):
 		s.model_static = self.model_static.isChecked()
 		s.model_anim_fps = self.model_fps.value()
 		s.model_clip_files = self.model_clips.isChecked()
+		s.rose_scale = self.rose_scale.value()
+		s.rose_yaw = self.rose_yaw.value()
 		s.video_width = self.vw.value()
 		s.video_height = self.vh.value()
 		s.video_fps = self.fps.value()

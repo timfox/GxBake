@@ -14,6 +14,7 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | BSP v30 | `media/wt_<map>.gct` (world textures resolved through the map's WADs) and its sky | `build_world_texture_packs`, `wt_read_wads` |
 | Studio `.mdl` | `gc_studio/<name>.mdl` (lean mesh) and `gc_studio/<name>t.mdl` (downsampled skins) | `lean_studio_mesh_bytes`, `lean_studio_tex_companion_bytes` |
 | 3D models via Assimp (OBJ, FBX, glTF/GLB, DAE, 3DS, Blend, MD2/MD3/MD5, IQM, B3D, SMD, MS3D and ~25 more) | `models/<name>.mdl` (studio MDL v10 with bones, sequences and paletted skins), then the same `gc_studio/<name>.mdl` + `<name>t.mdl` as a studio model | `models.import_model`, `models.build_studio_mdl`, then the two functions above |
+| ROSE Online `.zms` meshes, `.zsc` object lists, `.chr` character lists (with `.zmd` skeletons, `.zmo` motions, `.dds` textures) | the same `models/` + `gc_studio/` studio models, one per object or character | `rose.import_rose`, then as above |
 | Sprite `.spr` | `sprites/<name>.spr`, downsampled, keeping thin alpha-test strokes | `lean_hl_spr_bytes` |
 | Video (AVI, MP4…) | `media/<name>.gcvid` (RGB565 delta) and `.gcpcm` | `build_gcvid_companion`, `build_gcpcm_companion` |
 | Audio (WAV, MP3, OGG) | `media/<name>.gcpcm` (48 kHz stereo, s16 big-endian) | `build_gcpcm_companion` |
@@ -35,6 +36,19 @@ Settings: **Scale** (glTF and most FBX are in metres, so try 39.37), **Source up
 Not carried over: morph/vertex animation (MD2/MD3 import their first frame), blended skin weights beyond the heaviest bone, root motion, and multiple skin families.
 
 Assimp comes from the `assimp-py` wheel, which bundles the native library, so there is nothing to install separately. Skeletons and animations need assimp-py 1.2, which ships for Python 3.12 and newer; on 3.10 and 3.11 models import static. It is part of the `gui` and `dev` extras, or `pip install -e ".[models]"` for the CLI alone.
+
+## ROSE Online models
+
+GxBake reads ROSE Online's own formats directly (Assimp knows none of them): ZMS meshes, ZMD skeletons, ZMO motions, ZSC object lists and LIST_NPC.CHR character lists, plus DDS textures through Pillow. Point it at an extracted client tree (the folder that holds `3DDATA`) or at single files:
+
+- **`LIST_NPC.CHR`**: one asset per character. Its meshes come from `PART_NPC.ZSC` next to it, its skeleton and motions from the paths in the CHR, so each NPC or monster becomes an animated studio model with sequences named after its motion slots (`stop`, `walk`, `attack`, `hit`, `die`, `run`…; idle and walk loop, the rest play once).
+- **`LIST_*.ZSC`**: one asset per object (map decorations, buildings, items), with every part placed by its ZSC transform.
+- **`.zms`**: a single mesh. A same-named texture next to it is used; a skinned mesh picks up the `.zmd` beside it and the `.zmo` motions in its folder (or `<mesh>@<clip>.zmo` clips).
+- **`.rosemdl`**: a small JSON file for models nothing lists, such as a player avatar assembled from body, arm, foot and face parts: `{"skeleton": "3DDATA/AVATAR/MALE.ZMD", "parts": [{"zsc": "3DDATA/AVATAR/LIST_MBODY.ZSC", "object": 1}, {"mesh": "x.zms", "texture": "x.dds", "bone": 4}], "motions": {"walk": "3DDATA/MOTION/AVATAR/EMPTY_WALK_M1.ZMO"}}`.
+
+Paths inside ZSC/CHR files are matched case-insensitively against the `3DDATA` root. Adding a whole folder lists the CHR characters and ZSC objects and leaves out the loose meshes, textures and `PART_*.ZSC` they draw from. Output names are `<list>_<index>_<name>`, e.g. `npc_33_deck16.mdl`. `--rose-entry N` (repeatable) limits a CLI run to some entries.
+
+ROSE is Z-up like GoldSrc. Settings: **Units per metre** (39.37 keeps real size) and **Turn** (ROSE models face -Y; 90° makes them face GoldSrc's +X). Skinning is rigid (each vertex follows its heaviest bone), double-sided materials get back faces, and alpha-tested materials become masked skins. Not converted yet: per-part ZSC animations, UV/alpha ZMO tracks, effects, and maps; see [docs/rose-online.md](docs/rose-online.md).
 
 ## The app
 

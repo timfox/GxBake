@@ -260,3 +260,121 @@ def glb_arm(path, angle_deg: float = 90.0, name: str = "bend") -> None:
 	body = struct.pack("<I4s", len(js), b"JSON") + js + struct.pack("<I4s", len(binchunk), b"BIN\0") + binchunk
 	with open(path, "wb") as f:
 		f.write(struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body)
+
+
+# -- ROSE Online (ZMS / ZMD / ZMO / ZSC / CHR) ------------------------------------
+
+
+def _cstr(s: str) -> bytes:
+	return s.encode() + b"\0"
+
+
+def rose_zms(positions, tris, uvs=None, normals=None, joints=None, weights=None, bone_map=None) -> bytes:
+	"""ZMS0008 mesh. positions in metres; joints index into bone_map (ZMD bone ids)."""
+	pos = np.asarray(positions, np.float32)
+	n = len(pos)
+	fmt = 1 << 1
+	if normals is not None:
+		fmt |= 1 << 2
+	if joints is not None:
+		fmt |= (1 << 4) | (1 << 5)
+	if uvs is not None:
+		fmt |= 1 << 7
+	bone_map = list(bone_map or [])
+	out = bytearray(_cstr("ZMS0008") + struct.pack("<I", fmt))
+	out += struct.pack("<6f", *pos.min(0), *pos.max(0))
+	out += struct.pack("<H", len(bone_map)) + struct.pack(f"<{len(bone_map)}H", *bone_map)
+	out += struct.pack("<H", n) + pos.tobytes()
+	if normals is not None:
+		out += np.asarray(normals, np.float32).tobytes()
+	if joints is not None:
+		for w, j in zip(np.asarray(weights, np.float32), np.asarray(joints, np.int64)):
+			out += struct.pack("<4f4H", *w, *j)
+	if uvs is not None:
+		out += np.asarray(uvs, np.float32).tobytes()
+	t = np.asarray(tris, np.uint16)
+	out += struct.pack("<H", len(t)) + t.tobytes()
+	out += struct.pack("<H", 1) + struct.pack("<H", len(t))	# material face counts
+	out += struct.pack("<H", 0) + struct.pack("<H", 0)	# no strips, pool type
+	return bytes(out)
+
+
+def rose_zmd(bones, dummies=()) -> bytes:
+	"""bones: (name, parent, pos_cm, quat_wxyz); bone 0 is its own parent."""
+	out = bytearray(b"ZMD0003" + struct.pack("<I", len(bones)))
+	for i, (name, parent, pos, q) in enumerate(bones):
+		out += struct.pack("<I", i if parent < 0 else parent) + _cstr(name) + struct.pack("<3f4f", *pos, *q)
+	out += struct.pack("<I", len(dummies))
+	for name, parent, pos, q in dummies:
+		out += _cstr(name) + struct.pack("<I", parent) + struct.pack("<3f4f", *pos, *q)
+	return bytes(out)
+
+
+def rose_zmo(fps: int, frames: int, channels) -> bytes:
+	"""channels: (kind, bone, values[frames]) with kind 2 = position (cm), 4 = rotation (wxyz)."""
+	out = bytearray(_cstr("ZMO0002") + struct.pack("<III", fps, frames, len(channels)))
+	for kind, bone, _v in channels:
+		out += struct.pack("<II", kind, bone)
+	for f in range(frames):
+		for _k, _b, v in channels:
+			out += np.asarray(v[f], np.float32).tobytes()
+	return bytes(out)
+
+
+def rose_zsc(meshes, materials, objects) -> bytes:
+	"""materials: (path, two_sided, alpha_test); objects: lists of part dicts
+	(mesh, material, pos_cm?, quat_wxyz?, bone?, parent? (1-based))."""
+	out = bytearray(struct.pack("<H", len(meshes)))
+	for m in meshes:
+		out += _cstr(m)
+	out += struct.pack("<H", len(materials))
+	for path, two_sided, atest in materials:
+		out += _cstr(path) + struct.pack("<9H", 0, int(atest), int(two_sided), int(atest), 128, 1, 1, 0, 0)
+		out += struct.pack("<f", 1.0) + struct.pack("<H3f", 0, 0, 0, 0)
+	out += struct.pack("<H", 0)	# effects
+	out += struct.pack("<H", len(objects))
+	for parts in objects:
+		out += struct.pack("<I2i", 100, 0, 0) + struct.pack("<H", len(parts))
+		for p in parts:
+			out += struct.pack("<HH", p["mesh"], p["material"])
+			if "pos" in p:
+				out += struct.pack("<BB3f", 1, 12, *p["pos"])
+			if "quat" in p:
+				out += struct.pack("<BB4f", 2, 16, *p["quat"])
+			if "bone" in p:
+				out += struct.pack("<BBH", 5, 2, p["bone"])
+			if "dummy" in p:
+				out += struct.pack("<BBH", 6, 2, p["dummy"])
+			if "parent" in p:
+				out += struct.pack("<BBH", 7, 2, p["parent"])
+			out += b"\0"
+		if parts:
+			out += struct.pack("<H", 0) + struct.pack("<6f", 0, 0, 0, 0, 0, 0)
+	return bytes(out)
+
+
+def rose_chr(skeletons, motions, characters) -> bytes:
+	"""characters: None (disabled) or (skeleton, name, objects, [(slot, motion index)])."""
+	out = bytearray()
+	for lst in (skeletons, motions, []):
+		out += struct.pack("<H", len(lst)) + b"".join(_cstr(s) for s in lst)
+	out += struct.pack("<H", len(characters))
+	for c in characters:
+		if c is None:
+			out += b"\0"
+			continue
+		skel, name, objs, mots = c
+		out += b"\1" + struct.pack("<H", skel) + _cstr(name)
+		out += struct.pack("<H", len(objs)) + struct.pack(f"<{len(objs)}H", *objs)
+		out += struct.pack("<H", len(mots)) + b"".join(struct.pack("<HH", *m) for m in mots)
+		out += struct.pack("<H", 0)
+	return bytes(out)
+
+
+def box(center, half) -> tuple[np.ndarray, np.ndarray]:
+	"""Axis-aligned box: (8 corners, 12 counter-clockwise outward triangles)."""
+	c, h = np.asarray(center, float), np.asarray(half, float)
+	corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], float) * h + c
+	tris = np.array([[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1],
+		[2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]])
+	return corners, tris
