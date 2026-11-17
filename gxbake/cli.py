@@ -193,8 +193,8 @@ def _extract(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
 	argv = sys.argv[1:] if argv is None else argv
-	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "budget", "fit", "sfx", "disc", "gui"):
-	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "extract", "gui"):
+	if argv and not argv[0].startswith("-") and argv[0] not in (
+			"convert", "inspect", "validate", "extract", "budget", "fit", "sfx", "disc", "slim", "gui"):
 		argv = ["gui", *argv]	# "Open with GxBake" / drag onto the executable
 	parser = argparse.ArgumentParser(prog="gxbake", description="Convert and optimise assets for the GameCube GX renderer.")
 	parser.add_argument("--version", action="version", version=f"GxBake {__version__}")
