@@ -22,7 +22,7 @@ import struct
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from . import audit, goldsrc
+from . import audit, goldsrc, sfx
 from .gct import GC_WT_ENTRY, GC_WT_MAGIC, GctEntry, read_gct, write_gct
 
 KiB = 1024
@@ -46,7 +46,8 @@ class Budgets:
 	wt_aram: int = 6 * MiB	# GC_WT_ARAM_BYTES ("wtstore")
 	wt_max_textures: int = 512	# GC_WT_MAX_TEXTURES
 	studio_arena: int = 1 * MiB	# Mod_GCStudioBssAlloc arena, per map
-	sfx_cache: int = 256 * KiB	# MEM1 sound cache
+	sfx_cache: int = 128 * KiB	# GC_SFX_BUDGET_BYTES (320K when the menu runs the server)
+	sfx_max_file: int = 20 * KiB	# GC_SFX_MAX_FILE_BYTES: larger WAVs are refused (48K on the menu route)
 	sfx_aram: int = 2 * MiB	# "sfx" ARAM store
 	lightmap_atlas: int = 800 * KiB
 
@@ -414,20 +415,27 @@ def map_budget(gamedir: Path, bsp: Path, budgets: Budgets | None = None,
 		f"{len(items)} models" + ("; unconverted ones counted at full size" if any("not converted" in n for n, _ in items) else ""),
 		_top(items)))
 
-	# Sound: the MEM1 cache refuses once full; the ARAM store backs it.
-	items = []
+	# Sound: per-file cap, then the MEM1 cache, backed by the ARAM store.
+	items, too_big = [], []
 	for snd in refs.sounds:
 		f = _ci_file(gamedir, f"sound/{snd}")
 		if f is None:
 			out.missing.append(f"sound/{snd}")
 			continue
-		items.append((snd, f.stat().st_size))
+		pcm = sfx.wav_pcm_bytes(f)
+		size = pcm if pcm is not None else f.stat().st_size
+		items.append((snd, size))
+		if size > b.sfx_max_file:
+			too_big.append(snd)
 	used = sum(s for _n, s in items)
-	st = OVER if used > b.sfx_aram else WARN if used > b.sfx_cache else OK
-	detail = f"{len(items)} sounds named by entities"
+	st = OVER if used > b.sfx_aram or too_big else WARN if used > b.sfx_cache else OK
+	detail = f"{len(items)} sounds named by entities (PCM bytes)"
+	if too_big:
+		detail += (f"; {len(too_big)} over the {audit.human_bytes(b.sfx_max_file)} per-file cap never play: "
+			f"{', '.join(too_big[:5])}. Run: gxbake sfx")
 	if used > b.sfx_cache:
-		detail += f"; over the {audit.human_bytes(b.sfx_cache)} MEM1 cache, so later ones are refused until stage 3 streaming"
-	out.lines.append(Line("Entity sounds (ARAM sfx)", used, b.sfx_aram, st, detail, _top(items)))
+		detail += f"; more than the {audit.human_bytes(b.sfx_cache)} MEM1 cache, so they cycle through ARAM"
+	out.lines.append(Line("Entity sounds", used, b.sfx_aram, st, detail, _top(items)))
 
 	# Sprites (counted, no dedicated window yet).
 	items = []

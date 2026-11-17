@@ -5,6 +5,7 @@
 	gxbake validate <staged gamedir>
 	gxbake budget <staged gamedir> [--map NAME] [--json]
 	gxbake fit <pack.gct> [-o OUT] [--pool 448K]
+	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
 	gxbake gui [files...]
 """
 
@@ -17,7 +18,7 @@ from pathlib import Path
 from . import __version__
 import json
 
-from .core import audit, budget
+from .core import audit, budget, sfx
 from .core.project import CONVERTIBLE, Project, Settings
 
 
@@ -121,6 +122,45 @@ def _fit(args) -> int:
 	return 0 if res.ok else 1
 
 
+def _sfx(args) -> int:
+	cap = budget.parse_size(args.cap) if args.cap else (sfx.MENU_MAX_FILE if args.menu else sfx.GAMEPLAY_MAX_FILE)
+	jobs: list[tuple[Path, Path]] = []
+	for p in map(Path, args.paths):
+		if p.is_dir():
+			jobs += [(f, f.relative_to(p)) for f in sorted(p.rglob("*")) if f.suffix.lower() == ".wav"]
+		else:
+			jobs.append((p, Path(p.name)))
+	if not jobs:
+		print("no .wav files", file=sys.stderr)
+		return 1
+	if not args.output and not args.in_place:
+		print("dry run; pass -o OUT or --in-place to write", file=sys.stderr)
+	hb = audit.human_bytes
+	refused = before = after = 0
+	for src, rel in jobs:
+		try:
+			data, rep = sfx.fit_wav_bytes(src.read_bytes(), cap, min_rate=args.min_rate,
+				keep_stereo=args.keep_stereo, allow_8bit=not args.no_8bit, truncate=args.truncate)
+		except ValueError as exc:
+			print(f"  skip  {rel}: {exc}")
+			refused += 1
+			continue
+		before += rep.before
+		after += rep.after
+		state = "ok" if rep.ok else "OVER"
+		refused += not rep.ok
+		if rep.steps or not rep.ok or args.verbose:
+			print(f"  {state:>4}  {rel}: {hb(rep.before)} -> {hb(rep.after)}"
+				+ (f" ({', '.join(rep.steps)})" if rep.steps else ""))
+		dest = src if args.in_place else (Path(args.output) / rel if args.output else None)
+		if dest is not None:
+			dest.parent.mkdir(parents=True, exist_ok=True)
+			dest.write_bytes(data)
+	print(f"{len(jobs)} sounds, {hb(before)} -> {hb(after)} of PCM; cap {hb(cap)} per file"
+		+ (f"; {refused} still over (try --truncate)" if refused else ""))
+	return 1 if refused else 0
+
+
 def _add_budget_args(p) -> None:
 	p.add_argument("--pool", help="world texture MEM1 pool (default 448K, GC_WT_POOL_BYTES)")
 	p.add_argument("--split", type=int, choices=(64, 32, 16, 8),
@@ -131,7 +171,7 @@ def _add_budget_args(p) -> None:
 
 def main(argv: list[str] | None = None) -> int:
 	argv = sys.argv[1:] if argv is None else argv
-	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "budget", "fit", "gui"):
+	if argv and not argv[0].startswith("-") and argv[0] not in ("convert", "inspect", "validate", "budget", "fit", "sfx", "gui"):
 		argv = ["gui", *argv]	# "Open with GxBake" / drag onto the executable
 	parser = argparse.ArgumentParser(prog="gxbake", description="Convert and optimise assets for the GameCube GX renderer.")
 	parser.add_argument("--version", action="version", version=f"GxBake {__version__}")
@@ -190,6 +230,19 @@ def main(argv: list[str] | None = None) -> int:
 	f.add_argument("--max-edge", type=int, help="also cap every texture to this size first")
 	_add_budget_args(f)
 	f.set_defaults(fn=_fit)
+
+	x = sub.add_parser("sfx", help="shrink WAVs under the port's per-file sound cap (20 KiB gameplay, 48 KiB menu)")
+	x.add_argument("paths", nargs="+")
+	x.add_argument("-o", "--output", help="write fitted WAVs here, keeping relative paths")
+	x.add_argument("--in-place", action="store_true")
+	x.add_argument("--menu", action="store_true", help="use the 48 KiB menu-route cap")
+	x.add_argument("--cap", help="explicit cap, e.g. 16K")
+	x.add_argument("--min-rate", type=int, default=11025, help="lowest sample rate to fall back to")
+	x.add_argument("--keep-stereo", action="store_true")
+	x.add_argument("--no-8bit", action="store_true")
+	x.add_argument("--truncate", action="store_true", help="cut (with a 10 ms fade) what still does not fit")
+	x.add_argument("-v", "--verbose", action="store_true", help="also list sounds that already fit")
+	x.set_defaults(fn=_sfx)
 
 	g = sub.add_parser("gui", help="open the desktop app")
 	g.add_argument("paths", nargs="*")

@@ -1,4 +1,5 @@
 import json
+import struct
 
 import numpy as np
 import pytest
@@ -153,7 +154,7 @@ def test_map_budget(tmp_path):
 	lines = {ln.pool: ln for ln in rep.lines}
 	assert lines["World textures (MEM1 pool)"].status == budget.OK
 	assert lines["Studio models (MEM1 arena)"].used == 21_000
-	assert lines["Entity sounds (ARAM sfx)"].used == 5000	# matched case-insensitively
+	assert lines["Entity sounds"].used == 5000	# matched case-insensitively
 	assert lines["Sky"].used == 6 * 8192
 	assert rep.missing == ["models/missing.mdl"]
 	assert rep.status == budget.WARN
@@ -183,3 +184,74 @@ def test_budget_and_fit_cli(tmp_path, capsys):
 	assert not out.exists()
 	assert cli.main(["fit", str(pack), "-o", str(out)]) == 0
 	assert budget.simulate_world_pack(out.read_bytes()).split == 64
+
+
+# --- sound effects --------------------------------------------------------------
+
+from gxbake.core import sfx  # noqa: E402
+
+
+def tone(seconds: float, rate: int = 22050, channels: int = 1, width: int = 2, loop=None) -> bytes:
+	t = np.arange(int(seconds * rate)) / rate
+	x = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)[:, None].repeat(channels, 1)
+	ls, le = loop if loop else (None, None)
+	return sfx.write_wav(sfx.Sound(rate, x, width, ls, le))
+
+
+def test_wav_roundtrip_and_loop_points():
+	data = tone(0.5, loop=(1000, 5000))
+	snd = sfx.read_wav(data)
+	assert (snd.rate, snd.channels, snd.width, snd.loop_start, snd.loop_end) == (22050, 1, 2, 1000, 5000)
+	# Same offsets the engine reads: dwSampleOffset at cue+32, "mark" at LIST+28.
+	cue = data.index(b"cue ")
+	assert struct.unpack_from("<I", data, cue + 32)[0] == 1000
+	lst = data.index(b"LIST")
+	assert data[lst + 28:lst + 32] == b"mark" and struct.unpack_from("<I", data, lst + 24)[0] == 4000
+
+
+def test_fit_sound_ladder():
+	# 1 s mono 16-bit 22 kHz = 44 KiB → 8-bit 11 kHz = ~10.8 KiB fits 20 KiB? 8-bit 22k (21.5 KiB) does not.
+	data = tone(1.0)
+	out, rep = sfx.fit_wav_bytes(data, 20 * 1024)
+	snd = sfx.read_wav(out)
+	assert rep.ok and snd.pcm_bytes <= 20 * 1024
+	assert (snd.rate, snd.width) == (11025, 2) or (snd.rate, snd.width) == (11025, 1)
+	# Under the 48 KiB menu cap it stays 22 kHz 16 bit.
+	out, rep = sfx.fit_wav_bytes(data, 48 * 1024)
+	assert out == data and rep.steps == []
+	# Stereo is folded first.
+	out, rep = sfx.fit_wav_bytes(tone(0.4, channels=2), 20 * 1024)
+	assert "mono" in rep.steps and sfx.read_wav(out).channels == 1
+
+
+def test_fit_sound_keeps_tone_and_loop():
+	data = tone(1.0, rate=44100, loop=(22050, 44100))
+	out, rep = sfx.fit_wav_bytes(data, 20 * 1024)
+	snd = sfx.read_wav(out)
+	assert snd.loop_start == snd.rate // 2
+	spec = np.abs(np.fft.rfft(snd.samples[:, 0]))
+	peak = np.argmax(spec) * snd.rate / len(snd.samples)
+	assert abs(peak - 440) < 5
+
+
+def test_fit_sound_cut_after_loop_end_and_truncate():
+	out, rep = sfx.fit_wav_bytes(tone(1.0, loop=(0, 4000)), 20 * 1024)
+	assert rep.steps[0] == "cut after loop end" and rep.after == 8000
+	out, rep = sfx.fit_wav_bytes(tone(5.0), 20 * 1024)
+	assert not rep.ok
+	out, rep = sfx.fit_wav_bytes(tone(5.0), 20 * 1024, truncate=True)
+	assert rep.ok and rep.truncated and sfx.read_wav(out).pcm_bytes <= 20 * 1024
+
+
+def test_sfx_cli_and_budget_cap(tmp_path, capsys):
+	g = staged(tmp_path, 1000)
+	(g / "sound" / "ambience" / "wind.wav").write_bytes(tone(1.5))	# 65 KiB PCM: over the cap
+	rep = budget.map_budget(g, g / "maps" / "c0a0.bsp")
+	snd = {ln.pool: ln for ln in rep.lines}["Entity sounds"]
+	assert snd.status == budget.OVER and "never play" in snd.detail
+
+	assert cli.main(["sfx", str(g / "sound")]) == 0	# dry run fits at 11 kHz 8 bit
+	assert cli.main(["sfx", str(g / "sound"), "--in-place"]) == 0
+	capsys.readouterr()
+	rep = budget.map_budget(g, g / "maps" / "c0a0.bsp")
+	assert {ln.pool: ln for ln in rep.lines}["Entity sounds"].status == budget.OK

@@ -45,12 +45,16 @@ Assimp comes from the `assimp-py` wheel, which bundles the native library, so th
 | World textures, MEM1 pool | 448 KiB (`GC_WT_POOL_BYTES`) | the `.gct` table, every texture's resident low mips and the hot ring, using the engine's own split rule (`Mod_GCWorldPackSplitDim`) |
 | World textures, ARAM store | 6 MiB, 512 entries | the whole `media/wt_<map>.gct` blob |
 | Studio models, MEM1 arena | 1 MiB per map | `gc_studio/<name>.mdl` + `<name>t.mdl` for every model the entities name, plus the Half-Life classname defaults (`monster_barney` → `barney.mdl`) and anything given with `--include 'models/v_*.mdl'` |
-| Entity sounds | 256 KiB MEM1 cache, 2 MiB ARAM | `.wav` files the entities name |
+| Entity sounds | 20 KiB per file, 128 KiB MEM1 cache, 2 MiB ARAM | the PCM bytes of `.wav` files the entities name; one over the per-file cap is refused and never plays |
 | Lightmaps | 800 KiB atlas | the BSP lighting lump (an upper bound) |
 
 It also lists sprites, the sky and the BSP size, anything referenced but not staged, and the whole tree against the 1.36 GiB disc. A map is `WARN` when the texture pool only fits at a softer split (big textures draw from low mips until they stream in) and `OVER` when something will be refused. The exit code is 1 when anything is over (`--strict` adds warnings), so it can gate CI. `--json` prints the same report as data, and `--budget studio_arena=1.5M` (repeatable), `--pool` and `--split` change the limits.
 
 `gxbake fit media/wt_c1a0.gct -o media/wt_c1a0.gct` makes a world pack fit: it drops the top mip level of the largest textures until the pack fits the pool at split 64 and the ARAM store. Level 1 is already encoded, so there is no re-encode and no new artefacts. Without `-o` it is a dry run that lists what it would halve. `gxbake convert --fit-world` does the same while converting BSPs.
+
+### Sound effects
+
+`gxbake sfx sound/ -o staged/valve/sound` shrinks WAVs under the port's per-file cap: `Sound_LoadWAV` refuses PCM data over 20 KiB in gameplay (48 KiB with `--menu`, when the menu runs the server). It only accepts 8/16-bit Microsoft PCM, so it tries, least lossy first: cutting data after the loop end (never played), stereo to mono, then the smallest step down the 22 kHz/11 kHz × 16/8-bit ladder that fits (8-bit gets TPDF dither, resampling is band-limited). Loop points are kept and rescaled. Anything that still does not fit is reported, or cut with a 10 ms fade with `--truncate`. `--in-place`, `--cap`, `--min-rate`, `--keep-stereo` and `--no-8bit` adjust it, and without `-o` it is a dry run.
 
 ## The app
 
@@ -80,11 +84,11 @@ pip install -e ".[dev]"
 pyinstaller packaging/gxbake.spec    # → dist/GxBake (GxBake.exe on Windows, GxBake.app on macOS)
 ```
 
-The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
+The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
 - `tests/`: builds synthetic WAD, BSP, MDL and SPR files, so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
