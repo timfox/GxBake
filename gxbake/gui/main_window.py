@@ -51,10 +51,11 @@ _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
 _ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
 FILE_FILTER = (
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"{_MODEL_GLOBS} {_ROSE_GLOBS});;"
+	f"{_MODEL_GLOBS} {_ROSE_GLOBS} main_file_cache.dat2 main_file_cache.dat);;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
 	f"ROSE Online models ({_ROSE_GLOBS});;"
+	"RuneScape caches (main_file_cache.dat2 main_file_cache.dat);;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
 )
 
@@ -198,6 +199,23 @@ class SettingsPanel(QWidget):
 		f.addRow("Turn (degrees)", self.rose_yaw)
 		outer.addWidget(ro)
 
+		rsg = QGroupBox("RuneScape caches (main_file_cache.dat2 / .dat)")
+		f = QFormLayout(rsg)
+		self.rs_scale = QDoubleSpinBox()
+		self.rs_scale.setRange(0.01, 10.0)
+		self.rs_scale.setDecimals(3)
+		self.rs_scale.setSingleStep(0.05)
+		self.rs_scale.setValue(settings.rs_scale)
+		self.rs_scale.setToolTip("GoldSrc units per model unit (128 units are one tile). 0.35 makes a player about 70 units tall.")
+		f.addRow("Units per model unit", self.rs_scale)
+		self.rs_yaw = QDoubleSpinBox()
+		self.rs_yaw.setRange(-180.0, 180.0)
+		self.rs_yaw.setDecimals(0)
+		self.rs_yaw.setValue(settings.rs_yaw)
+		self.rs_yaw.setToolTip("Extra turn about the up axis. Models are already turned to face GoldSrc's +X.")
+		f.addRow("Turn (degrees)", self.rs_yaw)
+		outer.addWidget(rsg)
+
 		vid = QGroupBox("Video and audio")
 		f = QFormLayout(vid)
 		self.vw = self._spin(8, 640, settings.video_width, step=8)
@@ -247,7 +265,7 @@ class SettingsPanel(QWidget):
 				self.model_static, self.model_clips, self.model_blend, self.sky_detect):
 			w.toggled.connect(self._sync)
 		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw,
-				self.sky_yaw, self.sky_fov, self.sky_exposure):
+				self.rs_scale, self.rs_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
@@ -311,6 +329,8 @@ class SettingsPanel(QWidget):
 		s.model_blend_bones = self.model_blend.isChecked()
 		s.rose_scale = self.rose_scale.value()
 		s.rose_yaw = self.rose_yaw.value()
+		s.rs_scale = self.rs_scale.value()
+		s.rs_yaw = self.rs_yaw.value()
 		s.video_width = self.vw.value()
 		s.video_height = self.vh.value()
 		s.video_fps = self.fps.value()

@@ -17,7 +17,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, budget, gct, goldsrc, images, media, models, quake, rose, skybox, sprite, studio, studio_slim
+from . import audit, budget, gct, goldsrc, images, media, models, quake, rose, runescape, skybox, sprite, studio, studio_slim
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -58,6 +58,8 @@ def _head(path: Path, n: int = 8) -> bytes:
 
 def detect_kind(path: Path) -> Kind:
 	ext = path.suffix.lower()
+	if runescape.is_cache(path):
+		return Kind.MODEL	# a RuneScape cache: one asset per NPC or model
 	if ext == ".mdl":
 		# GoldSrc studio (IDST v10), Source studio (IDST v44-49) and Quake alias (IDPO) share .mdl.
 		head = _head(path)
@@ -114,6 +116,9 @@ class Settings:
 	rose_scale: float = 39.37	# ROSE Online: GoldSrc units per metre
 	rose_yaw: float = 90.0	# ROSE Online: turn about Z (ROSE models face -Y, GoldSrc +X)
 	rose_entries: list[int] = field(default_factory=list)	# only these ZSC objects / CHR characters ([] = all)
+	rs_scale: float = runescape.DEFAULT_SCALE	# RuneScape: GoldSrc units per model unit (128 = one tile)
+	rs_yaw: float = 0.0	# RuneScape: extra turn about Z (models already face GoldSrc's +X)
+	rs_entries: list[str] = field(default_factory=list)	# RuneScape caches: npc:<id> / model:<id> ([] = every named NPC)
 	spr_scale: int = 2
 	video_width: int = media.GCVID_WIDTH
 	video_height: int = media.GCVID_HEIGHT
@@ -134,7 +139,7 @@ class Settings:
 	def model_options(self) -> models.ModelOptions:
 		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
 			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files,
-			self.model_blend_bones, self.rose_scale, self.rose_yaw)
+			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.rs_scale, self.rs_yaw)
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -181,8 +186,8 @@ class Asset:
 		return self.path.name
 
 	@property
-	def entry(self) -> "int | None":
-		"""Which object/character of a ROSE list file (.zsc/.chr) this asset is."""
+	def entry(self) -> "int | str | None":
+		"""Which object/character of a ROSE list file (.zsc/.chr), or which npc:/model: of a RuneScape cache."""
 		return self.extra.get("entry")
 
 	@property
@@ -193,6 +198,10 @@ class Asset:
 	@property
 	def is_rose(self) -> bool:
 		return self.path.suffix.lower() in rose.ROSE_EXTENSIONS
+
+	@property
+	def is_runescape(self) -> bool:
+		return runescape.is_cache(self.path)
 
 	@property
 	def size(self) -> int:
@@ -238,6 +247,8 @@ class Project:
 		path = path.resolve()
 		if path.suffix.lower() in rose.LIST_EXTENSIONS:
 			return self._add_rose_list(path)
+		if runescape.is_cache(path):
+			return self._add_rs_cache(path)
 		if any(a.path == path for a in self.assets):
 			return []
 		kind = detect_kind(path)
@@ -312,6 +323,26 @@ class Project:
 			added.append(asset)
 		return added
 
+	def _add_rs_cache(self, path: Path) -> list[Asset]:
+		"""One asset per NPC (or model) of a RuneScape cache."""
+		have = {a.entry for a in self.assets if a.path == path}
+		try:
+			found = runescape.entries(path, self.settings.rs_entries)
+		except (OSError, ValueError) as exc:
+			if None in have:
+				return []
+			asset = Asset(path, Kind.MODEL, status="Failed", warnings=[f"could not read: {exc}"])
+			self.assets.append(asset)
+			return [asset]
+		added = []
+		for e in found:
+			if e.key in have:
+				continue
+			asset = Asset(path, Kind.MODEL, {"entry": e.key, "label": e.label, "stem": runescape.entry_stem(e)})
+			self.assets.append(asset)
+			added.append(asset)
+		return added
+
 	def remove(self, asset: Asset) -> None:
 		self.assets.remove(asset)
 
@@ -366,6 +397,8 @@ class Project:
 				d["Studio MDL"] = audit.human_bytes(len(mdl))
 				if asset.is_rose:
 					d["Source"] = "ROSE Online" + (f", entry {asset.entry}" if asset.entry is not None else "")
+				elif asset.is_runescape:
+					d["Source"] = "RuneScape cache" + (f", {asset.entry}" if asset.entry is not None else "")
 			elif asset.kind == Kind.SPR:
 				raw = asset.path.read_bytes()
 				if raw[:4] == b"IDS2" or (raw[:4] == b"IDSP" and struct.unpack_from("<i", raw, 4)[0] == 1):
@@ -507,6 +540,8 @@ class Project:
 		hit = self._model_cache.get(asset.path)
 		if asset.is_rose:
 			clips: tuple = (opts.rose_scale, opts.rose_yaw)
+		elif asset.is_runescape:
+			clips = (opts.rs_scale, opts.rs_yaw)
 		else:
 			clips = tuple((p.name, p.stat().st_mtime_ns) for p in models.clip_files(asset.path)) if opts.clip_files else ()
 		key = (asset.path, asset.entry, mtime, clips, opts.scale, opts.up_axis, opts.skin_max_edge,
@@ -517,6 +552,8 @@ class Project:
 			return hit[1], hit[2]
 		if asset.is_rose:
 			model = rose.import_rose(asset.path, opts, asset.entry)
+		elif asset.is_runescape:
+			model = runescape.import_runescape(asset.path, opts, asset.entry)
 		else:
 			model = models.import_model(asset.path, opts)
 		mdl = models.build_studio_mdl(model, opts)

@@ -16,6 +16,7 @@ build or CI job.
 | --- | --- |
 | [`convert`](#gxbake-convert) | convert files or folders |
 | [`inspect`](#gxbake-inspect) | print what GxBake sees in a file or folder |
+| [`rs`](#gxbake-rs) | list the NPCs and models in a RuneScape cache |
 | [`validate`](#gxbake-validate) | check a staged gamedir like the disc builder does |
 | [`budget`](#gxbake-budget) | per-map memory report against the GameCube port's windows |
 | [`fit`](#gxbake-fit) | trim a .gct's top mips until it fits the world texture budget |
@@ -37,10 +38,10 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     [--mdl-anim-step MDL_ANIM_STEP] [--spr-scale SPR_SCALE] [--model-scale MODEL_SCALE] [--model-up
     {y,z}] [--model-skin-max-edge MODEL_SKIN_MAX_EDGE] [--no-model-full] [--model-static]
     [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale ROSE_SCALE]
-    [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--video-width VIDEO_WIDTH] [--video-height
-    VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR]
-    [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure
-    SKY_EXPOSURE]
+    [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW]
+    [--rs-entry KIND:ID] [--video-width VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps
+    VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR] [--cache CACHE]
+    [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |
@@ -67,6 +68,9 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--rose-scale ROSE_SCALE` | `39.37` | ROSE Online models: GoldSrc units per metre |
 | `--rose-yaw ROSE_YAW` | `90.0` | ROSE Online models: degrees to turn about Z (90 faces them +X) |
 | `--rose-entry ROSE_ENTRY` |  | ROSE .zsc/.chr: convert only this object/character index (repeatable; default all) |
+| `--rs-scale RS_SCALE` | `0.35` | RuneScape caches: GoldSrc units per model unit (128 units = one tile) |
+| `--rs-yaw RS_YAW` |  | RuneScape caches: extra degrees to turn about Z |
+| `--rs-entry KIND:ID` |  | RuneScape caches: convert npc:<id> or model:<id> (repeatable; default every named NPC) |
 | `--video-width VIDEO_WIDTH` | `320` | GCVID frame width |
 | `--video-height VIDEO_HEIGHT` | `240` | GCVID frame height |
 | `--video-fps VIDEO_FPS` | `15` | GCVID frame rate |
@@ -90,6 +94,22 @@ gxbake inspect path
 | Argument | Default | Description |
 | --- | --- | --- |
 | `path` |  | file or folder |
+
+## `gxbake rs`
+
+List the NPCs and models in a RuneScape cache.
+
+```
+gxbake rs path [--find FIND] [--all] [--limit LIMIT] [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `path` |  | main_file_cache.dat2 (JS5: OSRS / RS2) or main_file_cache.dat (2004-era), or its folder |
+| `--find FIND` |  | only NPCs whose name contains this |
+| `--all` |  | include NPCs named `null` (variants the client swaps in) |
+| `--limit LIMIT` | `50` | NPCs to print (0 = all) |
+| `--json` |  | print everything as JSON |
 
 ## `gxbake validate`
 
