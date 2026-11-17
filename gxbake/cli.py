@@ -6,6 +6,7 @@
 	gxbake budget <staged gamedir> [--map NAME] [--json]
 	gxbake fit <pack.gct> [-o OUT] [--pool 448K]
 	gxbake disc <staged gamedir> [--json]
+	gxbake slim <model.mdl> [-o OUT] [--step 2] [--stub 'death*']
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
 	gxbake gui [files...]
@@ -33,6 +34,7 @@ def _convert(args) -> int:
 	s.pack_name = args.pack_name
 	s.raw_cmp = args.raw_cmp
 	s.mdl_max_edge = args.mdl_max_edge
+	s.mdl_anim_step = args.mdl_anim_step
 	s.spr_scale = args.spr_scale
 	s.model_scale = args.model_scale
 	s.model_up_axis = args.model_up
@@ -176,6 +178,38 @@ def _disc(args) -> int:
 	return 1 if rep.on_disc > rep.capacity else 0
 
 
+def _slim(args) -> int:
+	from .core import studio_slim
+
+	hb = audit.human_bytes
+	src = Path(args.path)
+	raw = src.read_bytes()
+	try:
+		before = studio_slim.studio_breakdown(raw)
+		res = studio_slim.slim_studio(raw, args.step, args.stub, args.keep)
+	except ValueError as exc:
+		print(f"{src}: {exc}", file=sys.stderr)
+		return 1
+	after = studio_slim.studio_breakdown(res.data)
+	skins = before["skins"] + before["skin tables"]
+	print(f"{src.name}: {hb(len(raw))}, lean mesh (what gc_studio/ loads) {hb(len(raw) - skins)}")
+	for k, v in sorted(before.items(), key=lambda t: -t[1]):
+		if k == "total" or not v:
+			continue
+		delta = f"  -> {hb(after[k])}" if after.get(k) != v else ""
+		print(f"  {k:<16} {hb(v):>10}{delta}")
+	for name, old, new in res.changed:
+		print(f"  {name:<16} {old} -> {new} frames")
+	if res.skipped:
+		print(f"  {len(res.skipped)} sequences live in external seqgroup files and were left alone")
+	if args.output:
+		Path(args.output).write_bytes(res.data)
+		print(f"wrote {args.output} ({hb(len(res.data))}, saved {hb(len(raw) - len(res.data))})")
+	elif res.changed:
+		print("dry run; pass -o to write")
+	return 0
+
+
 def _add_budget_args(p) -> None:
 	p.add_argument("--pool", help="world texture MEM1 pool (default 448K, GC_WT_POOL_BYTES)")
 	p.add_argument("--split", type=int, choices=(64, 32, 16, 8),
@@ -210,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
 	c.add_argument("--pack-name", default="textures")
 	c.add_argument("--raw-cmp", action="store_true")
 	c.add_argument("--mdl-max-edge", type=int, default=64)
+	c.add_argument("--mdl-anim-step", type=int, default=1,
+		help="keep every Nth animation frame in gc_studio/<name>.mdl (seqgroup 0 only)")
 	c.add_argument("--spr-scale", type=int, default=2)
 	c.add_argument("--model-scale", type=float, default=1.0, help="3D model import: source units → GoldSrc units")
 	c.add_argument("--model-up", choices=("y", "z"), default="y", help="3D model import: source up axis")
@@ -284,6 +320,14 @@ def main(argv: list[str] | None = None) -> int:
 	x.add_argument("-o", "--output", required=True)
 	x.add_argument("--match", action="append", help="only members matching this glob, e.g. 'models/*' (repeatable)")
 	x.set_defaults(fn=_extract)
+
+	sl = sub.add_parser("slim", help="show where a studio model's bytes go and thin its animation")
+	sl.add_argument("path")
+	sl.add_argument("-o", "--output")
+	sl.add_argument("--step", type=int, default=1, help="keep every Nth animation frame (fps adjusted, same duration)")
+	sl.add_argument("--stub", action="append", metavar="PATTERN", help="reduce matching sequences to one frame")
+	sl.add_argument("--keep", action="append", metavar="PATTERN", help="never touch matching sequences")
+	sl.set_defaults(fn=_slim)
 
 	g = sub.add_parser("gui", help="open the desktop app")
 	g.add_argument("paths", nargs="*")

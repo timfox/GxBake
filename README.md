@@ -62,6 +62,15 @@ It also lists sprites, the sky and the BSP size, anything referenced but not sta
 ### Disc usage
 
 `gxbake disc <staged gamedir>` shows what the tree costs on a disc: every file rounded up to 2 KiB ISO9660 sectors (the disc builder exposes game data through ISO9660), the share of the 1.36 GiB disc, and a breakdown by directory. It also lists byte-identical files, textures stored in more than one `.gct` (same CMPR bytes; each map loads its own pack, so this only costs disc), and files under `models/`, `gc_studio/` and `sound/` that no map names. The game DLL may still precache those, so treat that list as a place to look, and pass `--include` for models you know are needed. `--json` gives the same data.
+### Studio models
+
+`gxbake slim models/barney.mdl` shows where a studio model's bytes go (animation, meshes, bones, sequences, skins) and how big the lean `gc_studio/` mesh is, since that is what fills the 1 MiB studio arena. For NPCs and view models the animation is usually the largest part, so:
+
+- `--step 2` keeps every second frame of each sequence and scales its fps, so it lasts as long as before (the engine interpolates between frames). Events move with their frames.
+- `--stub 'death*'` reduces matching sequences to their first frame, and `--keep 'idle*'` protects others.
+
+Sequences are never removed, so the game DLL's sequence numbers and names stay valid. Only animation stored in the model itself is changed; sequences in external `<name>01.mdl` seqgroup files are left alone. Without `-o` it is a dry run. `gxbake convert --mdl-anim-step 2` applies the frame step to every `gc_studio/<name>.mdl` it writes.
+
 ## Source, Quake and Quake II formats
 
 These are read by GxBake itself (no Assimp), and each becomes what the GameCube port loads.
@@ -121,11 +130,11 @@ pip install -e ".[dev]"
 pyinstaller packaging/gxbake.spec    # → dist/GxBake (GxBake.exe on Windows, GxBake.app on macOS)
 ```
 
-The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`, `disc`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
+The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`, `disc`, `slim`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
 - `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
