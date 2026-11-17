@@ -18,6 +18,7 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | Source `.mdl` (v44–49) + `.vvd` + `.vtx`, Quake `.mdl` | the same `models/` and `gc_studio/` outputs as an Assimp model | `source_mdl.import_source`, `quake.import_alias`, then `models.build_studio_mdl` |
 | Sprite `.spr` (Half-Life, Quake), Quake II `.sp2` | `sprites/<name>.spr`: a Half-Life sprite, downsampled, keeping thin alpha-test strokes | `quake.hl_sprite_bytes`, `lean_hl_spr_bytes` |
 | ROSE Online `.zms` meshes, `.zsc` object lists, `.chr` character lists (with `.zmd` skeletons, `.zmo` motions, `.dds` textures) | the same `models/` + `gc_studio/` studio models, one per object or character | `rose.import_rose`, then as above |
+| RuneScape caches: OSRS / RS2 JS5 (`main_file_cache.dat2` + `.idx*`) and 2004-era (`main_file_cache.dat`) | the same `models/` + `gc_studio/` studio models, one per NPC (or model), with face colours baked into a palette skin and label-group animations as bones | `runescape.import_runescape`, then as above |
 | Sprite `.spr` | `sprites/<name>.spr`, downsampled, keeping thin alpha-test strokes | `lean_hl_spr_bytes` |
 | Video (AVI, MP4…) | `media/<name>.gcvid` (RGB565 delta) and `.gcpcm` | `build_gcvid_companion`, `build_gcpcm_companion` |
 | Audio (WAV, MP3, OGG, FLAC, AIFF, VOC, Opus…) | `media/<name>.gcpcm` (48 kHz stereo, s16 big-endian); PCM WAV needs no ffmpeg | `build_gcpcm_companion` |
@@ -131,6 +132,18 @@ Paths inside ZSC/CHR files are matched case-insensitively against the `3DDATA` r
 
 ROSE is Z-up like GoldSrc. Settings: **Units per metre** (39.37 keeps real size) and **Turn** (ROSE models face -Y; 90° makes them face GoldSrc's +X). Skinning is rigid (each vertex follows its heaviest bone), double-sided materials get back faces, and alpha-tested materials become masked skins. Not converted yet: per-part ZSC animations, UV/alpha ZMO tracks, effects, and maps; see [docs/rose-online.md](docs/rose-online.md).
 
+## RuneScape caches
+
+GxBake reads RuneScape's client cache in place; nothing needs extracting first. Point it at `main_file_cache.dat2` (or the folder holding it and its `.idx` files):
+
+- **JS5 caches** (Old School RuneScape, and RS2 from 2006 on): one asset per named NPC. Each NPC's models are merged, its recolours, retextures and width/height scale applied, and its stand, walk and run sequences baked as `idle`, `walk` and `run`.
+- **2004-era caches** (`main_file_cache.dat` with `idx0`–`idx4`): models only, one asset per model id.
+- `--rs-entry npc:<id>` or `--rs-entry model:<id>` (repeatable) picks what to convert instead of every NPC. `gxbake rs <cache> --find guard` lists NPC ids, names, models and sequences.
+
+All four model encodings are read (the original one and the 0xFFFF, 0xFFFE and 0xFFFD ones). RuneScape models have a 16-bit HSL colour per face instead of a texture, so the colours go into a small palette skin with one 4x4 block per colour (one CMPR block, so the GameCube's compression keeps them exact) and every face samples its block. Textured faces get the texture's sprite as their own skin. Output names are `rs_npc<id>_<name>` or `rs_model<id>`.
+
+Animations move groups of vertices, not bones, so every vertex group gets a studio bone and each frame's rotate and translate steps become bone poses. Settings: **Units per model unit** (0.35 makes a ~200-unit player about 70 units tall; 128 units are one tile) and **Turn**. Not converted yet: items, objects (locs) and maps, skeletal ("animaya") animations of newer OSRS models, translucent faces (drawn opaque) and texture animation. See [docs/runescape.md](docs/runescape.md).
+
 ## The app
 
 - Drag files or a whole gamedir onto the window, or use **Add Files…** / **Add Folder…**.
@@ -169,8 +182,7 @@ The executable opens the app when run with no arguments or with file paths. With
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
-- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
+- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, RuneScape caches in `rs_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.

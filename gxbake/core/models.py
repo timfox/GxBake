@@ -94,6 +94,8 @@ class ModelOptions:
 	blend_bones: bool = True	# native Source import: helper bones stand in for two-bone weights
 	rose_scale: float = 39.37	# ROSE Online models: GoldSrc units per metre (scale above is for Assimp only)
 	rose_yaw: float = 90.0	# ROSE Online models face -Y; turn about Z so they face GoldSrc's +X
+	rs_scale: float = 0.35	# RuneScape models: GoldSrc units per model unit (128 units = one tile)
+	rs_yaw: float = 0.0	# RuneScape models: extra turn about Z (they are already turned to face +X)
 
 
 @dataclass
@@ -1054,13 +1056,24 @@ def _mean_colour(rgba: "np.ndarray") -> "np.ndarray":
 	return px.reshape(-1, 3).mean(0)
 
 
+def _sample_colour(rgba: "np.ndarray", u: "np.ndarray", v: "np.ndarray") -> "np.ndarray":
+	"""Skin colour at UV fractions (top-left origin, wrapping), for per-triangle preview colours."""
+	h, w = rgba.shape[:2]
+	x = (np.floor(np.mod(u, 1.0) * w).astype(int)) % w
+	y = (np.floor(np.mod(v, 1.0) * h).astype(int)) % h
+	return rgba[y, x, :3].astype(np.float64)
+
+
 def preview_imported(model: ImportedModel, size: int = 384) -> "np.ndarray":
 	tris, cols = [], []
 	for m in model.meshes:
-		col = _mean_colour(model.materials[m.material].rgba)
+		rgba = model.materials[m.material].rgba
 		t = m.world[m.tris][:, [0, 2, 1]]	# to clockwise, like the studio output
 		tris.append(t)
-		cols.append(np.tile(col, (len(t), 1)))
+		uv = m.uvs[m.tris].mean(1) if len(m.uvs) else np.zeros((len(t), 2))
+		col = _sample_colour(rgba, uv[:, 0], uv[:, 1])
+		opaque = rgba[..., 3].min() >= 128
+		cols.append(col if opaque else np.tile(_mean_colour(rgba), (len(t), 1)))
 	if not tris:
 		return render_preview(np.zeros((0, 3, 3)), np.zeros((0, 3)), size)
 	return render_preview(np.concatenate(tris), np.concatenate(cols), size)
@@ -1072,13 +1085,20 @@ def preview_studio(raw: bytes, skins_raw: bytes | None = None, size: int = 384,
 	from .studio import studio_textures
 
 	skins = studio_textures(skins_raw if skins_raw is not None else raw)
+	sizes = [rgba.shape[:2] for _n, _f, rgba in studio_textures(raw)]	# s/t are in the full skin's texels
 	skin_cols = [_mean_colour(rgba) for _n, _f, rgba in skins]
 	tris, cols = [], []
 	v = studio_posed_vertices(raw, seq, frame)
 	for m in studio_meshes(raw):
-		col = skin_cols[m["skin"]] if m["skin"] < len(skin_cols) else np.array([255.0, 255.0, 255.0])
+		k = m["skin"]
+		col = skin_cols[k] if k < len(skin_cols) else np.array([255.0, 255.0, 255.0])
+		sample = k < len(skins) and k < len(sizes) and skins[k][2][..., 3].min() >= 128
 		for tri in m["tris"]:
 			tris.append(v[[c[0] for c in tri]])
+			if sample:
+				h, w = sizes[k]
+				st = np.array([[c[2], c[3]] for c in tri], np.float64).mean(0)
+				col = _sample_colour(skins[k][2], np.array([st[0] / w]), np.array([st[1] / h]))[0]
 			cols.append(col)
 	if not tris:
 		return render_preview(np.zeros((0, 3, 3)), np.zeros((0, 3)), size)
