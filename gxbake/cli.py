@@ -225,31 +225,187 @@ def _extract(args) -> int:
 	return 0 if total else 1
 
 
-def main(argv: list[str] | None = None) -> int:
-	argv = sys.argv[1:] if argv is None else argv
-	if argv and not argv[0].startswith("-") and argv[0] not in (
-			"convert", "inspect", "validate", "extract", "budget", "fit", "sfx", "disc", "slim", "gui"):
-		argv = ["gui", *argv]	# "Open with GxBake" / drag onto the executable
+def _image_opts(args):
+	from .core.images import ImageOptions
+
+	return ImageOptions(max_edge=args.max_edge, mipmaps=not args.no_mipmaps, alpha=args.alpha)
+
+
+def _pack_report(rep) -> None:
+	for label, names in (("added", rep.added), ("replaced", rep.replaced), ("removed", rep.removed)):
+		if names:
+			print(f"{label} {len(names)}: {', '.join(names[:12])}{' …' if len(names) > 12 else ''}")
+	for w in rep.warnings:
+		print(f"warning: {w}", file=sys.stderr)
+
+
+def _pack_list(args) -> int:
+	from .core import packtool
+
+	entries = packtool.load(Path(args.pack))
+	rs = [r for r in packtool.rows(entries) if packtool.matches(r.name, args.name)]
+	if args.json:
+		print(json.dumps([r.__dict__ for r in rs], indent=2))
+		return 0
+	hb = audit.human_bytes
+	print(f"{'name':<16} {'size':>9} {'mips':>4} alpha {'tag':>6} {'bytes':>10}")
+	for r in sorted(rs, key=lambda r: -r.bytes) if args.sort == "size" else rs:
+		print(f"{r.name:<16} {f'{r.width}x{r.height}':>9} {r.levels:>4} {'yes' if r.alpha else '  -':>5} {r.tag:>6x} {hb(r.bytes):>10}")
+	print(f"{len(rs)} textures, {hb(sum(r.bytes for r in rs))} of CMPR")
+	return 0
+
+
+def _pack_extract(args) -> int:
+	from .core import packtool
+
+	written = packtool.extract(packtool.load(Path(args.pack)), Path(args.output), args.name, args.all_levels)
+	print(f"wrote {len(written)} PNGs to {args.output}")
+	return 0 if written else 1
+
+
+def _image_files(paths: list[str]) -> list[Path]:
+	from .core.images import IMAGE_EXTENSIONS
+
+	out = []
+	for p in map(Path, paths):
+		if p.is_dir():
+			out += sorted(f for f in p.rglob("*") if f.suffix.lower() in IMAGE_EXTENSIONS)
+		else:
+			out.append(p)
+	return out
+
+
+def _pack_build(args) -> int:
+	from .core import packtool
+
+	rep = packtool.EditReport()
+	files = _image_files(args.images)
+	if not files:
+		print("no images", file=sys.stderr)
+		return 1
+	entries = packtool.upsert([], packtool.encode_files(files, _image_opts(args), rep), rep)
+	size = packtool.save(Path(args.output), entries)
+	_pack_report(rep)
+	print(f"wrote {args.output}: {len(entries)} textures, {audit.human_bytes(size)}")
+	return 0
+
+
+def _pack_add(args) -> int:
+	from .core import packtool
+
+	rep = packtool.EditReport()
+	entries = packtool.upsert(packtool.load(Path(args.pack)),
+		packtool.encode_files(_image_files(args.images), _image_opts(args), rep), rep)
+	out = Path(args.output or args.pack)
+	size = packtool.save(out, entries)
+	_pack_report(rep)
+	print(f"wrote {out}: {len(entries)} textures, {audit.human_bytes(size)}")
+	return 0
+
+
+def _pack_remove(args) -> int:
+	from .core import packtool
+
+	rep = packtool.EditReport()
+	entries = packtool.remove(packtool.load(Path(args.pack)), args.names, rep)
+	if not rep.removed:
+		print("nothing matched", file=sys.stderr)
+		return 1
+	out = Path(args.output or args.pack)
+	size = packtool.save(out, entries)
+	_pack_report(rep)
+	print(f"wrote {out}: {len(entries)} textures, {audit.human_bytes(size)}")
+	return 0
+
+
+def _pack_merge(args) -> int:
+	from .core import packtool
+
+	rep = packtool.EditReport()
+	entries = packtool.merge([packtool.load(Path(p)) for p in args.packs], rep)
+	size = packtool.save(Path(args.output), entries)
+	if rep.replaced:
+		print(f"replaced by a later pack: {', '.join(rep.replaced[:12])}")
+	for w in rep.warnings:
+		print(f"warning: {w}", file=sys.stderr)
+	print(f"wrote {args.output}: {len(entries)} textures, {audit.human_bytes(size)}")
+	return 0
+
+
+def _add_image_opts(p) -> None:
+	p.add_argument("--max-edge", type=int, default=256, help="largest texture side (power of two)")
+	p.add_argument("--no-mipmaps", action="store_true", help="write level 0 only")
+	p.add_argument("--alpha", choices=("auto", "on", "off"), default="auto",
+		help="CMPR 1-bit alpha: auto uses it when the image has transparency")
+
+
+def _add_pack_parser(sub) -> None:
+	pk = sub.add_parser("pack", help="list, extract, build and edit .gct texture packs",
+		description="Manage GCWT texture packs (.gct) directly. Entry names are the image file names, "
+		"lowercased and cut to 15 characters; the engine reads at most 512 entries per pack.")
+	ps = pk.add_subparsers(dest="pack_cmd", metavar="action", required=True)
+
+	a = ps.add_parser("list", help="the textures in a pack with their sizes")
+	a.add_argument("pack", help=".gct file")
+	a.add_argument("--name", action="append", metavar="GLOB", help="only matching names (repeatable)")
+	a.add_argument("--sort", choices=("pack", "size"), default="pack", help="pack order or largest first")
+	a.add_argument("--json", action="store_true", help="print the list as JSON")
+	a.set_defaults(fn=_pack_list)
+
+	a = ps.add_parser("extract", help="decode textures to PNG, as the GameCube samples them")
+	a.add_argument("pack", help=".gct file")
+	a.add_argument("-o", "--output", required=True, help="folder for the PNGs")
+	a.add_argument("--name", action="append", metavar="GLOB", help="only matching names (repeatable)")
+	a.add_argument("--all-levels", action="store_true", help="also write every mip level as <name>_mip<N>.png")
+	a.set_defaults(fn=_pack_extract)
+
+	a = ps.add_parser("build", help="encode images into a new pack")
+	a.add_argument("images", nargs="+", help="image files or folders")
+	a.add_argument("-o", "--output", required=True, help=".gct to write")
+	_add_image_opts(a)
+	a.set_defaults(fn=_pack_build)
+
+	a = ps.add_parser("add", help="add images to a pack, replacing entries with the same name")
+	a.add_argument("pack", help=".gct file")
+	a.add_argument("images", nargs="+", help="image files or folders")
+	a.add_argument("-o", "--output", help="write here instead of updating the pack in place")
+	_add_image_opts(a)
+	a.set_defaults(fn=_pack_add)
+
+	a = ps.add_parser("remove", help="drop entries by name")
+	a.add_argument("pack", help=".gct file")
+	a.add_argument("names", nargs="+", metavar="GLOB", help="names or globs to remove")
+	a.add_argument("-o", "--output", help="write here instead of updating the pack in place")
+	a.set_defaults(fn=_pack_remove)
+
+	a = ps.add_parser("merge", help="combine packs; a later pack wins on a name clash")
+	a.add_argument("packs", nargs="+", help=".gct files, in priority order (last wins)")
+	a.add_argument("-o", "--output", required=True, help=".gct to write")
+	a.set_defaults(fn=_pack_merge)
+
+
+def build_parser() -> argparse.ArgumentParser:
+	"""Every subcommand and option. docs/cli.md is generated from this (python -m gxbake.clidoc)."""
 	parser = argparse.ArgumentParser(prog="gxbake", description="Convert and optimise assets for the GameCube GX renderer.")
 	parser.add_argument("--version", action="version", version=f"GxBake {__version__}")
-	sub = parser.add_subparsers(dest="cmd")
+	sub = parser.add_subparsers(dest="cmd", metavar="command")
 
 	c = sub.add_parser("convert", help="convert files or folders")
-	c.add_argument("paths", nargs="+")
-	c.add_argument("-o", "--output", required=True)
-	c.add_argument("--max-edge", type=int, default=256)
-	c.add_argument("--no-mipmaps", action="store_true")
-	c.add_argument("--alpha", choices=("auto", "on", "off"), default="auto")
+	c.add_argument("paths", nargs="+", help="files or folders (a gamedir, WADs, BSPs, models, images, audio, video)")
+	c.add_argument("-o", "--output", required=True, help="staged output folder")
+	c.add_argument("--max-edge", type=int, default=256, help="largest texture side for loose images (power of two)")
+	c.add_argument("--no-mipmaps", action="store_true", help="write level 0 only")
+	c.add_argument("--alpha", choices=("auto", "on", "off"), default="auto", help="CMPR 1-bit alpha: auto uses it when the image has transparency")
 	c.add_argument("--no-pack", action="store_true", help="one .gct per loose image")
-	c.add_argument("--pack-name", default="textures")
-	c.add_argument("--raw-cmp", action="store_true")
-	c.add_argument("--mdl-max-edge", type=int, default=64)
+	c.add_argument("--pack-name", default="textures", help="loose images go to media/<name>.gct")
+	c.add_argument("--raw-cmp", action="store_true", help="also write media/<name>.cmp (level 0) per loose image")
+	c.add_argument("--mdl-max-edge", type=int, default=64, help="largest skin side in gc_studio/<name>t.mdl")
 	c.add_argument("--mdl-anim-step", type=int, default=1,
 		help="keep every Nth animation frame in gc_studio/<name>.mdl (seqgroup 0 only)")
-	c.add_argument("--spr-scale", type=int, default=2)
+	c.add_argument("--spr-scale", type=int, default=2, help="sprite downscale factor")
 	c.add_argument("--model-scale", type=float, default=1.0, help="3D model import: source units → GoldSrc units")
 	c.add_argument("--model-up", choices=("y", "z"), default="y", help="3D model import: source up axis")
-	c.add_argument("--model-skin-max-edge", type=int, default=256)
+	c.add_argument("--model-skin-max-edge", type=int, default=256, help="3D model import: largest skin side in models/<name>.mdl")
 	c.add_argument("--no-model-full", action="store_true", help="skip models/<name>.mdl for imported 3D models")
 	c.add_argument("--model-static", action="store_true", help="3D model import: ignore skeletons and animations")
 	c.add_argument("--model-fps", type=int, default=15, help="3D model import: animation sample rate")
@@ -260,9 +416,9 @@ def main(argv: list[str] | None = None) -> int:
 	c.add_argument("--rose-yaw", type=float, default=90.0, help="ROSE Online models: degrees to turn about Z (90 faces them +X)")
 	c.add_argument("--rose-entry", type=int, action="append",
 		help="ROSE .zsc/.chr: convert only this object/character index (repeatable; default all)")
-	c.add_argument("--video-width", type=int, default=320)
-	c.add_argument("--video-height", type=int, default=240)
-	c.add_argument("--video-fps", type=int, default=15)
+	c.add_argument("--video-width", type=int, default=320, help="GCVID frame width")
+	c.add_argument("--video-height", type=int, default=240, help="GCVID frame height")
+	c.add_argument("--video-fps", type=int, default=15, help="GCVID frame rate")
 	c.add_argument("--fit-world", action="store_true",
 		help="trim world texture packs' top mips until they fit the engine's MEM1 pool")
 	c.add_argument("--wt-pool", default="448K", help="pool size for --fit-world")
@@ -271,11 +427,11 @@ def main(argv: list[str] | None = None) -> int:
 	c.set_defaults(fn=_convert)
 
 	i = sub.add_parser("inspect", help="print what GxBake sees in a file or folder")
-	i.add_argument("path")
+	i.add_argument("path", help="file or folder")
 	i.set_defaults(fn=_inspect)
 
 	v = sub.add_parser("validate", help="check a staged gamedir like the disc builder does")
-	v.add_argument("path")
+	v.add_argument("path", help="staged gamedir")
 	v.set_defaults(fn=_validate)
 
 	bd = sub.add_parser("budget", help="per-map memory report against the GameCube port's windows")
@@ -283,55 +439,71 @@ def main(argv: list[str] | None = None) -> int:
 	bd.add_argument("--map", action="append", help="only this map (repeatable)")
 	bd.add_argument("--include", action="append", metavar="GLOB",
 		help="models every map loads, e.g. 'models/v_*.mdl' (repeatable)")
-	bd.add_argument("--json", action="store_true")
+	bd.add_argument("--json", action="store_true", help="print the report as JSON")
 	bd.add_argument("--strict", action="store_true", help="exit 1 on warnings too")
 	bd.add_argument("-v", "--verbose", action="store_true", help="list the biggest items on every line")
 	_add_budget_args(bd)
 	bd.set_defaults(fn=_budget)
 
 	f = sub.add_parser("fit", help="trim a .gct's top mips until it fits the world texture budget")
-	f.add_argument("path")
+	f.add_argument("path", help="world texture pack (.gct)")
 	f.add_argument("-o", "--output", help="write the fitted pack here (otherwise a dry run)")
 	f.add_argument("--max-edge", type=int, help="also cap every texture to this size first")
 	_add_budget_args(f)
 	f.set_defaults(fn=_fit)
 
 	x = sub.add_parser("sfx", help="shrink WAVs under the port's per-file sound cap (20 KiB gameplay, 48 KiB menu)")
-	x.add_argument("paths", nargs="+")
+	x.add_argument("paths", nargs="+", help=".wav files or folders")
 	x.add_argument("-o", "--output", help="write fitted WAVs here, keeping relative paths")
-	x.add_argument("--in-place", action="store_true")
+	x.add_argument("--in-place", action="store_true", help="overwrite the source files")
 	x.add_argument("--menu", action="store_true", help="use the 48 KiB menu-route cap")
 	x.add_argument("--cap", help="explicit cap, e.g. 16K")
 	x.add_argument("--min-rate", type=int, default=11025, help="lowest sample rate to fall back to")
-	x.add_argument("--keep-stereo", action="store_true")
-	x.add_argument("--no-8bit", action="store_true")
+	x.add_argument("--keep-stereo", action="store_true", help="never fold stereo to mono")
+	x.add_argument("--no-8bit", action="store_true", help="never drop to 8-bit samples")
 	x.add_argument("--truncate", action="store_true", help="cut (with a 10 ms fade) what still does not fit")
 	x.add_argument("-v", "--verbose", action="store_true", help="also list sounds that already fit")
 	x.set_defaults(fn=_sfx)
 
 	dk = sub.add_parser("disc", help="disc usage: sector cost, duplicate files and textures, files no map names")
-	dk.add_argument("path")
+	dk.add_argument("path", help="staged gamedir")
 	dk.add_argument("--include", action="append", metavar="GLOB", help="count these as referenced (repeatable)")
 	dk.add_argument("--limit", type=int, default=15, help="rows per section")
-	dk.add_argument("--json", action="store_true")
+	dk.add_argument("--json", action="store_true", help="print the report as JSON")
 	dk.set_defaults(fn=_disc)
+
 	x = sub.add_parser("extract", help="unpack a Quake/GoldSrc .pak, Source .vpk or .pk3 archive")
-	x.add_argument("archives", nargs="+")
-	x.add_argument("-o", "--output", required=True)
+	x.add_argument("archives", nargs="+", help=".pak, .vpk or .pk3 files")
+	x.add_argument("-o", "--output", required=True, help="folder to extract into")
 	x.add_argument("--match", action="append", help="only members matching this glob, e.g. 'models/*' (repeatable)")
 	x.set_defaults(fn=_extract)
 
 	sl = sub.add_parser("slim", help="show where a studio model's bytes go and thin its animation")
-	sl.add_argument("path")
-	sl.add_argument("-o", "--output")
+	sl.add_argument("path", help="GoldSrc studio model (.mdl)")
+	sl.add_argument("-o", "--output", help="write the slimmed model here (otherwise a dry run)")
 	sl.add_argument("--step", type=int, default=1, help="keep every Nth animation frame (fps adjusted, same duration)")
 	sl.add_argument("--stub", action="append", metavar="PATTERN", help="reduce matching sequences to one frame")
 	sl.add_argument("--keep", action="append", metavar="PATTERN", help="never touch matching sequences")
 	sl.set_defaults(fn=_slim)
 
-	g = sub.add_parser("gui", help="open the desktop app")
-	g.add_argument("paths", nargs="*")
+	_add_pack_parser(sub)
 
+	g = sub.add_parser("gui", help="open the desktop app")
+	g.add_argument("paths", nargs="*", help="files or folders to open")
+	return parser
+
+
+def subcommands() -> list[str]:
+	parser = build_parser()
+	sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+	return list(sub.choices)
+
+
+def main(argv: list[str] | None = None) -> int:
+	argv = sys.argv[1:] if argv is None else argv
+	parser = build_parser()
+	if argv and not argv[0].startswith("-") and argv[0] not in subcommands():
+		argv = ["gui", *argv]	# "Open with GxBake" / drag onto the executable
 	args = parser.parse_args(argv)
 	if args.cmd in (None, "gui"):
 		from .gui.app import main as gui_main
