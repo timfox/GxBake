@@ -39,15 +39,11 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     {y,z}] [--model-skin-max-edge MODEL_SKIN_MAX_EDGE] [--no-model-full] [--model-static]
     [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale ROSE_SCALE]
     [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--panda-scale PANDA_SCALE] [--panda-yaw
-    PANDA_YAW] [--video-width VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS]
-    [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR] [--cache CACHE] [--no-sky-detect]
-    [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
-    [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW]
-    [--rs-entry KIND:ID] [--video-width VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps
-    VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK]
-    [--map-texture-max MAP_TEXTURE_MAX] [--map-disp-power {0,1,2,3,4}] [--no-map-hulls]
-    [--no-map-shadows] [--no-map-props] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW]
-    [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
+    PANDA_YAW] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW] [--rs-entry KIND:ID] [--video-width
+    VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool
+    WT_POOL] [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
+    [--map-disp-power {0,1,2,3,4}] [--no-map-hulls] [--no-map-shadows] [--no-map-props] [--cache
+    CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |

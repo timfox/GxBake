@@ -45,28 +45,23 @@ from .widgets import ImagePane, Task
 ASSET_ROLE = Qt.ItemDataRole.UserRole
 CHILD_ROLE = Qt.ItemDataRole.UserRole + 1
 HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.MODEL, Kind.SKYBOX}
-_MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS | models.SOURCE2_MODEL_EXTENSIONS | models.DMX_MODEL_EXTENSIONS))
+_MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS | models.SOURCE2_MODEL_EXTENSIONS
+	| models.DMX_MODEL_EXTENSIONS))
 _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
 _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
 _ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
 _USD_GLOBS = " ".join(f"*{e}" for e in sorted(models.USD_EXTENSIONS))
-FILE_FILTER = (
-	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.vmap_c *.vwrld_c *.mdl *.spr *.sp2 *.pcf *.vpcf_c *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"{_MODEL_GLOBS} {_USD_GLOBS} {_ROSE_GLOBS});;"
 _PANDA_GLOBS = "*.egg *.bam *.pz *.pandactor"
 FILE_FILTER = (
-	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"{_MODEL_GLOBS} {_ROSE_GLOBS} {_PANDA_GLOBS});;"
+	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.vmap_c *.vwrld_c *.mdl *.spr *.sp2 *.pcf *.vpcf_c "
+	f"*.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
+	f"{_MODEL_GLOBS} {_USD_GLOBS} {_ROSE_GLOBS} {_PANDA_GLOBS} main_file_cache.dat2 main_file_cache.dat);;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	f"USD scenes via FreeUSD ({_USD_GLOBS});;"
-	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
+	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal *.pcf);;"
+	"Source 2 (*.vmdl_c *.vmesh_c *.vtex_c *.vsnd_c *.vmap_c *.vwrld_c *.vpcf_c);;"
 	f"ROSE Online models ({_ROSE_GLOBS});;"
 	f"Panda3D and Toontown models ({_PANDA_GLOBS});;"
-	f"{_MODEL_GLOBS} {_ROSE_GLOBS} main_file_cache.dat2 main_file_cache.dat);;"
-	f"3D models via Assimp ({_MODEL_GLOBS});;"
-	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
-	f"ROSE Online models ({_ROSE_GLOBS});;"
 	"RuneScape caches (main_file_cache.dat2 main_file_cache.dat);;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
 )
@@ -300,9 +295,7 @@ class SettingsPanel(QWidget):
 				self.model_static, self.model_clips, self.model_blend, self.sky_detect):
 			w.toggled.connect(self._sync)
 		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw,
-				self.panda_scale, self.panda_yaw,
-				self.sky_yaw, self.sky_fov, self.sky_exposure):
-				self.rs_scale, self.rs_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
+				self.panda_scale, self.panda_yaw, self.rs_scale, self.rs_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
