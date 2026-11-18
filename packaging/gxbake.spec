@@ -14,7 +14,9 @@ excluded_qt = [
 a = Analysis(
 	[str(root / "gxbake" / "__main__.py")],
 	pathex=[str(root)],
-	excludes=["tkinter", "matplotlib", "panda3d", *excluded_qt],	# .bam: bam2egg on PATH in frozen builds
+	# optional image decoders are imported on demand (texcodec.require), so name them; missing ones are skipped
+	hiddenimports=["pillow_heif", "OpenEXR", "resvg_py", "psd_tools", "rawpy", "texture2ddecoder"],
+	excludes=["tkinter", "matplotlib", "panda3d", "pillow_jxl", *excluded_qt],	# pillow_jxl is GPL-3.0	# .bam: bam2egg on PATH in frozen builds
 	noarchive=False,
 )
 pyz = PYZ(a.pure)

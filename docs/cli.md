@@ -15,6 +15,8 @@ build or CI job.
 | Command | What it does |
 | --- | --- |
 | [`convert`](#gxbake-convert) | convert files or folders |
+| [`formats`](#gxbake-formats) | list every image format GxBake reads and which optional packages are missing |
+| [`decode`](#gxbake-decode) | decode images of any supported format to PNG (to check how they are read) |
 | [`inspect`](#gxbake-inspect) | print what GxBake sees in a file or folder |
 | [`rs`](#gxbake-rs) | list the NPCs and models in a RuneScape cache |
 | [`ff7`](#gxbake-ff7) | look inside Final Fantasy VII field and battle models (.hrc, .p, .a, .tex, <base>aa) |
@@ -121,6 +123,31 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--sky-yaw SKY_YAW` | `270.0` | panorama skies: engine yaw the image centre faces (0 rt, 90 bk, 180 lf, 270 ft) |
 | `--sky-fov SKY_FOV` | `180.0` | flat photos as skies: horizontal degrees the photo covers |
 | `--sky-exposure SKY_EXPOSURE` |  | .hdr panoramas: stops brighter (+) or darker (-) than auto |
+
+## `gxbake formats`
+
+List every image format GxBake reads and which optional packages are missing.
+
+```
+gxbake formats [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--json` |  | print the table as JSON |
+
+## `gxbake decode`
+
+Decode images of any supported format to PNG (to check how they are read).
+
+```
+gxbake decode images [images ...] [--output OUTPUT]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `images` … |  | image files or folders |
+| `-o OUTPUT`, `--output OUTPUT` | `.` | folder for the PNGs (default: here) |
 
 ## `gxbake inspect`
 
