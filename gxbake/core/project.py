@@ -129,6 +129,11 @@ class Settings:
 	wt_pool: int = 448 * 1024	# that pool (GC_WT_POOL_BYTES)
 	wad_dirs: list[str] = field(default_factory=list)
 	cache_dir: str = ""
+	source_dirs: list[str] = field(default_factory=list)	# Source maps: extra game folders or _dir.vpk files
+	map_hulls: bool = True	# Source maps: build collision hulls 1-3
+	map_props: bool = True	# Source maps: prop_static → cycler_sprite entities
+	map_texture_max: int = 256	# Source maps: largest embedded texture
+	map_disp_power: int = 2	# Source maps: displacement detail kept (0-4)
 
 	def sky_options(self, layout: str = "auto") -> skybox.SkyOptions:
 		return skybox.SkyOptions(layout=layout, yaw=self.sky_yaw, fov=self.sky_fov, exposure=self.sky_exposure, size=self.sky_size)
@@ -140,6 +145,12 @@ class Settings:
 		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
 			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files,
 			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.rs_scale, self.rs_yaw)
+
+	def map_options(self):
+		from .source_map import MapOptions
+
+		return MapOptions(max_texture=self.map_texture_max, disp_power=self.map_disp_power, props=self.map_props,
+			hulls=self.map_hulls, search=[Path(p) for p in self.source_dirs])
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -354,7 +365,7 @@ class Project:
 			if asset.kind == Kind.WAD:
 				return sorted(goldsrc.wad_miptex(asset.path))
 			if asset.kind == Kind.BSP:
-				data = asset.path.read_bytes()
+				data = self._bsp_bytes(asset)
 				return list(dict.fromkeys(n for n, _ in goldsrc.bsp_miptex_offsets(data) if goldsrc.is_world_diffuse(n)))
 			if asset.kind == Kind.GCT:
 				return [e.name for e in gct.read_gct(asset.path.read_bytes())]
@@ -421,6 +432,15 @@ class Project:
 				from . import vsnd
 
 				d.update(vsnd.load(asset.path).info())
+			elif asset.kind == Kind.BSP and self._is_source_map(asset):
+				from . import source_map
+
+				d.update(source_map.map_info(asset.path))
+				conv = self.source_map(asset)
+				d["Converted"] = ", ".join(f"{v} {k}" for k, v in conv.stats.items())
+				d["Sky"] = conv.sky or "-"
+				if conv.props:
+					d["Prop models"] = len(conv.props)
 			elif asset.kind == Kind.BSP:
 				data = asset.path.read_bytes()
 				d["BSP version"] = quake.bsp_version(data)
@@ -626,7 +646,7 @@ class Project:
 		if asset.kind == Kind.WAD:
 			found = goldsrc.wad_miptex(asset.path)
 			return goldsrc.read_miptex(*found[name], pal) if name in found else None
-		data = asset.path.read_bytes()
+		data = self._bsp_bytes(asset)
 		for n, off in goldsrc.bsp_miptex_offsets(data):
 			if n == name:
 				mip = goldsrc.read_miptex(data, off, pal)
@@ -707,8 +727,24 @@ class Project:
 					if data:
 						emit(asset, f"media/{stem}.gct", data)
 				elif asset.kind == Kind.BSP:
+					bsp_path = asset.path
+					if self._is_source_map(asset):
+						conv = self.source_map(asset, log)
+						for w in conv.warnings:
+							if w not in asset.warnings:
+								asset.warnings.append(w)
+							log("  warning: " + w)
+						emit(asset, f"maps/{stem}.bsp", conv.bsp)
+						bsp_path = out_dir / f"maps/{stem}.bsp"
+						if conv.sky and len(conv.sky_sides) == 6:
+							for sfx in images.GC_SKY_SUFFIXES:
+								emit(asset, f"media/sky_{conv.sky}{sfx}.cmp",
+									images.sky_side_cmpr(conv.sky_sides[sfx], s.sky_size))
+						if conv.props:
+							log(f"  {len(conv.props)} prop models referenced (convert them to models/<name>.mdl): "
+								+ ", ".join(Path(p).stem for p in conv.props[:8]) + (" …" if len(conv.props) > 8 else ""))
 					data, report, _entries = gct.build_world_texture_pack(
-						asset.path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache())
+						bsp_path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache())
 					log(f"  {len(report.wads)} WADs searched, {report.entries} textures packed")
 					for note in report.notes:
 						asset.warnings.append(note)
@@ -726,7 +762,8 @@ class Project:
 							asset.warnings.append(f"world pack still over budget: {res.reason}")
 					if data:
 						emit(asset, f"media/wt_{stem}.gct", data)
-					self._bsp_sky(asset, emit)
+					if not self._is_source_map(asset):
+						self._bsp_sky(asset, emit)
 				elif asset.kind == Kind.MDL:
 					if s.mdl_lean_mesh:
 						lean = studio.lean_studio_mesh_bytes(asset.path)
@@ -810,6 +847,24 @@ class Project:
 			progress(len(todo), len(todo), "")
 		self.write_manifest(out_dir, written)
 		return written
+
+	@staticmethod
+	def _is_source_map(asset: Asset) -> bool:
+		return asset.kind == Kind.BSP and _head(asset.path, 4) == b"VBSP"
+
+	def source_map(self, asset: Asset, log: Log = lambda _m: None):
+		"""The Source map converted to BSP30 (cached on the asset)."""
+		from . import source_map
+
+		key = ("source_map", json.dumps(asdict(self.settings.map_options()), default=str))
+		cached = asset.extra.get("source_map")
+		if cached is None or cached[0] != key:
+			cached = (key, source_map.convert(asset.path, self.settings.map_options(), log=log))
+			asset.extra["source_map"] = cached
+		return cached[1]
+
+	def _bsp_bytes(self, asset: Asset) -> bytes:
+		return self.source_map(asset).bsp if self._is_source_map(asset) else asset.path.read_bytes()
 
 	def _bsp_sky(self, asset: Asset, emit) -> None:
 		data = asset.path.read_bytes()
