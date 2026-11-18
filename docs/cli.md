@@ -29,6 +29,7 @@ build or CI job.
 | [`extract`](#gxbake-extract) | unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive |
 | [`lumps`](#gxbake-lumps) | list, extract and sort the lumps of a map or of the port's baked map files (.gcd, _lf.gcd, .gcmeta) |
 | [`slim`](#gxbake-slim) | show where a studio model's bytes go and thin its animation |
+| [`lightmaps`](#gxbake-lightmaps) | pick each face's lightmap size by error and pack the atlas |
 | [`squeeze`](#gxbake-squeeze) | measure smarter packing on a staged tree, and write what the port reads today |
 | [`adpcm`](#gxbake-adpcm) | encode WAV or .gcpcm audio as GameCube DSP ADPCM (.dsp, one per channel) |
 | [`yaz0`](#gxbake-yaz0) | Yaz0-compress files (Nintendo LZ), or decompress with -d |
@@ -42,19 +43,6 @@ Convert files or folders.
 
 ```
 gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mipmaps] [--alpha
-    {auto,on,off}] [--no-pack] [--pack-name PACK_NAME] [--raw-cmp] [--mdl-max-edge MDL_MAX_EDGE]
-    [--mdl-anim-step MDL_ANIM_STEP] [--spr-scale SPR_SCALE] [--model-scale MODEL_SCALE] [--model-up
-    {y,z}] [--model-skin-max-edge MODEL_SKIN_MAX_EDGE] [--no-model-full] [--model-static]
-    [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale ROSE_SCALE]
-    [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--panda-scale PANDA_SCALE] [--panda-yaw
-    PANDA_YAW] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW] [--rs-entry KIND:ID] [--ffxi-scale
-    FFXI_SCALE] [--ffxi-yaw FFXI_YAW] [--ffxi-skeleton DAT] [--ffxi-music-wav] [--ff7-scale
-    FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale FF7_BATTLE_SCALE] [--video-width VIDEO_WIDTH]
-    [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL]
-    [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
-    [--map-disp-power {0,1,2,3,4}] [--map-vis-merge LEAVES] [--no-map-hulls] [--no-map-shadows]
-    [--no-map-props] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV]
-    [--sky-exposure SKY_EXPOSURE]
     {auto,on,off}] [--cmpr-refine] [--no-pack] [--pack-name PACK_NAME] [--raw-cmp] [--mdl-max-edge
     MDL_MAX_EDGE] [--mdl-anim-step MDL_ANIM_STEP] [--spr-scale SPR_SCALE] [--model-scale
     MODEL_SCALE] [--model-up {y,z}] [--model-skin-max-edge MODEL_SKIN_MAX_EDGE] [--no-model-full]
@@ -65,8 +53,9 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     [--ff7-scale FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale FF7_BATTLE_SCALE] [--video-width
     VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool
     WT_POOL] [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
-    [--map-disp-power {0,1,2,3,4}] [--no-map-hulls] [--no-map-shadows] [--no-map-props] [--cache
-    CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
+    [--map-disp-power {0,1,2,3,4}] [--map-vis-merge LEAVES] [--no-map-hulls] [--no-map-shadows]
+    [--no-map-props] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV]
+    [--sky-exposure SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |
@@ -354,6 +343,26 @@ gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTER
 | `--fit-deg DEG` |  | resample each sequence to the fewest evenly spaced keys that stay within DEG degrees of every bone |
 | `--fit-units UNITS` |  | position tolerance for --fit-deg (default DEG / 10) |
 | `--max-step MAX_STEP` | `8` | --fit-deg keeps keys at most this many frames apart |
+
+## `gxbake lightmaps`
+
+Pick each face's lightmap size by error and pack the atlas.
+
+```
+gxbake lightmaps path [--page PAGE] [--packer {quake,shelf,skyline}] [--pad PAD] [--min-db MIN_DB]
+    [--flat-tol FLAT_TOL] [--no-resize] [--plan OUT.json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `path` |  | GoldSrc BSP (v30) |
+| `--page PAGE` | `128` | atlas page side in luxels |
+| `--packer {quake,shelf,skyline}` | `skyline` | rectangle packer (quake = AllocBlock in map order) |
+| `--pad PAD` | `1` | luxels of border right and below each face |
+| `--min-db MIN_DB` | `40.0` | half resolution only when it stays within this PSNR |
+| `--flat-tol FLAT_TOL` | `2` | a face within ±N of its mean becomes 1×1 |
+| `--no-resize` |  | keep every face's size; only repack |
+| `--plan OUT.json` |  | write per-face sizes and atlas positions for a world baker |
 
 ## `gxbake squeeze`
 

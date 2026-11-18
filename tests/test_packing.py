@@ -211,6 +211,7 @@ def test_squeeze_report_and_apply(tmp_path, capsys):
 	assert (out / "media/wt_test.gct").stat().st_size < (root / "media/wt_test.gct").stat().st_size
 	assert dspadpcm.read_dsp((out / "sound/beep.dsp").read_bytes()).samples == 4000
 	assert squeeze.read_skin_pack((out / "gc_studio/guy.gsk").read_bytes())
+	assert (out / "gc_studio/guy.gsv").read_bytes()[:4] == b"GCSV"
 
 
 def test_adpcm_and_yaz0_cli(tmp_path):
@@ -400,3 +401,58 @@ def test_lightmap_plan_on_a_lit_map(tmp_path):
 	assert plan.half == 0 or plan.worst_db >= 40
 	strict = rectpack.lightmap_plan(bsp, min_db=99, flat_tol=0)
 	assert strict.luxels_after >= plan.luxels_after
+
+
+def test_vertex_pack_roundtrip_and_error():
+	from gxbake.core import vertpack
+
+	raw = animated_model()
+	src = vertpack.studio_model_verts(raw)
+	blob = vertpack.write_vertex_pack(raw)
+	back = vertpack.read_vertex_pack(blob)
+	assert len(back) == len(src) and blob[:4] == b"GCSV"
+	nv = sum(len(m.positions) for m in src)
+	nn = sum(len(m.normals) for m in src)
+	data = sum(len(m.positions) * 6 + len(m.normals) * 3 for m in src)
+	assert data <= 0.4 * (nv * 12 + nn * 12)
+	ep, en = vertpack.pack_error(raw)
+	peak = max(float(np.abs(m.positions).max()) for m in src)
+	assert ep <= peak / 32767 * 2 and en < 1.5
+	assert all(e % 32 == 0 for e in [vertpack.GCSV_ENTRY.unpack_from(blob, 16)[7]])
+
+
+def test_share_tlut_is_lossless_and_stored_once():
+	rng = np.random.default_rng(4)
+	pal = rng.integers(0, 256, (256, 3)).astype(np.uint8)
+	a = rng.integers(0, 100, (32, 32)).astype(np.uint8)
+	b = rng.integers(60, 160, (32, 32)).astype(np.uint8)	# overlaps a; union 160 colours
+	skins = [squeeze.SkinChoice(n, 32, 32, gxtex.choose_indexed(i, pal, False, min_db=99, allow_cmpr=False))
+		for n, i in (("a", a), ("b", b))]
+	before = [s.choice.tex.decode() for s in skins]
+	assert all(s.choice.tex.fmt == "CI8" for s in skins) and skins[0].choice.tex.tlut != skins[1].choice.tex.tlut
+	alone = len(squeeze.write_skin_pack(skins))
+	assert squeeze.share_tlut(skins) == 2
+	assert skins[0].choice.tex.tlut == skins[1].choice.tex.tlut
+	assert all((s.choice.tex.decode() == d).all() for s, d in zip(skins, before))
+	assert len(squeeze.write_skin_pack(skins)) < alone
+	c = rng.integers(0, 256, (32, 32)).astype(np.uint8)	# all 256 + more: union too big
+	more = [squeeze.SkinChoice("a", 32, 32, gxtex.choose_indexed(a, pal, False, min_db=99, allow_cmpr=False)),
+		squeeze.SkinChoice("c", 32, 32, gxtex.choose_indexed(c, rng.integers(0, 256, (256, 3)).astype(np.uint8), False, min_db=99, allow_cmpr=False))]
+	assert squeeze.share_tlut(more) == 0
+
+
+def test_lightmaps_cli_writes_a_plan(tmp_path, capsys):
+	import json
+
+	from gxbake.core import s2map
+	from tests import s2map_fixtures
+
+	bsp = tmp_path / "m.bsp"
+	bsp.write_bytes(s2map.convert(s2map_fixtures.write_map(tmp_path)).bsp)
+	assert cli.main(["lightmaps", str(bsp), "--plan", str(tmp_path / "p.json"), "--packer", "shelf"]) == 0
+	assert "lit faces" in capsys.readouterr().out
+	plan = json.loads((tmp_path / "p.json").read_text())
+	assert plan["packer"] == "shelf" and plan["faces"]
+	assert all({"face", "new_w", "page", "x", "y"} <= set(f) for f in plan["faces"])
+	assert cli.main(["lightmaps", str(bsp), "--no-resize"]) == 0
+	assert "(0 % fewer)" in capsys.readouterr().out

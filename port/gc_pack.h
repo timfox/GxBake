@@ -9,6 +9,7 @@ The GX calls live behind GC_PACK_GX (define it on the GameCube build).
   Yaz0        gc_yaz0_size, gc_yaz0_decode            (any file GxBake wrote with `gxbake yaz0`)
   DSP ADPCM   gc_dsp_parse, gc_dsp_decode             (.dsp from `gxbake adpcm` / `squeeze --emit`)
   GCSK skins  gc_gsk_parse, gc_gsk_entry, gc_gsk_bind (.gsk from `squeeze --emit`)
+  GCSV verts  gc_gsv_parse, gc_gsv_entry, gc_gsv_dequant (.gsv from `squeeze --emit`)
 
 Formats: GxBake docs/packing.md. All file data is big-endian; these readers
 use byte loads, so they do not care about the host's byte order or alignment.
@@ -86,6 +87,26 @@ typedef struct
 int gc_gsk_parse( const uint8_t *blob, size_t len );
 /* Fill *e for skin i; returns 0 on success. */
 int gc_gsk_entry( const uint8_t *blob, size_t len, int i, gc_gsk_entry_t *e );
+
+/* --- GCSV s16 vertices ------------------------------------------------- */
+
+typedef struct
+{
+	uint16_t bodypart, model;
+	uint32_t nverts, nnorms;
+	uint8_t  pos_frac;	/* value = s16 / 2^pos_frac: the GQR dequantise scale */
+	uint8_t  nrm_frac;	/* 6: GX's s8 normal format */
+	const uint8_t *positions;	/* big-endian s16 x,y,z; 32-byte aligned in the file */
+	const uint8_t *normals;	/* s8 x,y,z */
+} gc_gsv_entry_t;
+
+/* Number of models in a .gsv file, or -1. */
+int gc_gsv_parse( const uint8_t *blob, size_t len );
+int gc_gsv_entry( const uint8_t *blob, size_t len, int i, gc_gsv_entry_t *e );
+/* Portable dequantise to floats (pos and nrm hold 3 × count each). On the
+ * GameCube use psq_l with GQR type s16 and scale pos_frac instead: same
+ * numbers, no conversion loop. */
+void gc_gsv_dequant( const gc_gsv_entry_t *e, float *pos, float *nrm );
 
 #ifdef GC_PACK_GX
 #include <ogc/gx.h>

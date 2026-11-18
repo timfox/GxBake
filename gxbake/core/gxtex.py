@@ -232,6 +232,16 @@ def encode_indexed(index: "np.ndarray", palette_rgba: "np.ndarray", tlut: int = 
 	return GxTexture(fmt, w, h, data, tlut_words(pal, tlut).astype(">u2").tobytes(), tlut)
 
 
+def decode_indices(t: GxTexture) -> "np.ndarray":
+	"""H×W TLUT indices of a CI4/CI8 texture (untiled)."""
+	_, _, tw, th = FORMATS[t.fmt]
+	pw, ph = padded(t.width, t.height, t.fmt)
+	n = pw * ph
+	idx = _unnibble(t.data, n) if t.fmt == "CI4" else np.frombuffer(t.data, np.uint8, n)
+	tiles = idx.reshape(ph // th, pw // tw, th, tw).transpose(0, 2, 1, 3).reshape(ph, pw)
+	return tiles[:t.height, :t.width]
+
+
 def decode(fmt: str, w: int, h: int, data: bytes, tlut: bytes = b"", tlut_fmt: int = GX_TL_RGB565) -> "np.ndarray":
 	"""One GX level → H×W×4 RGBA, as Flipper samples it."""
 	_, bpp, tw, th = FORMATS[fmt]

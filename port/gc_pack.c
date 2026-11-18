@@ -201,3 +201,57 @@ int gc_gsk_bind( const gc_gsk_entry_t *e, GXTexObj *obj, GXTlutObj *tlut, u32 tl
 	return 0;
 }
 #endif
+
+/* --- GCSV --------------------------------------------------------------- */
+
+#define GSV_HEADER 16
+#define GSV_ENTRY 24
+
+int gc_gsv_parse( const uint8_t *blob, size_t len )
+{
+	uint32_t count;
+
+	if( len < GSV_HEADER || blob[0] != 'G' || blob[1] != 'C' || blob[2] != 'S' || blob[3] != 'V' )
+		return -1;
+	count = rd32( blob + 8 );
+	if( rd32( blob + 4 ) != 1 || count > 4096 || GSV_HEADER + (size_t)count * GSV_ENTRY > len )
+		return -1;
+	return (int)count;
+}
+
+int gc_gsv_entry( const uint8_t *blob, size_t len, int i, gc_gsv_entry_t *e )
+{
+	const uint8_t *p;
+	uint32_t po, no;
+	int n = gc_gsv_parse( blob, len );
+
+	if( i < 0 || i >= n )
+		return -1;
+	p = blob + GSV_HEADER + i * GSV_ENTRY;
+	e->bodypart = rd16( p );
+	e->model = rd16( p + 2 );
+	e->nverts = rd32( p + 4 );
+	e->nnorms = rd32( p + 8 );
+	e->pos_frac = p[12];
+	e->nrm_frac = p[13];
+	po = rd32( p + 16 );
+	no = rd32( p + 20 );
+	if( e->pos_frac > 15 || e->nverts > 0x100000 || e->nnorms > 0x100000
+		|| (size_t)po + (size_t)e->nverts * 6 > len || (size_t)no + (size_t)e->nnorms * 3 > len )
+		return -1;
+	e->positions = blob + po;
+	e->normals = blob + no;
+	return 0;
+}
+
+void gc_gsv_dequant( const gc_gsv_entry_t *e, float *pos, float *nrm )
+{
+	uint32_t i;
+	float ps = 1.0f / (float)(1L << e->pos_frac);
+	float ns = 1.0f / (float)(1L << e->nrm_frac);
+
+	for( i = 0; i < e->nverts * 3; i++ )
+		pos[i] = (float)(int16_t)rd16( e->positions + i * 2 ) * ps;
+	for( i = 0; i < e->nnorms * 3; i++ )
+		nrm[i] = (float)(int8_t)e->normals[i] * ns;
+}

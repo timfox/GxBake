@@ -61,3 +61,19 @@ def test_c_gsk_table(harness, tmp_path):
 		assert row[:5] == [i, squeeze.gxtex.FORMATS[t.fmt][0], t.tlut_fmt, t.width, t.height]
 		assert row[7:9] == [len(t.data), len(t.tlut)] and row[9] % 32 == 0
 		assert blob[row[9]:row[9] + row[7]] == t.data
+
+
+def test_c_gsv_matches_python(harness, tmp_path):
+	from gxbake.core import vertpack
+	from tests.test_slim import animated_model
+
+	raw = animated_model()
+	blob = vertpack.write_vertex_pack(raw)
+	(tmp_path / "m.gsv").write_bytes(blob)
+	res = subprocess.run([harness, "gsv", tmp_path / "m.gsv", tmp_path / "f.raw"], check=True, capture_output=True, text=True)
+	want = vertpack.read_vertex_pack(blob)
+	rows = [list(map(int, line.split())) for line in res.stdout.splitlines()]
+	assert [r[:4] for r in rows] == [[m.bodypart, m.model, len(m.positions), len(m.normals)] for m in want]
+	got = np.fromfile(tmp_path / "f.raw", "<f4")
+	ref = np.concatenate([np.concatenate((m.positions.reshape(-1), m.normals.reshape(-1))) for m in want])
+	assert (got == ref).all()
