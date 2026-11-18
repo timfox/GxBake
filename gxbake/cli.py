@@ -91,6 +91,51 @@ def _convert(args) -> int:
 	return 1 if any(a.status == "Failed" for a in todo) else 0
 
 
+def _formats(args) -> int:
+	from .core import imageformats
+
+	rows = imageformats.report()
+	if args.json:
+		print(json.dumps(rows, indent=1))
+		return 0
+	group = None
+	for r in rows:
+		if r["group"] != group:
+			group = r["group"]
+			print(f"\n{group}")
+		status = "ok" if r["available"] else (f"pip install {r['install']}" if r["install"] else "unavailable")
+		note = f"  ({r['note']})" if r["note"] else ""
+		print(f"  {r['name']:<44} {' '.join(r['extensions']):<40} {status}{note}")
+	missing = sorted({r["install"] for r in rows if r["install"]})
+	if missing:
+		print(f"\nmissing optional packages: {', '.join(missing)} (pip install gxbake[images])")
+	return 0
+
+
+def _decode(args) -> int:
+	from PIL import Image
+
+	from .core.images import load_rgba
+
+	out = Path(args.output)
+	out.mkdir(parents=True, exist_ok=True)
+	failed = 0
+	for p in _image_files(args.images):
+		warnings: list[str] = []
+		try:
+			rgba = load_rgba(p, warnings)
+		except Exception as e:	# noqa: BLE001 - report every file and carry on
+			print(f"{p}: {e}", file=sys.stderr)
+			failed += 1
+			continue
+		dest = out / (p.name + ".png")
+		Image.fromarray(rgba, "RGBA").save(dest)
+		print(f"{p} -> {dest} ({rgba.shape[1]}x{rgba.shape[0]})")
+		for w in warnings:
+			print(f"  warning: {w}")
+	return 1 if failed else 0
+
+
 def _inspect(args) -> int:
 	proj = Project()
 	proj.add_path(Path(args.path))
@@ -743,6 +788,15 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--sky-fov", type=float, default=180.0, help="flat photos as skies: horizontal degrees the photo covers")
 	c.add_argument("--sky-exposure", type=float, default=0.0, help=".hdr panoramas: stops brighter (+) or darker (-) than auto")
 	c.set_defaults(fn=_convert)
+
+	fm = sub.add_parser("formats", help="list every image format GxBake reads and which optional packages are missing")
+	fm.add_argument("--json", action="store_true", help="print the table as JSON")
+	fm.set_defaults(fn=_formats)
+
+	dc = sub.add_parser("decode", help="decode images of any supported format to PNG (to check how they are read)")
+	dc.add_argument("images", nargs="+", help="image files or folders")
+	dc.add_argument("-o", "--output", default=".", help="folder for the PNGs (default: here)")
+	dc.set_defaults(fn=_decode)
 
 	i = sub.add_parser("inspect", help="print what GxBake sees in a file or folder")
 	i.add_argument("path", help="file or folder")
