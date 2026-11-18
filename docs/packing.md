@@ -45,6 +45,10 @@ What the sound numbers mean: Kenney's effects are synthetic square-wave chiptune
 
 So against Tim's target of about half the memory with no visible or audible difference: skins (50 %, lossless), vertices (62 %, sub-pixel), music (71 %, transparent) and sound memory (60–72 %) get there. World textures are already CMPR, so they only get a few percent without loss. Yaz0 roughly halves disc and ARAM-cache bytes for free.
 
+## Port-side code
+
+[`port/gc_pack.c`](../port/gc_pack.c) holds drop-in C readers for `.gsk`, `.dsp` and Yaz0. They are host-tested bit-exact against GxBake's encoders. [`port/README.md`](../port/README.md) shows where each one hooks into the port.
+
 ## Ranking
 
 Ranked by memory saved per unit of port work. "Runtime cost" is the cost on Gekko/Flipper per frame.
