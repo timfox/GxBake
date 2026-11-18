@@ -106,6 +106,18 @@ def test_convert_displacement(tmp_path):
 	assert coarse.stats["displacement triangles"] == 8
 
 
+def test_overlay_becomes_decal_face(tmp_path):
+	p = tmp_path / "maps" / "ov.bsp"
+	p.parent.mkdir(parents=True)
+	p.write_bytes(s1.source_bsp(overlay=True))
+	r = source_map.convert(p)
+	assert r.stats["overlays"] == 1 and r.stats["faces"] == 2
+	verts = np.frombuffer(bsp30.read_lumps(r.bsp)[bsp30.L_VERTEXES], "<f4").reshape(-1, 3)
+	lifted = verts[np.isclose(verts[:, 2], 0.5)]
+	assert np.allclose(sorted(set(lifted[:, 0].tolist())), [0, 64]) and np.allclose(sorted(set(lifted[:, 1].tolist())), [-16, 16])
+	assert source_map.convert(p, source_map.MapOptions(overlays=False)).stats["overlays"] == 0
+
+
 def test_missing_content_warns(tmp_path):
 	p = s1.write_map(tmp_path, pak=False, props=[])
 	r = source_map.convert(p, source_map.MapOptions(props=False))
@@ -125,11 +137,22 @@ def test_material_search_dirs(tmp_path):
 
 def test_unsupported_version(tmp_path):
 	raw = bytearray(s1.source_bsp())
-	raw[4:8] = struct.pack("<i", 25)
-	p = tmp_path / "v25.bsp"
+	raw[4:8] = struct.pack("<i", 27)
+	p = tmp_path / "v27.bsp"
 	p.write_bytes(bytes(raw))
-	with pytest.raises(ValueError, match="version 25"):
+	with pytest.raises(ValueError, match="version 27"):
 		source_map.convert(p)
+
+
+def test_strata_v25_layout(tmp_path):
+	p = tmp_path / "maps" / "wide.bsp"
+	p.parent.mkdir(parents=True)
+	p.write_bytes(s1.source_bsp(displacement=True, version=25))
+	src = sb.load(p)
+	assert src.wide and src.leafs.dtype == sb.LEAF_V25
+	r = source_map.convert(p)
+	assert r.stats["displacement triangles"] == 32 and r.warnings == []
+	assert _hull(r.bsp, 1, (0, 0, 60)) == bsp30.CONTENTS_SOLID and _hull(r.bsp, 1, (0, 0, 75)) == bsp30.CONTENTS_EMPTY
 
 
 def test_project_converts_source_map(tmp_path):

@@ -59,7 +59,10 @@ def _sprp(props: list[tuple[str, tuple[float, float, float]]]) -> bytes:
 
 
 def source_bsp(displacement: bool = False, pak: bool = True, sky: str = "testsky",
-		props: list[tuple[str, tuple[float, float, float]]] | None = None) -> bytes:
+		props: list[tuple[str, tuple[float, float, float]]] | None = None, version: int = 20,
+		overlay: bool = False) -> bytes:
+	"""version 25 writes Strata Source's wide lumps (32-bit indices, float bounds)."""
+	wide = version >= 25
 	props = [("models/props/crate01.mdl", (64.0, 0.0, 0.0))] if props is None else props
 	lumps: dict[int, bytes] = {}
 
@@ -71,7 +74,7 @@ def source_bsp(displacement: bool = False, pak: bool = True, sky: str = "testsky
 	# the top face, clockwise seen from above
 	quad = np.array([(-128, -128, 0), (-128, 128, 0), (128, 128, 0), (128, -128, 0)], np.float32)
 	lumps[sb.L_VERTEXES] = quad.tobytes()
-	lumps[sb.L_EDGES] = np.array([(0, 0), (0, 1), (1, 2), (2, 3), (3, 0)], "<u2").tobytes()
+	lumps[sb.L_EDGES] = np.array([(0, 0), (0, 1), (1, 2), (2, 3), (3, 0)], "<u4" if wide else "<u2").tobytes()
 	lumps[sb.L_SURFEDGES] = np.array([1, 2, 3, 4], "<i4").tobytes()
 
 	ti = np.zeros(1, sb.TEXINFO)
@@ -92,7 +95,7 @@ def source_bsp(displacement: bool = False, pak: bool = True, sky: str = "testsky
 	light[:, 2] = 40 + u * 8
 	lumps[sb.L_LIGHTING] = light.tobytes()
 
-	face = np.zeros(1, sb.FACE)
+	face = np.zeros(1, sb.FACE_V25 if wide else sb.FACE)
 	face[0]["planenum"] = 0
 	face[0]["onnode"] = 1
 	face[0]["numedges"] = 4
@@ -106,7 +109,7 @@ def source_bsp(displacement: bool = False, pak: bool = True, sky: str = "testsky
 	lumps[sb.L_FACES] = face.tobytes()
 
 	if displacement:
-		di = np.zeros(1, sb.DISPINFO)
+		di = np.zeros(1, sb.DISPINFO_V25 if wide else sb.DISPINFO)
 		di[0]["start"] = (-128, -128, 0)
 		di[0]["power"] = 2
 		di[0]["contents"] = sb.CONTENTS_SOLID
@@ -120,7 +123,7 @@ def source_bsp(displacement: bool = False, pak: bool = True, sky: str = "testsky
 
 	# node k splits on plane k: in front is open air (leaf k + 1), behind is the next node;
 	# behind the last one is the slab itself (leaf 0, solid)
-	nodes = np.zeros(6, sb.NODE)
+	nodes = np.zeros(6, sb.NODE_V25 if wide else sb.NODE)
 	for k in range(6):
 		nodes[k]["planenum"] = k
 		nodes[k]["children"] = (-(k + 2), k + 1 if k < 5 else -1)
@@ -129,11 +132,12 @@ def source_bsp(displacement: bool = False, pak: bool = True, sky: str = "testsky
 	nodes[0]["numfaces"] = 1
 	lumps[sb.L_NODES] = nodes.tobytes()
 
-	leafs = np.zeros(7, sb.LEAF_V1)
+	leafs = np.zeros(7, sb.LEAF_V25 if wide else sb.LEAF_V1)
 	leafs["cluster"] = 0
 	leafs["mins"] = (-4096, -4096, -4096)
 	leafs["maxs"] = (4096, 4096, 4096)
 	leafs["water"] = -1
+	idx = "<I" if wide else "<H"
 	leafs[0]["contents"] = sb.CONTENTS_SOLID
 	leafs[0]["cluster"] = -1
 	leafs[0]["mins"] = (-128, -128, -16)
@@ -142,10 +146,10 @@ def source_bsp(displacement: bool = False, pak: bool = True, sky: str = "testsky
 	if not displacement:	# Source keeps displacement faces out of the leaf face lists
 		leafs[1]["numleaffaces"] = 1
 	lumps[sb.L_LEAFS] = leafs.tobytes()
-	lumps[sb.L_LEAFFACES] = struct.pack("<H", 0)
-	lumps[sb.L_LEAFBRUSHES] = struct.pack("<H", 0)
+	lumps[sb.L_LEAFFACES] = struct.pack(idx, 0)
+	lumps[sb.L_LEAFBRUSHES] = struct.pack(idx, 0)
 	lumps[sb.L_BRUSHES] = struct.pack("<iii", 0, 6, sb.CONTENTS_SOLID)
-	bs = np.zeros(6, sb.BRUSHSIDE)
+	bs = np.zeros(6, sb.BRUSHSIDE_V25 if wide else sb.BRUSHSIDE)
 	bs["planenum"] = np.arange(6)
 	bs["dispinfo"] = -1
 	lumps[sb.L_BRUSHSIDES] = bs.tobytes()
@@ -153,6 +157,18 @@ def source_bsp(displacement: bool = False, pak: bool = True, sky: str = "testsky
 	model = np.zeros(1, sb.MODEL)
 	model[0] = ((-128, -128, -16), (128, 128, 0), (0, 0, 0), 0, 0, 1)
 	lumps[sb.L_MODELS] = model.tobytes()
+
+	if overlay:	# a 64x32 decal centred at (32, 0) on the top face; basis U = +X in the points' z
+		ov = np.zeros(1, sb.OVERLAY)
+		ov[0]["texinfo"] = 0
+		ov[0]["facecount"] = 1
+		ov[0]["faces"][0] = 0
+		ov[0]["u"] = (0, 1)
+		ov[0]["v"] = (0, 1)
+		ov[0]["points"] = [(-32, -16, 1), (-32, 16, 0), (32, 16, 0), (32, -16, 0)]
+		ov[0]["origin"] = (32, 0, 0)
+		ov[0]["normal"] = (0, 0, 1)
+		lumps[sb.L_OVERLAYS] = ov.tobytes()
 
 	# one cluster that sees itself
 	lumps[sb.L_VISIBILITY] = struct.pack("<iii", 1, 12, 13) + b"\x01\x01"
@@ -181,7 +197,7 @@ def source_bsp(displacement: bool = False, pak: bool = True, sky: str = "testsky
 	else:
 		lumps[sb.L_GAME_LUMP] = struct.pack("<i", 0)
 	out = bytearray(pos)
-	out[0:8] = b"VBSP" + struct.pack("<i", 20)
+	out[0:8] = b"VBSP" + struct.pack("<i", version)
 	for i in order:
 		struct.pack_into("<iiii", out, 8 + 16 * i, offsets[i], len(lumps[i]), 1 if i == sb.L_LEAFS else 0, 0)
 		out[offsets[i]:offsets[i] + len(lumps[i])] = lumps[i]

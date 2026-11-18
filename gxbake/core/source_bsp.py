@@ -22,7 +22,7 @@ HEADER_LUMPS = 64
 L_ENTITIES, L_PLANES, L_TEXDATA, L_VERTEXES, L_VISIBILITY, L_NODES, L_TEXINFO, L_FACES = range(8)
 L_LIGHTING, L_LEAFS, L_EDGES, L_SURFEDGES, L_MODELS = 8, 10, 12, 13, 14
 L_LEAFFACES, L_LEAFBRUSHES, L_BRUSHES, L_BRUSHSIDES = 16, 17, 18, 19
-L_DISPINFO, L_DISP_VERTS, L_GAME_LUMP, L_PAKFILE = 26, 33, 35, 40
+L_DISPINFO, L_DISP_VERTS, L_GAME_LUMP, L_PAKFILE, L_OVERLAYS = 26, 33, 35, 40, 45
 L_TEXDATA_STRING_DATA, L_TEXDATA_STRING_TABLE = 43, 44
 L_LIGHTING_HDR, L_FACES_HDR = 53, 58
 
@@ -64,6 +64,25 @@ DISPINFO = np.dtype([("start", "<f4", 3), ("firstvert", "<i4"), ("firsttri", "<i
 	("mintess", "<i4"), ("smoothing", "<f4"), ("contents", "<i4"), ("mapface", "<u2"), ("pad", "<u2"),
 	("lm_alpha", "<i4"), ("lm_samples", "<i4"), ("rest", "u1", 128)])
 DISPVERT = np.dtype([("vec", "<f4", 3), ("dist", "<f4"), ("alpha", "<f4")])
+
+OVERLAY = np.dtype([("id", "<i4"), ("texinfo", "<i2"), ("facecount", "<u2"), ("faces", "<i4", 64), ("u", "<f4", 2),
+	("v", "<f4", 2), ("points", "<f4", (4, 3)), ("origin", "<f4", 3), ("normal", "<f4", 3)])
+
+# Strata Source (Momentum Mod, version 25) widens indices to 32 bits and bounds to floats
+FACE_V25 = np.dtype([("planenum", "<u4"), ("side", "u1"), ("onnode", "u1"), ("pad0", "<u2"), ("firstedge", "<i4"),
+	("numedges", "<i4"), ("texinfo", "<i4"), ("dispinfo", "<i4"), ("fogvolume", "<i4"), ("styles", "u1", 4),
+	("lightofs", "<i4"), ("area", "<f4"), ("lm_mins", "<i4", 2), ("lm_size", "<i4", 2), ("origface", "<i4"),
+	("numprims", "<u4"), ("firstprim", "<u4"), ("smoothing", "<u4")])
+LEAF_V25 = np.dtype([("contents", "<i4"), ("cluster", "<i4"), ("areaflags", "<u4"), ("mins", "<f4", 3),
+	("maxs", "<f4", 3), ("firstleafface", "<u4"), ("numleaffaces", "<u4"), ("firstleafbrush", "<u4"),
+	("numleafbrushes", "<u4"), ("water", "<i4")])
+NODE_V25 = np.dtype([("planenum", "<i4"), ("children", "<i4", 2), ("mins", "<f4", 3), ("maxs", "<f4", 3),
+	("firstface", "<u4"), ("numfaces", "<u4"), ("area", "<i2"), ("pad", "<i2")])
+BRUSHSIDE_V25 = np.dtype([("planenum", "<u4"), ("texinfo", "<i4"), ("dispinfo", "<i4"), ("bevel", "i1"),
+	("thin", "i1"), ("pad", "<i2")])
+DISPINFO_V25 = np.dtype([("start", "<f4", 3), ("firstvert", "<i4"), ("firsttri", "<i4"), ("power", "<i4"),
+	("mintess", "<i4"), ("smoothing", "<f4"), ("contents", "<i4"), ("mapface", "<u4"), ("lm_alpha", "<i4"),
+	("lm_samples", "<i4"), ("rest", "u1", 184)])
 
 
 @dataclass
@@ -118,7 +137,7 @@ class SourceBSP:
 
 	@property
 	def edges(self):
-		return self.array(L_EDGES, np.dtype(("<u2", 2)))
+		return self.array(L_EDGES, np.dtype(("<u4" if self.wide else "<u2", 2)))
 
 	@property
 	def surfedges(self):
@@ -134,11 +153,22 @@ class SourceBSP:
 
 	@property
 	def nodes(self):
-		return self.array(L_NODES, NODE)
+		return self.array(L_NODES, NODE_V25 if self.wide else NODE)
 
 	@property
 	def leafs(self):
+		if self.wide:
+			return self.array(L_LEAFS, LEAF_V25)
 		return self.array(L_LEAFS, LEAF_V0 if self.leaf_v0 else LEAF_V1)
+
+	@property
+	def wide(self) -> bool:
+		"""Strata Source's version 25 layout."""
+		return self.version >= 25
+
+	@property
+	def face_dtype(self) -> np.dtype:
+		return FACE_V25 if self.wide else FACE
 
 	@property
 	def leaf_v0(self) -> bool:
@@ -151,11 +181,11 @@ class SourceBSP:
 
 	@property
 	def leaffaces(self):
-		return self.array(L_LEAFFACES, np.dtype("<u2"))
+		return self.array(L_LEAFFACES, np.dtype("<u4" if self.wide else "<u2"))
 
 	@property
 	def leafbrushes(self):
-		return self.array(L_LEAFBRUSHES, np.dtype("<u2"))
+		return self.array(L_LEAFBRUSHES, np.dtype("<u4" if self.wide else "<u2"))
 
 	@property
 	def brushes(self):
@@ -163,23 +193,31 @@ class SourceBSP:
 
 	@property
 	def brushsides(self):
-		return self.array(L_BRUSHSIDES, BRUSHSIDE)
+		return self.array(L_BRUSHSIDES, BRUSHSIDE_V25 if self.wide else BRUSHSIDE)
 
 	@property
 	def dispinfo(self):
-		return self.array(L_DISPINFO, DISPINFO)
+		return self.array(L_DISPINFO, DISPINFO_V25 if self.wide else DISPINFO)
 
 	@property
 	def dispverts(self):
 		return self.array(L_DISP_VERTS, DISPVERT)
 
+	@property
+	def overlays(self):
+		"""info_overlay decals (none read from version 25, whose layout differs)."""
+		if self.wide:
+			return np.zeros(0, OVERLAY)
+		return self.array(L_OVERLAYS, OVERLAY)
+
 	def faces_and_lighting(self) -> tuple["np.ndarray", bytes, bool]:
 		"""Faces and the lightmap lump they index: LDR when present, else HDR. bool: HDR."""
 		ldr = self.raw(L_LIGHTING)
 		if ldr:
-			return self.array(L_FACES, FACE), ldr, False
+			return self.array(L_FACES, self.face_dtype), ldr, False
 		hdr = self.raw(L_LIGHTING_HDR)
-		faces = self.array(L_FACES_HDR, FACE) if self.lumps[L_FACES_HDR].length else self.array(L_FACES, FACE)
+		fd = self.face_dtype
+		faces = self.array(L_FACES_HDR, fd) if self.lumps[L_FACES_HDR].length else self.array(L_FACES, fd)
 		return faces, hdr, True
 
 	def texture_names(self) -> list[str]:

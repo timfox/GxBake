@@ -10,10 +10,10 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | --- | --- | --- |
 | PNG / TGA / BMP / JPG / DDS / TIFF / PSD / PCX / QOI, Source `.vtf`, Quake II `.wal`, Blizzard `.blp` | `media/<pack>.gct`: CMPR, power-of-two, mip chain, 1-bit alpha | `gx_cmpr_encode_blocks`, `wt_encode` mip loop |
 | Skybox (`<name>rt/bk/lf/ft/up/dn`) | `media/sky_<name><side>.cmp`: 128² CMPR, 8 KiB per side | `gx_cmpr_encode`, `build_sky_cmpr_overlays` |
-| Panoramas (equirectangular, Radiance `.hdr`), cubemap crosses and strips, six named faces, flat photos | the same six `media/sky_<name><side>.cmp`, rendered in the engine's orientation | `skybox.build` |
+| Panoramas (equirectangular, Radiance `.hdr`), cubemap crosses and strips, six named faces, flat photos, Source 2 cubemap `.vtex_c` | the same six `media/sky_<name><side>.cmp`, rendered in the engine's orientation | `skybox.build` |
 | WAD3, Quake WAD2 | `media/<wad>.gct` | `wt_read_miptex`, `wt_encode` |
 | BSP v30, Quake BSP v29 | `media/wt_<map>.gct` (world textures resolved through the map's WADs, or embedded with the Quake palette) and its sky | `build_world_texture_packs`, `wt_read_wads` |
-| Source BSP v19–21 (`VBSP`) | `maps/<map>.bsp` rebuilt as BSP30, plus its `media/wt_<map>.gct` and `media/sky_<sky>*.cmp` | `source_map.convert` |
+| Source BSP v19–21 and 25 (`VBSP`) | `maps/<map>.bsp` rebuilt as BSP30, plus its `media/wt_<map>.gct` and `media/sky_<sky>*.cmp` | `source_map.convert` |
 | Source 2 map (`<map>.vmap_c` or `maps/<map>/world.vwrld_c`) | the same `maps/<map>.bsp`, world pack and sky | `s2map.convert` |
 | Studio `.mdl` | `gc_studio/<name>.mdl` (lean mesh) and `gc_studio/<name>t.mdl` (downsampled skins) | `lean_studio_mesh_bytes`, `lean_studio_tex_companion_bytes` |
 | 3D models via Assimp (OBJ, FBX, glTF/GLB, DAE, 3DS, Blend, MD2/MD3/MD5, IQM, B3D, SMD, MS3D and ~25 more) | `models/<name>.mdl` (studio MDL v10 with bones, sequences and paletted skins), then the same `gc_studio/<name>.mdl` + `<name>t.mdl` as a studio model | `models.import_model`, `models.build_studio_mdl`, then the two functions above |
@@ -117,7 +117,7 @@ Studio skinning is rigid, so a vertex weighted between two bones would tear at t
 
 **VTF textures** (7.0–7.5): DXT1/3/5, ATI1N/ATI2N, the 8888/888/565/5551/4444 orders, I8/IA88/A8 and 16-bit float (tone-mapped). The largest mip of the first frame and face becomes a GCWT entry, and six `<name>rt/bk/lf/ft/up/dn.vtf` make a skybox.
 
-**Source maps** (`.bsp`, VBSP versions 19 to 21, as in Half-Life 2, Counter-Strike: Source, Team Fortress 2 and most mods) are rebuilt as the port's BSP30, so they load like any GoldSrc map:
+**Source maps** (`.bsp`, VBSP versions 19 to 21 and 25, as in Half-Life 2, Counter-Strike: Source, Team Fortress 2 and most mods) are rebuilt as the port's BSP30, so they load like any GoldSrc map:
 
 - Faces keep Source's own BSP tree (nodes, leafs, PVS); each face is split so no lightmap is wider than 16 luxels, and tool faces (nodraw, clip, trigger, hint and so on) are dropped. Sky faces are drawn by the port's sky, whose six sides come from `materials/skybox/<skyname>rt…dn`.
 - Displacements become triangles (at most 4 levels of detail; `--map-disp-power` lowers it) and are added to the leafs they sit in.
@@ -126,14 +126,18 @@ Studio skinning is rigid, so a vertex weighted between two bones would tear at t
 - Clip hulls 1 to 3 are built from the player-solid brushes, expanded to each hull's size with bevels, and the displacements get thin collision wedges under their surface. `--no-map-hulls` skips this for a quick look.
 - Entities pass through. Team spawns become `info_player_deathmatch` (and an `info_player_start` is added), and each `prop_static` becomes a `cycler_sprite` naming `models/<name>.mdl`, which you convert from the Source model (`--no-map-props` leaves them out).
 
-Not carried over: detail props, overlays and decals, cubemaps, water reflections, areaportals and occluders. Detail brushes collide in hulls 1 to 3 but not in hull 0, because Source keeps them out of the render tree. Big maps can exceed BSP30's 32767 clipnodes, which the converter reports. Version 25 and later maps (Momentum, Black Mesa and newer branches) are not read yet.
+- Overlays (`info_overlay`) become decal faces laid half a unit above the face they sit on, lit from that face's lightmap.
+
+Strata Source's version 25 (Momentum Mod), with its 32-bit indices and float bounds, is read too (its overlays are not yet).
+
+Not carried over: detail props (sprite grass), decals placed by `infodecal`, cubemaps, water reflections, areaportals and occluders. Detail brushes collide in hulls 1 to 3 but not in hull 0, because Source keeps them out of the render tree. Big maps can exceed BSP30's 32767 clipnodes, which the converter reports.
 
 ## Source 2 assets
 
 GxBake reads Source 2's compiled resources (the `_c` files inside a Source 2 `.vpk`, which `gxbake extract` unpacks) without any Valve tools. The container, KeyValues3 (binary versions 1 to 5, the older VKV3 header and the text form) and the older NTRO-described blocks are all read; LZ4 and Valve's block compression are decoded in Python, and Zstandard needs Python 3.14 or `pip install gxbake[valve]`.
 
 - **Models** (`.vmdl_c`, or a lone `.vmesh_c`): the skeleton, LOD 0 of the default mesh group (embedded meshes or `.vmesh_c` files next to it), meshoptimizer and Zstandard vertex/index buffers, packed normals, and up to eight weights per vertex reduced to the two heaviest, which get helper bones like Source 1 models. Each draw call's `.vmat_c` is followed to its colour texture (`g_tColor` and friends); tool materials are skipped. Animations come from the model's own blocks, from the `.vagrp_c` groups it lists and the `.vanim_c` files they name, decoded segment by segment (every compressed decoder VRF knows) and sampled at **Animation fps**. Delta (additive) animations are skipped, and a sequence too long for studio's 16-bit animation offsets is halved in frame rate until it fits. Resource paths are looked up under the nearest folder above the file that holds `materials/`, `models/`, `maps/` or `sounds/`, case-insensitively.
-- **Textures** (`.vtex_c`): DXT1/DXT5, BC4/BC5 (ATI1N/ATI2N), BC7, the 8-bit orders, I8/IA88/A8, 16- and 32-bit float (tone-mapped), and textures stored as PNG, JPEG or WebP; YCoCg-encoded colour and compressed mips are handled. The top mip of the first face goes into the pack.
+- **Textures** (`.vtex_c`): DXT1/DXT5, BC4/BC5 (ATI1N/ATI2N), BC6H (through Pillow, clamped to LDR), BC7, ETC2, ETC2_EAC, R11 and RG11 EAC, the 8-bit orders, I8/IA88/A8, 16- and 32-bit float (tone-mapped), and textures stored as PNG, JPEG or WebP; YCoCg-encoded colour and compressed mips are handled. The top mip goes into the pack; a cubemap becomes a sky instead (its six faces rendered into the port's sides).
 - **Sounds** (`.vsnd_c`): 8/16-bit PCM and Microsoft ADPCM decode directly, MP3 through `ffmpeg`. The result is resampled to 22050 Hz at most and written as `sound/<name>.wav`; `gxbake sfx` then fits it under the port's per-file cap.
 
 - **Maps** (`<map>.vmap_c`, or `maps/<map>/world.vwrld_c` with its `worldnodes/` and `entities/`) become BSP30 like Source 1 maps, but a Source 2 map has no BSP tree, brushes or lightmaps the port can use, so GxBake builds them:
@@ -143,7 +147,7 @@ GxBake reads Source 2's compiled resources (the `_c` files inside a Source 2 `.v
   - Light is recomputed per luxel from `light_environment`, the point and spot lights and an ambient term, with shadows traced through the collision (`--no-map-shadows` skips the tracing). Source 2's own lightmaps are not read.
   - Entity lumps (KeyValues3 and the older hashed binary records) are read. Brush entities whose model lives under `maps/<map>/entities/` become inline models `*N` with their own faces and hulls (triggers keep only their bounds), props become `cycler_sprite` entities naming `models/<name>.mdl`, spawns are adapted as for Source 1, and the `env_sky` cubemap is rendered into the port's six sky sides.
 
-Not converted yet: Source 2 lightmaps and light probes, water volumes, decals and overlays, BC6H and ETC2 textures, cubemap skies (only the first face is packed), physics, morphs, cloth, bodygroups other than the default, and animation-graph (AG2) clips. Readers follow [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Not converted yet: Source 2 lightmaps and light probes, water volumes, decals and overlays, physics props, morphs, cloth, bodygroups other than the default, and animation-graph (AG2) clips. Readers follow [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 **Quake**: alias models (`.mdl`, IDPO v6) convert their first frame and first skin, since studio models can't morph vertices (the inspector says how many frames there were). BSP v29 world textures and WAD2 miptex carry no palette, so GxBake reads `gfx/palette.lmp` from the game folder or from a `pak*.pak` there. Quake sprites (v1) become Half-Life sprites with that palette and index 255 transparent.
 

@@ -56,6 +56,7 @@ class MapOptions:
 	light_gamma: float = 2.2	# Source's lightmap-to-screen gamma (overbright 2 in gamma space)
 	light_scale: float = 1.0	# multiplies the Source light before the curve
 	props: bool = True	# prop_static → cycler_sprite entities
+	overlays: bool = True	# info_overlay decals become faces laid over the surface
 	hulls: bool = True	# build clip hulls 1-3 (slow on big maps; off gives point-only collision)
 	search: list[Path] = field(default_factory=list)	# extra game folders or _dir.vpk files
 	# Source 2 maps only: they carry no lightmaps GxBake can read, so light is recomputed
@@ -272,8 +273,8 @@ def convert(path: Path, opts: MapOptions | None = None, log=lambda _m: None) -> 
 	opts = opts or MapOptions()
 	path = Path(path)
 	src = sb.load(path)
-	if not 19 <= src.version <= 21:
-		raise ValueError(f"{path.name}: Source BSP version {src.version} is not supported (19-21 are)")
+	if not (19 <= src.version <= 21 or src.version == 25):
+		raise ValueError(f"{path.name}: Source BSP version {src.version} is not supported (19-21 and 25 are)")
 	warnings: list[str] = []
 	content = Content(src, path, opts.search)
 	planes_in = src.planes
@@ -308,6 +309,26 @@ def convert(path: Path, opts: MapOptions | None = None, log=lambda _m: None) -> 
 		v = texinfo[ti]["vecs"]
 		dens = (float(np.linalg.norm(v[0][:3])) + float(np.linalg.norm(v[1][:3]))) / 2
 		used_tex.setdefault(int(texinfo[ti]["texdata"]), []).append(dens)
+	# overlays: decal quads laid on faces; their textures join the set
+	overlays: dict[int, list[tuple["np.ndarray", "np.ndarray", "np.ndarray", int]]] = {}	# face → (pts, uv, n, texdata)
+	if opts.overlays:
+		for ov in src.overlays:
+			ti = int(ov["texinfo"])
+			nface = int(ov["facecount"]) & 0x3FFF
+			if not 0 <= ti < len(texinfo) or nface < 1:
+				continue
+			got = _overlay_quad(ov)
+			if got is None:
+				continue
+			pts, uv, n = got
+			td = int(texinfo[ti]["texdata"])
+			f0 = int(ov["faces"][0])
+			if not 0 <= f0 < len(faces) or int(faces[f0]["dispinfo"]) >= 0:
+				continue
+			overlays.setdefault(f0, []).append((pts, uv, n, td))
+			w0 = int(texdata[td]["width"]) or 64
+			extent = float(np.linalg.norm(pts[2] - pts[0])) / math.sqrt(2) or 64.0
+			used_tex.setdefault(td, []).append(w0 / extent * max(1e-3, abs(float(ov["u"][1] - ov["u"][0]))))
 	names_used: set[str] = {"sky"}
 	miptex_of: dict[int, tuple[int, float, float]] = {}	# texdata → (miptex, s scale, t scale)
 	missing = []
@@ -375,6 +396,7 @@ def convert(path: Path, opts: MapOptions | None = None, log=lambda _m: None) -> 
 	disp_collision: list[list[tuple["np.ndarray", float]]] = []
 	disp_bases: list[tuple[int, "np.ndarray"]] = []	# (plane, centroid) of each displacement's base face
 	disp_tris = 0
+	overlay_count = 0
 	for i, fc in enumerate(faces):
 		ti = int(fc["texinfo"])
 		start = len(out_faces)
@@ -412,6 +434,18 @@ def convert(path: Path, opts: MapOptions | None = None, log=lambda _m: None) -> 
 			lit = int(fc["lightofs"]) >= 0 and not (int(texinfo[ti]["flags"]) & sb.SURF_NOLIGHT)
 			for piece in _subdivide(pts, vecs):
 				out_faces.append(_OutFace(piece, n, d, oti, i, False, lit=lit))
+		for ov_pts, uv, on, td in overlays.get(i, ()):
+			mip, ks, kt = miptex_of[td]
+			tex = out.textures[mip]
+			lifted = ov_pts + on * 0.5	# off the wall, so the port's depth test keeps it in front
+			vv, good = _uv_vecs3(lifted[:3], uv[:3] * [tex.width, tex.height], on)
+			if not good:
+				continue
+			oti = out_texinfo(vv, mip, 0)
+			lit = int(fc["lightofs"]) >= 0
+			for piece in _subdivide(lifted, vv):
+				out_faces.append(_OutFace(piece, on, float(on @ piece[0]), oti, i, False, lit=lit))
+			overlay_count += 1
 		counts[i] = len(out_faces) - start
 	rstart = np.concatenate([[0], np.cumsum(counts[:len(faces)])])
 	log(f"  {len(out_faces)} faces ({disp_tris} from displacements), {len(out.textures)} textures")
@@ -478,7 +512,7 @@ def convert(path: Path, opts: MapOptions | None = None, log=lambda _m: None) -> 
 			c0, c1 = c1, c0
 		ff, nf = int(nd["firstface"]), int(nd["numfaces"])
 		a, b = int(rstart[ff]), int(rstart[min(ff + nf, len(faces))])
-		out.nodes.append((pidx, c0, c1, tuple(nd["mins"]), tuple(nd["maxs"]), a, b - a))
+		out.nodes.append((pidx, c0, c1, _box(nd["mins"], -1), _box(nd["maxs"], 1), a, b - a))
 
 	world_leafs = _leafs_under(nodes, int(models[0]["headnode"])) if len(models) else set()
 	visleafs = max(world_leafs) if world_leafs else 0
@@ -532,7 +566,7 @@ def convert(path: Path, opts: MapOptions | None = None, log=lambda _m: None) -> 
 				out.marksurfaces += range(int(rstart[f]), int(rstart[f + 1]))
 			out.marksurfaces += disp_leafs.get(li, [])
 		amb = (0, 0, 0, 0)
-		out.leafs.append((gc, visofs, tuple(lf["mins"]), tuple(lf["maxs"]), first, len(out.marksurfaces) - first, amb))
+		out.leafs.append((gc, visofs, _box(lf["mins"], -1), _box(lf["maxs"], 1), first, len(out.marksurfaces) - first, amb))
 	out.visibility = bytes(vis)
 
 	# -- clip hulls and models ------------------------------------------------------------------
@@ -631,10 +665,49 @@ def convert(path: Path, opts: MapOptions | None = None, log=lambda _m: None) -> 
 		raise ValueError(f"{path.name}: " + "; ".join(problems))
 	if light_stats[1]:
 		warnings.append(f"{light_stats[1]} face(s) had no usable Source lightmap")
-	stats = {"faces": len(out.faces), "nodes": len(out.nodes), "leafs": len(out.leafs),
+	stats = {"overlays": overlay_count, "faces": len(out.faces), "nodes": len(out.nodes), "leafs": len(out.leafs),
 		"clipnodes": len(out.clipnodes), "textures": len(out.textures), "texinfo": len(out.texinfo),
 		"lighting": len(out.lighting), "displacement triangles": disp_tris}
 	return MapResult(out.write(), warnings, sky, sky_sides, sorted(set(props)), stats)
+
+
+def _overlay_quad(ov) -> tuple["np.ndarray", "np.ndarray", "np.ndarray"] | None:
+	"""(corners clockwise from the front, their (u, v), normal) of one info_overlay."""
+	n = ov["normal"].astype(np.float64)
+	ln = float(np.linalg.norm(n))
+	if ln < 1e-6:
+		return None
+	n /= ln
+	p = ov["points"].astype(np.float64)
+	bu = np.array([p[0, 2], p[1, 2], p[2, 2]])	# the engine keeps basis U in the points' z
+	if float(np.linalg.norm(bu)) < 1e-6:
+		bu = np.cross(n, [0.0, 0.0, 1.0]) if abs(n[2]) < 0.9 else np.cross(n, [1.0, 0.0, 0.0])
+	bu /= float(np.linalg.norm(bu))
+	bv = np.cross(n, bu)
+	o = ov["origin"].astype(np.float64)
+	pts = np.array([o + p[i, 0] * bu + p[i, 1] * bv for i in range(4)])
+	u0, u1 = (float(x) for x in ov["u"])
+	v0, v1 = (float(x) for x in ov["v"])
+	uv = np.array([(u0, v0), (u0, v1), (u1, v1), (u1, v0)])
+	if np.cross(pts[1] - pts[0], pts[2] - pts[0]) @ n > 0:
+		pts, uv = pts[::-1].copy(), uv[::-1].copy()
+	if float(np.linalg.norm(np.cross(pts[1] - pts[0], pts[2] - pts[0]))) < 1e-3:
+		return None
+	return pts, uv, n
+
+
+def _uv_vecs3(pts: "np.ndarray", st: "np.ndarray", n: "np.ndarray") -> tuple["np.ndarray", bool]:
+	from .s2map import _uv_vecs_many
+
+	v, good = _uv_vecs_many(np.asarray(pts, np.float64)[None], np.asarray(st, np.float64)[None], np.asarray(n)[None])
+	return v[0], bool(good[0])
+
+
+def _box(v, direction: int) -> tuple[int, int, int]:
+	"""Bounds as BSP30's int16 (floats from version 25 are rounded outward)."""
+	a = np.asarray(v, np.float64)
+	a = np.floor(a) if direction < 0 else np.ceil(a)
+	return tuple(int(x) for x in np.clip(a, -32768, 32767))
 
 
 # -- tree walks ----------------------------------------------------------------------------
