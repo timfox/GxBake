@@ -152,3 +152,103 @@ def test_cli(tmp_path, capsys):
 	assert "frames: 2" in capsys.readouterr().out
 	assert cli.main(["convert", str(folder / "test.ff7mdl"), "-o", str(tmp_path / "o"), "--ff7-scale", "3"]) == 0
 	assert (tmp_path / "o" / "gc_studio" / "test.mdl").is_file()
+
+
+def _battle_model(folder, anims=True):
+	"""The same hip + head as _field_model, as a battle model "rt": rtaa skeleton, rtam/rtan parts, rtac texture, rtda pack."""
+	folder.mkdir(parents=True, exist_ok=True)
+	v, n, f = f7.cube(0.5)
+	(folder / "rtaa").write_bytes(f7.battle_skeleton([(-1, -2.0, True), (0, -1.0, True)], textures=1, body_anims=3, weapon_anims=1))
+	(folder / "rtam").write_bytes(f7.p_model(v, f, n))
+	(folder / "rtan").write_bytes(f7.p_model(v, f, n, groups=[(0, 12, 0, 0, 1, 0)], texcoords=[(0.0, 0.0)] * 8))
+	(folder / "rtac").write_bytes(f7.tex(2, 2, [(0, 0, 0), (255, 0, 0)], [[1, 1], [1, 0]]))
+	if anims:
+		up = [(0, 0, 0), (-1024, 0, 0), (0, 0, 0)]	# slot 0 is the root; the hip turns -90° about X
+		nod = [(0, 0, 0), (-1024, 0, 0), (1024, 0, 0)]
+		blocks = [
+			f7.da_animation([((0, 0, 0), up), ((0, 0, 0), nod)]),
+			f7.da_empty(),
+			f7.da_animation([((0, 0, 0), up)] * 3, missing_counter=True),
+			f7.da_animation([((0, 0, 0), [(0, 0, 0)])]),	# a weapon animation: not read
+		]
+		(folder / "rtda").write_bytes(f7.da_pack(blocks))
+	return folder
+
+
+def test_da_bitstream_round_trip():
+	rng = np.random.default_rng(3)
+	for key in (0, 2, 4):
+		step = 1 << key
+		rot = [[int(x) * step for x in rng.integers(-300, 300, 3)] for _ in range(4)]
+		frames = [((10, -20, 30), [tuple(r) for r in rot])]
+		t = [10, -20, 30]
+		for i in range(6):
+			t = [t[0] + 5, t[1] - 1000, t[2]]
+			for r in rot:
+				for c in range(3):
+					r[c] += int(rng.choice([0, -1, 1, 3, -5, 40, -63, 900])) * step
+			frames.append((tuple(t), [tuple(r) for r in rot]))
+		block = f7.da_animation(frames, key)
+		got = ff7.read_da_animation(block[17:], key, 4)
+		assert len(got) == len(frames)
+		for (t_want, r_want), (t_got, r_got) in zip(frames, got):
+			assert t_got.tolist() == list(t_want)
+			assert (r_got % 4096).tolist() == [[c % 4096 for c in r] for r in r_want]	# a full turn is 4096
+
+
+def test_battle_skeleton_and_pack_readers(tmp_path):
+	folder = _battle_model(tmp_path / "battle")
+	assert ff7.is_battle_skeleton(folder / "rtaa") and not ff7.is_battle_skeleton(folder / "rtam")
+	skel = ff7.read_battle_skeleton((folder / "rtaa").read_bytes())
+	assert [(b.parent, b.length, b.has_part) for b in skel.bones] == [(-1, -2.0, True), (0, -1.0, True)]
+	assert (skel.textures, skel.body_anims, skel.weapon_anims) == (1, 3, 1)
+	assert ff7.battle_part_suffixes(16)[:3] == ["am", "an", "ao"] and ff7.battle_part_suffixes(16)[14:] == ["ba", "bb"]
+	anims = ff7.read_da((folder / "rtda").read_bytes(), 2, 3)
+	assert [len(a) if a else 0 for a in anims] == [2, 0, 3]
+	assert anims[0][1].rotations[1, 0] == pytest.approx(90.0) and anims[0][0].rotations[0, 0] == pytest.approx(-90.0)
+	with pytest.raises(ValueError):
+		ff7.read_battle_skeleton(f7.battle_skeleton([]))	# a battle location
+
+
+def test_battle_model_poses_and_bakes(tmp_path):
+	folder = _battle_model(tmp_path / "battle")
+	m = ff7.import_ff7(folder / "rtaa", models.ModelOptions(ff7_battle_scale=10.0, anim_fps=15))
+	assert [b.parent for b in m.bones] == [-1, 0, 1]
+	hip = [s for s in m.meshes if set(s.bones.tolist()) == {1}][0]
+	head = [s for s in m.meshes if set(s.bones.tolist()) == {2}][0]
+	assert np.allclose(hip.world.mean(0), 0, atol=1e-4)
+	assert np.allclose(head.world.mean(0), (0, 0, 20.0), atol=1e-4)
+	assert m.materials[head.material].rgba[0, 0, 0] == 255
+	assert [s.name for s in m.sequences] == ["anim00", "anim02"]
+	nod = m.sequences[0]
+	assert nod.frames.shape == (2, 3, 6)
+	w = sk.world_matrices(nod.frames[-1], [b.parent for b in m.bones])
+	assert np.allclose(w[2][:3, :3], np.eye(3), atol=1e-6)
+	mdl = models.build_studio_mdl(m)
+	assert mdl[:4] == b"IDST"
+
+
+def test_battle_auto_scale_and_missing_pack(tmp_path):
+	folder = _battle_model(tmp_path / "battle")
+	m = ff7.import_ff7(folder / "rtaa", models.ModelOptions())
+	pts = np.concatenate([s.world for s in m.meshes])
+	assert np.ptp(pts[:, 2]) == pytest.approx(ff7.BATTLE_HEIGHT, rel=1e-3)
+	assert any("auto" in w for w in m.warnings)
+	bare = _battle_model(tmp_path / "bare", anims=False)
+	m2 = ff7.import_ff7(bare / "rtaa", models.ModelOptions(ff7_battle_scale=1.0))
+	assert any("rtda" in w for w in m2.warnings) and m2.sequences[0].name == "idle"
+
+
+def test_project_and_cli_take_battle_skeletons(tmp_path, capsys):
+	folder = _battle_model(tmp_path / "battle")
+	assert detect_kind(folder / "rtaa") == Kind.MODEL
+	assert detect_kind(folder / "rtam") == Kind.UNKNOWN and detect_kind(folder / "rtda") == Kind.UNKNOWN
+	proj = Project(Settings())
+	added = proj.add_path(folder)
+	assert [a.path.name for a in added] == ["rtaa"]
+	proj.convert(added, tmp_path / "out")
+	assert added[0].status.startswith("Done"), (added[0].status, added[0].warnings)
+	assert proj.info(added[0])["Source"] == "Final Fantasy VII battle model"
+	assert cli.main(["ff7", str(folder / "rtaa")]) == 0
+	out = capsys.readouterr().out
+	assert "battle skeleton" in out and "rtan" in out and "animation frames: [2, 0, 3]" in out

@@ -75,4 +75,26 @@ Effects become 16-bit WAVs with a `cue ` loop point, then go through `sfx.fit_wa
 
 **Guessed, to check on real data:** the facing (-Z taken as forward, as on the PlayStation; `--ff7-yaw` turns it), the scale (2.5 makes a field character about 70 units tall), and the handedness (a mirrored character would show as left and right swapped).
 
-**Not read:** battle models (`rtaa`-style skeleton + parts) and their `.da` animation packs, the world map, battle scenes, and the PSX formats.
+### Battle models
+
+`battle.lgp` keeps each model as extensionless files named from a two-letter base (`rt` is Cloud):
+
+| File | Read |
+| --- | --- |
+| `<base>aa` | skeleton: bone count (int32 at 12), texture count (24), body animation count (28), weapon animation count (40); from byte 52, 12 bytes per bone: parent (-1 = root), length (float), has-part flag. A bone count of 0 means a battle location (not read) |
+| `<base>ac`, `ad`, … | `.tex` textures, as many as the header says; group texture numbers index them |
+| `<base>am` … `az`, `ba`, … | one `.p` part per bone, in bone order (a bone without a part still takes a name) |
+| `<base>ck` … | weapon models (not read) |
+| `<base>da` | animation pack: uint32 count, then the body animations, then the weapon animations |
+
+Each pack block is 12 bytes (bone count + 1, frame count, block length; both counts are unreliable), then, when the length is 11 or more, a mini header (int16 frame count, uint16 stream length, key byte) and the bit stream. A block whose first int16 equals `length - 5` has no frame count (3-byte mini header). Shorter blocks are empty slots and keep their number. The stream is read MSB first and, as Kimera does, frame by frame until it runs out:
+
+- First frame: 3 × int16 root offsets, then for the root rotation and each bone 3 × `(12 - key)`-bit signed values, shifted left by `key`.
+- Later frames: per offset, 1 bit picks a 7- or 16-bit signed delta. Per rotation value, a 0 bit means no change; otherwise 3 bits: 0 is `-1 << key`, 7 is a full `(12 - key)`-bit value, and 1–6 read that many bits `t`, which become `t - 2^(n-1)` when negative or `t + 2^(n-1)` otherwise, then `<< key`.
+- Deltas add to the previous frame. 4096 is a full turn.
+
+**Posing.** As in Kimera's battle viewer: translate the root by the frame's offsets (no y flip, since the parts are y-down too), rotate by slot 0, then each bone starts at the end of its parent, rotates `Ry·Rx·Rz` by its slot, draws its part and moves `+length` along Z (lengths are stored negative). A one-bone model uses slot 0 for both. Animations are resampled from 15 fps.
+
+**Guessed, to check on real data:** the frame rate (15 fps, one frame per battle tick), the auto scale (each model fit to 72 units tall unless `--ff7-battle-scale` is set; the auto factor is printed as a warning), and the winding: battle parts have no normals, so triangles keep the file's order.
+
+**Not read:** battle weapons and weapon animations, battle locations, the world map, battle scenes, and the PSX formats.

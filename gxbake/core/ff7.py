@@ -1,4 +1,4 @@
-"""Final Fantasy VII (PC) field models → GoldSrc studio MDL.
+"""Final Fantasy VII (PC) field and battle models → GoldSrc studio MDL.
 
 The PC release keeps its 3D data in LGP archives (char.lgp holds the field
 models; `gxbake extract char.lgp -o char` unpacks one). A field model is:
@@ -25,6 +25,9 @@ TEX_format, PSX/HRC, PSX/RSD) and Kimera's reader for the .a frames and how
 bones chain: a bone draws its part, then moves -length along its own Z for its
 children.
 
+Battle models (battle.lgp: <base>aa skeleton, parts, textures, <base>da pack) are
+read by import_battle; see the notes above it.
+
 Axes: FF7 models are y-down like the PlayStation. They are taken to face -Z, so
 (x, y, z) → (-z, x, -y) · ff7_scale, then a turn of ff7_yaw degrees about Z.
 Like FFXI, the facing and unit size are not yet checked on real data.
@@ -46,10 +49,14 @@ from . import skeleton as _sk
 FF7_EXTENSIONS = {".hrc", ".p", ".ff7mdl"}
 DEFAULT_SCALE = 2.5	# GoldSrc units per FF7 field unit: a ~28-unit-tall character becomes ~70
 FPS = 30.0	# field animations play at 30 frames a second
+BATTLE_FPS = 15.0	# battle animations: one frame per battle tick (taken as 15 a second)
+BATTLE_HEIGHT = 72.0	# auto battle scale: the rest pose stands this tall
 
 
 def is_ff7(path: Path) -> bool:
 	ext = Path(path).suffix.lower()
+	if not ext:
+		return is_battle_skeleton(path)
 	if ext not in FF7_EXTENSIONS:
 		return False
 	if ext == ".p":
@@ -313,6 +320,253 @@ def bone_matrices(bones: list[HrcBone], frame: AFrame | None) -> tuple["np.ndarr
 	return root, out
 
 
+# -- battle models ------------------------------------------------------------------
+#
+# battle.lgp holds each battle model as files with no extension, all named from a
+# two-letter base (Cloud is "rt"):
+#
+#	<base>aa	skeleton: header (bone count at 12, texture count at 24, body and
+#			weapon animation counts at 28 and 40), then 12 bytes per bone
+#			from 52: parent (-1 = root), length, has-part flag
+#	<base>ac…	textures (.TEX), as many as the header says
+#	<base>am…	one .P part per bone, in bone order (am…az, ba…bz, …)
+#	<base>ck…	weapon models (not converted)
+#	<base>da	animation pack: a count, then the body animations, then the
+#			weapon animations, each a compressed bit stream
+#
+# Read the way Kimera reads them (FF7AASkeleton, FF7DAAnimationsPack*; no code
+# copied) and the Qhimm wiki page Battle_Animation_(PC).
+
+
+@dataclass
+class BattleBone:
+	parent: int	# -1 = root
+	length: float
+	has_part: bool
+
+
+@dataclass
+class BattleSkeleton:
+	bones: list[BattleBone]
+	textures: int
+	body_anims: int
+	weapon_anims: int
+
+
+def is_battle_skeleton(path: Path) -> bool:
+	"""An extracted battle.lgp skeleton: a four-letter name ending "aa" and a matching header."""
+	path = Path(path)
+	if path.suffix or len(path.name) != 4 or not path.name.lower().endswith("aa"):
+		return False
+	try:
+		with path.open("rb") as f:
+			head = f.read(52)
+		size = path.stat().st_size
+	except OSError:
+		return False
+	if len(head) < 52:
+		return False
+	bones = struct.unpack_from("<i", head, 12)[0]
+	return 0 < bones <= 255 and size >= 52 + 12 * bones
+
+
+def read_battle_skeleton(data: bytes, name: str = "aa") -> BattleSkeleton:
+	if len(data) < 52:
+		raise ValueError(f"{name}: header truncated")
+	nb, = struct.unpack_from("<i", data, 12)
+	tex, body = struct.unpack_from("<ii", data, 24)
+	weapon, = struct.unpack_from("<i", data, 40)
+	if nb == 0:
+		raise ValueError(f"{name}: a battle location (no bones), not a character")
+	if not 0 < nb <= 255 or len(data) < 52 + 12 * nb:
+		raise ValueError(f"{name}: not a battle skeleton")
+	bones = []
+	for i in range(nb):
+		parent, length, part = struct.unpack_from("<ifi", data, 52 + 12 * i)
+		if parent >= i:
+			raise ValueError(f"{name}: bone {i} has parent {parent}, which comes after it")
+		bones.append(BattleBone(max(parent, -1), length, part != 0))
+	return BattleSkeleton(bones, max(0, min(tex, 64)), max(0, min(body, 1024)), max(0, min(weapon, 1024)))
+
+
+def battle_part_suffixes(count: int) -> list[str]:
+	"""Part file suffixes for each bone: am, an … az, ba, bb …"""
+	out, a, b = [], ord("a"), ord("m")
+	for _ in range(count):
+		out.append(chr(a) + chr(b))
+		if b >= ord("z"):
+			a, b = a + 1, ord("a")
+		else:
+			b += 1
+	return out
+
+
+class _Bits:
+	"""An MSB-first bit stream."""
+
+	def __init__(self, data: bytes):
+		self.data = data
+		self.pos = 0
+		self.end = 8 * len(data)
+
+	def unsigned(self, n: int) -> int:
+		if self.pos + n > self.end:
+			raise EOFError
+		first, last = self.pos >> 3, (self.pos + n + 7) >> 3
+		v = int.from_bytes(self.data[first:last], "big")
+		v >>= 8 * (last - first) - (self.pos & 7) - n
+		self.pos += n
+		return v & ((1 << n) - 1)
+
+	def signed(self, n: int) -> int:
+		v = self.unsigned(n)
+		return v - (1 << n) if v >> (n - 1) else v
+
+
+def _rotation_delta(bits: _Bits, key: int) -> int:
+	if not bits.unsigned(1):
+		return 0
+	kind = bits.unsigned(3)
+	if kind == 0:
+		v = -1	# the smallest step down
+	elif kind == 7:
+		v = bits.signed(12 - key)
+	else:
+		v = bits.signed(kind)
+		v = v - (1 << (kind - 1)) if v < 0 else v + (1 << (kind - 1))
+	return v << key
+
+
+def read_da_animation(stream: bytes, key: int, slots: int) -> list[tuple["np.ndarray", "np.ndarray"]]:
+	"""One body animation's bit stream → per frame (translation (3,), raw rotations (slots, 3)).
+	Frames are read until the data runs out, as Kimera does: the counts in the headers are unreliable."""
+	bits = _Bits(stream)
+	out = []
+	try:
+		t = np.array([bits.signed(16) for _ in range(3)], np.int64)
+		r = np.array([[bits.signed(12 - key) << key for _ in range(3)] for _ in range(slots)], np.int64).reshape(slots, 3)
+	except EOFError:
+		return out
+	out.append((t, r))
+	while True:
+		try:
+			nt = t.copy()
+			for c in range(3):
+				nt[c] += bits.signed(16 if bits.unsigned(1) else 7)
+			nr = r.copy()
+			for s in range(slots):
+				for c in range(3):
+					nr[s, c] += _rotation_delta(bits, key)
+		except EOFError:
+			break
+		t, r = nt, nr
+		out.append((t, r))
+	return out
+
+
+def read_da(data: bytes, bones: int, body_anims: int, name: str = "da") -> list[list[AFrame] | None]:
+	"""A battle animation pack's body animations as frames for a skeleton of `bones` bones.
+	Empty or unreadable slots come back as None so the rest keep their numbers."""
+	if len(data) < 4:
+		raise ValueError(f"{name}: truncated")
+	slots = bones + 1 if bones > 1 else 1	# slot 0 is the root rotation
+	at = 4
+	out: list[list[AFrame] | None] = []
+	for _ in range(body_anims):
+		if at + 12 > len(data):
+			break
+		block, = struct.unpack_from("<I", data, at + 8)
+		start = at + 12
+		at = start + block
+		if block < 11 or at > len(data):
+			out.append(None)
+			continue
+		frames2, length, key = struct.unpack_from("<hHB", data, start)
+		if frames2 == block - 5:	# no second frame counter (only some models)
+			length, key = struct.unpack_from("<HB", data, start)
+			body = data[start + 3:start + 3 + length]
+		else:
+			body = data[start + 5:start + 5 + length]
+		if key not in (0, 2, 4):
+			out.append(None)
+			continue
+		frames = []
+		for t, r in read_da_animation(body, key, slots):
+			deg = r.astype(np.float64) * (360.0 / 4096.0)
+			rots = deg[1:] if slots > 1 else deg[:1]
+			# the root moves by (x, y, z) in the model's own y-down space; bone_matrices negates y, so undo that here
+			frames.append(AFrame(deg[0], np.array([t[0], -t[1], t[2]], np.float64), rots))
+		out.append(frames or None)
+	return out
+
+
+def _battle_hrc(skel: BattleSkeleton) -> list[HrcBone]:
+	"""Battle bones as HRC bones: a battle bone moves +length along Z, a field bone -length."""
+	return [HrcBone(f"bone{i}", "root" if b.parent < 0 else f"bone{b.parent}", -b.length, [])
+		for i, b in enumerate(skel.bones)]
+
+
+def _battle_files(path: Path) -> tuple[str, Path]:
+	path = Path(path)
+	return path.name[:-2], path.parent
+
+
+def import_battle(path: Path, opts: "_m.ModelOptions | None" = None) -> "_m.ImportedModel":
+	"""<base>aa with its parts, textures and <base>da pack → ImportedModel."""
+	opts = opts or _m.ModelOptions()
+	path = Path(path)
+	warnings: list[str] = []
+	skel = read_battle_skeleton(path.read_bytes(), path.name)
+	base, folder = _battle_files(path)
+	textures = []
+	for ti in range(skel.textures):
+		tp = _find(folder, f"{base}a{chr(ord('c') + ti)}")
+		try:
+			textures.append(read_tex(tp.read_bytes(), tp.name) if tp else None)
+		except ValueError as exc:
+			warnings.append(str(exc))
+			textures.append(None)
+		if tp is None:
+			warnings.append(f"texture {base}a{chr(ord('c') + ti)} not found")
+	parts = []
+	for i, (b, suf) in enumerate(zip(skel.bones, battle_part_suffixes(len(skel.bones)))):
+		if not b.has_part:
+			continue
+		pp = _find(folder, base + suf)
+		if pp is None:
+			warnings.append(f"bone {i}: part {base}{suf} not found")
+			continue
+		try:
+			parts.append(_Part(i + 1, read_p(pp.read_bytes(), pp.name), textures, pp.name))
+		except ValueError as exc:
+			warnings.append(str(exc))
+	if not parts:
+		raise ValueError(f"{path.name}: no parts found (are the {base}am… files in the same folder?)")
+	anims: list[tuple[str, list[AFrame]]] = []
+	da = _find(folder, f"{base}da")
+	if da is None:
+		warnings.append(f"no {base}da animation pack beside the skeleton; bones keep a straight rest pose")
+	else:
+		try:
+			for i, frames in enumerate(read_da(da.read_bytes(), len(skel.bones), skel.body_anims, da.name)):
+				if frames:
+					anims.append((f"anim{i:02d}", frames))
+		except ValueError as exc:
+			warnings.append(str(exc))
+		if not anims:
+			warnings.append(f"{da.name}: no body animation could be read")
+	bones = _battle_hrc(skel)
+	scale = float(getattr(opts, "ff7_battle_scale", 0.0))
+	if scale <= 0:	# auto: the rest pose stands BATTLE_HEIGHT units tall
+		probe = _assemble(base, bones, parts, anims[:1], _m.ModelOptions(static=True), [], scale=1.0, yaw=0.0)
+		pts = np.concatenate([m.world for m in probe.meshes])
+		height = float(np.ptp(pts[:, 2]))
+		scale = BATTLE_HEIGHT / height if height > 1e-6 else 0.05
+		warnings.append(f"battle scale {scale:.4g} (auto: {height:.0f} FF7 units tall → {BATTLE_HEIGHT:g}); "
+			"set --ff7-battle-scale to keep a set of models in proportion")
+	return _assemble(base, bones, parts, anims, opts, warnings, fps=BATTLE_FPS, scale=scale)
+
+
 # -- import -------------------------------------------------------------------------
 
 
@@ -325,9 +579,12 @@ class _Part:
 
 
 def import_ff7(path: Path, opts: "_m.ModelOptions | None" = None) -> "_m.ImportedModel":
-	"""A field skeleton (.hrc), a manifest (.ff7mdl) or a lone polygon model (.p) → ImportedModel."""
+	"""A field skeleton (.hrc), a manifest (.ff7mdl), a lone polygon model (.p) or a battle
+	skeleton (<base>aa) → ImportedModel."""
 	opts = opts or _m.ModelOptions()
 	path = Path(path)
+	if not path.suffix:
+		return import_battle(path, opts)
 	warnings: list[str] = []
 	ext = path.suffix.lower()
 	anims: list[tuple[str, list[AFrame]]] = []
@@ -410,12 +667,12 @@ def _textures_beside(path: Path, pm: PModel, warnings: list[str]) -> list:
 	return []
 
 
-def _to_gold(opts: "_m.ModelOptions") -> tuple["np.ndarray", float]:
+def _to_gold(opts: "_m.ModelOptions", scale: float | None = None, yaw: float | None = None) -> tuple["np.ndarray", float]:
 	base = np.array([[0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])	# y-down, facing -Z → Z-up, +X
-	a = math.radians(getattr(opts, "ff7_yaw", 0.0))
+	a = math.radians(getattr(opts, "ff7_yaw", 0.0) if yaw is None else yaw)
 	c, s = math.cos(a), math.sin(a)
 	yaw = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
-	return yaw @ base, float(getattr(opts, "ff7_scale", DEFAULT_SCALE))
+	return yaw @ base, float(getattr(opts, "ff7_scale", DEFAULT_SCALE) if scale is None else scale)
 
 
 def _gold(m: "np.ndarray", rot: "np.ndarray", k: float) -> "np.ndarray":
@@ -474,8 +731,9 @@ def _palette(colors: "np.ndarray") -> tuple["np.ndarray", dict[tuple, tuple[floa
 
 
 def _assemble(name: str, bones: list[HrcBone], parts: list[_Part], anims: list[tuple[str, list[AFrame]]],
-		opts: "_m.ModelOptions", warnings: list[str]) -> "_m.ImportedModel":
-	rot, k = _to_gold(opts)
+		opts: "_m.ModelOptions", warnings: list[str], fps: float = FPS, scale: float | None = None,
+		yaw: float | None = None) -> "_m.ImportedModel":
+	rot, k = _to_gold(opts, scale, yaw)
 	model = _m.ImportedModel(name, [], [], warnings)
 	if len(bones) + 1 > _sk.MAXSTUDIOBONES:
 		raise ValueError(f"{len(bones)} bones exceeds the studio limit")
@@ -575,10 +833,10 @@ def _assemble(name: str, bones: list[HrcBone], parts: list[_Part], anims: list[t
 				warnings.append(f"animation {aname}: {len(frames[0].rotations)} bones for a {len(bones)}-bone skeleton; skipped")
 				continue
 			src = len(frames)
-			count = max(1, int(round((src - 1) / FPS * opts.anim_fps)) + 1)
+			count = max(1, int(round((src - 1) / fps * opts.anim_fps)) + 1)
 			out = np.zeros((count, len(bones) + 1, 6))
 			for f in range(count):
-				t = min(src - 1, f / opts.anim_fps * FPS)
+				t = min(src - 1, f / opts.anim_fps * fps)
 				i0 = int(math.floor(t))
 				i1 = min(i0 + 1, src - 1)
 				fr = _blend(frames[i0], frames[i1], t - i0)
@@ -618,11 +876,24 @@ def describe(path: Path) -> dict:
 		frames = read_a(path.read_bytes(), path.name)
 		return {"path": str(path), "type": "animation", "frames": len(frames),
 			"bones": len(frames[0].rotations) if frames else 0, "seconds": round(len(frames) / FPS, 2)}
+	if not ext and is_battle_skeleton(path):
+		skel = read_battle_skeleton(path.read_bytes(), path.name)
+		base, folder = _battle_files(path)
+		sufs = battle_part_suffixes(len(skel.bones))
+		info = {"path": str(path), "type": "battle skeleton", "bones": [
+			{"name": f"bone{i}", "parent": "root" if b.parent < 0 else f"bone{b.parent}", "length": b.length,
+				"resources": [base + sufs[i]] if b.has_part else []} for i, b in enumerate(skel.bones)],
+			"textures": skel.textures, "body animations": skel.body_anims, "weapon animations": skel.weapon_anims}
+		da = _find(folder, f"{base}da")
+		if da is not None:
+			anims = read_da(da.read_bytes(), len(skel.bones), skel.body_anims, da.name)
+			info["animation frames"] = [len(a) if a else 0 for a in anims]
+		return info
 	if ext == ".tex":
 		rgba = read_tex(path.read_bytes(), path.name)
 		return {"path": str(path), "type": "texture", "size": f"{rgba.shape[1]}x{rgba.shape[0]}",
 			"transparent": bool((rgba[..., 3] < 128).any())}
-	raise ValueError(f"{path.name}: not a .p, .hrc, .a or .tex file")
+	raise ValueError(f"{path.name}: not a .p, .hrc, .a or .tex file, or a battle skeleton (<base>aa)")
 
 
 def animations_for(folder: Path, bones: int) -> list[Path]:

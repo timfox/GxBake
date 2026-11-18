@@ -63,6 +63,7 @@ def _convert(args) -> int:
 	s.ffxi_music = not args.ffxi_music_wav
 	s.ff7_scale = args.ff7_scale
 	s.ff7_yaw = args.ff7_yaw
+	s.ff7_battle_scale = args.ff7_battle_scale
 	s.video_width, s.video_height, s.video_fps = args.video_width, args.video_height, args.video_fps
 	s.sky_yaw, s.sky_fov, s.sky_exposure = args.sky_yaw, args.sky_fov, args.sky_exposure
 	s.detect_panoramas = not args.no_sky_detect
@@ -202,10 +203,13 @@ def _ff7(args) -> int:
 		print(json.dumps(info, indent=2))
 		return 0
 	print(f"{path}: {info['type']}")
-	if info["type"] == "skeleton":
+	if info["type"] in ("skeleton", "battle skeleton"):
 		for b in info["bones"]:
 			res = f"  parts {', '.join(b['resources'])}" if b["resources"] else ""
 			print(f"  {b['name']:<12} ← {b['parent']:<12} length {b['length']:g}{res}")
+		for k, v in info.items():
+			if k not in ("path", "type", "bones", "animations"):
+				print(f"  {k}: {v}")
 		if args.anims:
 			print(f"  {len(matches)} animations with {len(info['bones'])} bones: {', '.join(matches[:30])}"
 				+ (" …" if len(matches) > 30 else ""))
@@ -601,7 +605,9 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--ffxi-music-wav", action="store_true",
 		help="Final Fantasy XI: write .bgw music as WAVs under sound/ffxi/ instead of media/<name>.gcpcm")
 	c.add_argument("--ff7-scale", type=float, default=2.5, help="Final Fantasy VII field models: GoldSrc units per FF7 unit")
-	c.add_argument("--ff7-yaw", type=float, default=0.0, help="Final Fantasy VII field models: extra degrees to turn about Z")
+	c.add_argument("--ff7-yaw", type=float, default=0.0, help="Final Fantasy VII models: extra degrees to turn about Z")
+	c.add_argument("--ff7-battle-scale", type=float, default=0.0,
+		help="Final Fantasy VII battle models: GoldSrc units per FF7 unit (0 = fit each model to 72 units tall)")
 	c.add_argument("--video-width", type=int, default=320, help="GCVID frame width")
 	c.add_argument("--video-height", type=int, default=240, help="GCVID frame height")
 	c.add_argument("--video-fps", type=int, default=15, help="GCVID frame rate")
@@ -630,8 +636,8 @@ def build_parser() -> argparse.ArgumentParser:
 	r.add_argument("--json", action="store_true", help="print everything as JSON")
 	r.set_defaults(fn=_rs)
 
-	f7 = sub.add_parser("ff7", help="look inside Final Fantasy VII field models (.hrc, .p, .a, .tex)")
-	f7.add_argument("path", help="a skeleton (.hrc), polygon model (.p), animation (.a) or texture (.tex)")
+	f7 = sub.add_parser("ff7", help="look inside Final Fantasy VII field and battle models (.hrc, .p, .a, .tex, <base>aa)")
+	f7.add_argument("path", help="a skeleton (.hrc), polygon model (.p), animation (.a), texture (.tex) or battle skeleton (<base>aa)")
 	f7.add_argument("--anims", action="store_true", help="for a .hrc: list the .a files beside it with the same bone count")
 	f7.add_argument("--json", action="store_true", help="print as JSON")
 	f7.set_defaults(fn=_ff7)

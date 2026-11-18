@@ -17,7 +17,7 @@ build or CI job.
 | [`convert`](#gxbake-convert) | convert files or folders |
 | [`inspect`](#gxbake-inspect) | print what GxBake sees in a file or folder |
 | [`rs`](#gxbake-rs) | list the NPCs and models in a RuneScape cache |
-| [`ff7`](#gxbake-ff7) | look inside Final Fantasy VII field models (.hrc, .p, .a, .tex) |
+| [`ff7`](#gxbake-ff7) | look inside Final Fantasy VII field and battle models (.hrc, .p, .a, .tex, <base>aa) |
 | [`ffxi`](#gxbake-ffxi) | look inside Final Fantasy XI DATs, sounds and file tables |
 | [`validate`](#gxbake-validate) | check a staged gamedir like the disc builder does |
 | [`budget`](#gxbake-budget) | per-map memory report against the GameCube port's windows |
@@ -42,10 +42,10 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale ROSE_SCALE]
     [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW]
     [--rs-entry KIND:ID] [--ffxi-scale FFXI_SCALE] [--ffxi-yaw FFXI_YAW] [--ffxi-skeleton DAT]
-    [--ffxi-music-wav] [--ff7-scale FF7_SCALE] [--ff7-yaw FF7_YAW] [--video-width VIDEO_WIDTH]
-    [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL]
-    [--wad-dir WAD_DIR] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV]
-    [--sky-exposure SKY_EXPOSURE]
+    [--ffxi-music-wav] [--ff7-scale FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale
+    FF7_BATTLE_SCALE] [--video-width VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps
+    VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR] [--cache CACHE]
+    [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |
@@ -80,7 +80,8 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--ffxi-skeleton DAT` |  | Final Fantasy XI: race skeleton DAT for equipment and face DATs that have none of their own |
 | `--ffxi-music-wav` |  | Final Fantasy XI: write .bgw music as WAVs under sound/ffxi/ instead of media/<name>.gcpcm |
 | `--ff7-scale FF7_SCALE` | `2.5` | Final Fantasy VII field models: GoldSrc units per FF7 unit |
-| `--ff7-yaw FF7_YAW` |  | Final Fantasy VII field models: extra degrees to turn about Z |
+| `--ff7-yaw FF7_YAW` |  | Final Fantasy VII models: extra degrees to turn about Z |
+| `--ff7-battle-scale FF7_BATTLE_SCALE` |  | Final Fantasy VII battle models: GoldSrc units per FF7 unit (0 = fit each model to 72 units tall) |
 | `--video-width VIDEO_WIDTH` | `320` | GCVID frame width |
 | `--video-height VIDEO_HEIGHT` | `240` | GCVID frame height |
 | `--video-fps VIDEO_FPS` | `15` | GCVID frame rate |
@@ -123,7 +124,7 @@ gxbake rs path [--find FIND] [--all] [--limit LIMIT] [--json]
 
 ## `gxbake ff7`
 
-Look inside Final Fantasy VII field models (.hrc, .p, .a, .tex).
+Look inside Final Fantasy VII field and battle models (.hrc, .p, .a, .tex, <base>aa).
 
 ```
 gxbake ff7 path [--anims] [--json]
@@ -131,7 +132,7 @@ gxbake ff7 path [--anims] [--json]
 
 | Argument | Default | Description |
 | --- | --- | --- |
-| `path` |  | a skeleton (.hrc), polygon model (.p), animation (.a) or texture (.tex) |
+| `path` |  | a skeleton (.hrc), polygon model (.p), animation (.a), texture (.tex) or battle skeleton (<base>aa) |
 | `--anims` |  | for a .hrc: list the .a files beside it with the same bone count |
 | `--json` |  | print as JSON |
 

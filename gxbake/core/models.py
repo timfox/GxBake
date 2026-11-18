@@ -101,6 +101,7 @@ class ModelOptions:
 	ffxi_skeleton: str = ""	# Final Fantasy XI: race skeleton DAT for equipment/face DATs without their own
 	ff7_scale: float = 2.5	# Final Fantasy VII field models: GoldSrc units per FF7 unit
 	ff7_yaw: float = 0.0	# Final Fantasy VII: extra turn about Z (they are turned y-down → Z-up, -Z → +X)
+	ff7_battle_scale: float = 0.0	# Final Fantasy VII battle models: GoldSrc units per FF7 unit (0 = fit to 72 units tall)
 
 
 @dataclass

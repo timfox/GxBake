@@ -100,3 +100,91 @@ def cube(s: float = 1.0, center=(0.0, 0.0, 0.0), mixed: bool = True):
 			t1, t2 = (a, cc, b), (a, d, cc)
 		faces += [t1, t2]
 	return verts, normals, faces
+
+
+def battle_skeleton(bones: list[tuple[int, float, bool]], textures: int = 0, body_anims: int = 0, weapon_anims: int = 0) -> bytes:
+	"""bones: (parent, length, has part)."""
+	h = bytearray(52)
+	struct.pack_into("<i", h, 12, len(bones))
+	struct.pack_into("<ii", h, 24, textures, body_anims)
+	struct.pack_into("<i", h, 40, weapon_anims)
+	return bytes(h) + b"".join(struct.pack("<ifi", p, ln, int(part)) for p, ln, part in bones)
+
+
+class _BitWriter:
+	def __init__(self):
+		self.bits: list[int] = []
+
+	def put(self, value: int, n: int) -> None:
+		value &= (1 << n) - 1
+		self.bits += [(value >> (n - 1 - i)) & 1 for i in range(n)]
+
+	def data(self) -> bytes:
+		b = self.bits + [0] * (-len(self.bits) % 8)
+		return bytes(int("".join(map(str, b[i:i + 8])), 2) for i in range(0, len(b), 8))
+
+
+def _put_delta(w: _BitWriter, delta: int, key: int) -> None:
+	v = delta >> key
+	assert v << key == delta, "deltas must be multiples of 1 << key"
+	if v == 0:
+		w.put(0, 1)
+		return
+	w.put(1, 1)
+	if v == -1:
+		w.put(0, 3)
+		return
+	for n in range(1, 7):
+		half = 1 << (n - 1)
+		if half <= v <= 2 * half - 1:
+			w.put(n, 3)
+			w.put(v - half, n)
+			return
+		if -2 * half <= v <= -half - 1:
+			w.put(n, 3)
+			w.put(v + half, n)
+			return
+	w.put(7, 3)
+	w.put(v, 12 - key)
+
+
+def da_animation(frames: list[tuple[tuple[int, int, int], list[tuple[int, int, int]]]], key: int = 0,
+		missing_counter: bool = False) -> bytes:
+	"""frames: (translation, raw rotations per slot, 4096 = a full turn). One pack block."""
+	w = _BitWriter()
+	t0, r0 = frames[0]
+	for c in t0:
+		w.put(c, 16)
+	for r in r0:
+		for c in r:
+			assert (c >> key) << key == c
+			w.put(c >> key, 12 - key)
+	prev_t, prev_r = t0, r0
+	for t, r in frames[1:]:
+		for c in range(3):
+			d = t[c] - prev_t[c]
+			if -64 <= d < 64:
+				w.put(0, 1)
+				w.put(d, 7)
+			else:
+				w.put(1, 1)
+				w.put(d, 16)
+		for s in range(len(r)):
+			for c in range(3):
+				_put_delta(w, r[s][c] - prev_r[s][c], key)
+		prev_t, prev_r = t, r
+	stream = w.data()
+	slots = len(frames[0][1])
+	if missing_counter:	# such blocks still count a 5-byte mini header
+		block = struct.pack("<HB", len(stream), key) + stream + b"\0\0"
+	else:
+		block = struct.pack("<hHB", len(frames), len(stream), key) + stream
+	return struct.pack("<III", slots, len(frames), len(block)) + block
+
+
+def da_pack(blocks: list[bytes]) -> bytes:
+	return struct.pack("<I", len(blocks)) + b"".join(blocks)
+
+
+def da_empty() -> bytes:
+	return struct.pack("<III", 0, 0, 4) + b"\0" * 4
