@@ -16,8 +16,12 @@ dependencies = ["numpy>=1.24", "Pillow>=10"]
 models = ["assimp-py>=1.2; python_version>='3.12'", "assimp-py>=1.1; python_version<'3.12'"]
 # Source 2 resources compressed with Zstandard (Python 3.14 has it built in); lz4 is only faster
 valve = ["zstandard>=0.22; python_version<'3.14'", "lz4>=4"]
+# USD/USDA/USDZ import through FreeUSD (builds a C++ extension; needs CMake and a compiler)
+usd = ["freeusd @ git+https://github.com/gopexllc/freeusd@f5bcd397a4d09941c1bdfeee28aa4efe93ed8db1"]
+# Panda3D .bam files (and Toontown's) are read through Panda3D itself; .egg needs nothing
+panda = ["panda3d>=1.10"]
 gui = ["PySide6>=6.6", "gxbake[models]"]
-dev = ["pytest>=8", "pyinstaller>=6.6", "PySide6>=6.6", "gxbake[models]"]
+dev = ["pytest>=8", "pyinstaller>=6.6", "PySide6>=6.6", "gxbake[models]", "gxbake[panda]"]
 
 [project.scripts]
 gxbake = "gxbake.cli:main"
