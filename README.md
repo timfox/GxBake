@@ -19,6 +19,8 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | Source `.mdl` (v44–49) + `.vvd` + `.vtx`, Quake `.mdl` | the same `models/` and `gc_studio/` outputs as an Assimp model | `source_mdl.import_source`, `quake.import_alias`, then `models.build_studio_mdl` |
 | Sprite `.spr` (Half-Life, Quake), Quake II `.sp2` | `sprites/<name>.spr`: a Half-Life sprite, downsampled, keeping thin alpha-test strokes | `quake.hl_sprite_bytes`, `lean_hl_spr_bytes` |
 | ROSE Online `.zms` meshes, `.zsc` object lists, `.chr` character lists (with `.zmd` skeletons, `.zmo` motions, `.dds` textures) | the same `models/` + `gc_studio/` studio models, one per object or character | `rose.import_rose`, then as above |
+| Panda3D `.egg`, `.bam` (and `.pz`), Toontown actors and props (with their animation files, `.jpg` + `_a.rgb` textures); `.pandactor` multi-part actors | the same `models/` + `gc_studio/` studio models | `panda.import_panda`, then as above |
+| RuneScape caches: OSRS / RS2 JS5 (`main_file_cache.dat2` + `.idx*`) and 2004-era (`main_file_cache.dat`) | the same `models/` + `gc_studio/` studio models, one per NPC (or model), with face colours baked into a palette skin and label-group animations as bones | `runescape.import_runescape`, then as above |
 | Sprite `.spr` | `sprites/<name>.spr`, downsampled, keeping thin alpha-test strokes | `lean_hl_spr_bytes` |
 | Video (AVI, MP4…) | `media/<name>.gcvid` (RGB565 delta) and `.gcpcm` | `build_gcvid_companion`, `build_gcpcm_companion` |
 | Audio (WAV, MP3, OGG, FLAC, AIFF, VOC, Opus…) | `media/<name>.gcpcm` (48 kHz stereo, s16 big-endian); PCM WAV needs no ffmpeg | `build_gcpcm_companion` |
@@ -118,7 +120,7 @@ Studio skinning is rigid, so a vertex weighted between two bones would tear at t
 
 Without the palette files, a greyscale ramp is used and the asset warns. Neither palette is shipped with GxBake, since both are game data.
 
-**Archives.** Game data usually sits in `.pak`, `.vpk` or `.pk3` files. `gxbake extract pak0.pak -o unpacked` unpacks one (`--match 'models/*'` to pick), then convert the folder. For Source, pass the `_dir.vpk`; its numbered `_000.vpk` chunks are read from beside it.
+**Archives.** Game data usually sits in `.pak`, `.vpk`, `.pk3` or (Panda3D) `.mf` files. `gxbake extract pak0.pak -o unpacked` unpacks one (`--match 'models/*'` to pick), then convert the folder. For Source, pass the `_dir.vpk`; its numbered `_000.vpk` chunks are read from beside it.
 ## ROSE Online models
 
 GxBake reads ROSE Online's own formats directly (Assimp knows none of them): ZMS meshes, ZMD skeletons, ZMO motions, ZSC object lists and LIST_NPC.CHR character lists, plus DDS textures through Pillow. Point it at an extracted client tree (the folder that holds `3DDATA`) or at single files:
@@ -131,6 +133,39 @@ GxBake reads ROSE Online's own formats directly (Assimp knows none of them): ZMS
 Paths inside ZSC/CHR files are matched case-insensitively against the `3DDATA` root. Adding a whole folder lists the CHR characters and ZSC objects and leaves out the loose meshes, textures and `PART_*.ZSC` they draw from. Output names are `<list>_<index>_<name>`, e.g. `npc_33_deck16.mdl`. `--rose-entry N` (repeatable) limits a CLI run to some entries.
 
 ROSE is Z-up like GoldSrc. Settings: **Units per metre** (39.37 keeps real size) and **Turn** (ROSE models face -Y; 90° makes them face GoldSrc's +X). Skinning is rigid (each vertex follows its heaviest bone), double-sided materials get back faces, and alpha-tested materials become masked skins. Not converted yet: per-part ZSC animations, UV/alpha ZMO tracks, effects, and maps; see [docs/rose-online.md](docs/rose-online.md).
+
+## Panda3D and Toontown models
+
+GxBake reads Panda3D's formats itself, so Toontown's actors and props convert like any other model. See [docs/panda3d.md](docs/panda3d.md) for the details.
+
+- **`.egg`** (Panda's text format) is parsed directly: vertex pools, polygons, textures, materials, characters, joints with vertex membership, and animation tables. `.egg.pz` (zlib) works too.
+- **`.bam`** (Panda's binary format, which is what Toontown ships) changes with every engine version, so Panda3D itself turns it into egg first: `pip install panda3d` (or `gxbake[panda]`), or a `bam2egg` program on `PATH` or named by `GXBAKE_BAM2EGG`. The standalone executable does not bundle Panda3D, so it needs `bam2egg`.
+- **`.mf`** multifiles (Toontown's `phase_3.mf`, `phase_4.mf`…) unpack with `gxbake extract phase_3.mf -o tt`. Encrypted members are skipped with a message.
+
+Animations sit in their own files, as Panda actors load them. Next to a model, GxBake adds the animation-only files that share its name: `panda-model.egg` takes `panda-walk.egg`, Toontown's `tt_a_chr_dgm_shorts_legs_1000.bam` takes `tt_a_chr_dgm_shorts_legs_neutral.bam`, `suitA-mod.bam` takes `suitA-walk.bam`, and `<model>@<clip>` works as for Assimp. In an extracted Toontown tree it also looks in the same folder under the other `phase_N` folders, because a model's animations are spread across phases. Animation files are not listed as assets of their own, and neither are the textures in `maps/` folders when a folder scan finds Panda models.
+
+Textures are found the way Panda's model-path finds them: Toontown eggs say `phase_3/maps/x.jpg` relative to the install root, so GxBake looks next to the model and in each folder above it, case-insensitively, and under another image extension if the file was converted. A texture's `alpha-file` (Toontown pairs `x.jpg` with `x_a.rgb`) becomes the skin's alpha, and SGI `.rgb` images also convert on their own.
+
+A **`.pandactor`** JSON file joins a multi-part actor, such as a toon's legs, torso and head, into one studio model. Each part's root joints hang from a joint of an earlier part, and every part's animations are found as above (or listed under `anims`). The file and joint names below show the shape; check them against your own data:
+
+```json
+{"parts": [{"model": "phase_3/models/char/tt_a_chr_dgm_shorts_legs_1000.bam"},
+           {"model": "phase_3/models/char/tt_a_chr_dgm_shorts_torso_1000.bam", "attach": "joint_hips"},
+           {"model": "phase_3/models/char/dogM_heads_1000.bam", "attach": "def_head"}]}
+```
+
+Settings: **Units per Panda unit** (12 by default, since Toontown's unit is a foot and GoldSrc's is an inch) and **Turn** (Panda models face +Y; −90° makes them face GoldSrc's +X). Lower LODs (`<SwitchCondition>` groups) and collision geometry (`<Collide>`, collision `<ObjectType>`s) are left out. Skinning is rigid, double-sided (`<BFace>`) polygons get back faces, and untextured polygons share one small skin of their colours. Not converted yet: Toontown's `.dna` street and building layouts, morph (blend shape) animation, texture transforms and multitexturing beyond the first texture.
+## RuneScape caches
+
+GxBake reads RuneScape's client cache in place; nothing needs extracting first. Point it at `main_file_cache.dat2` (or the folder holding it and its `.idx` files):
+
+- **JS5 caches** (Old School RuneScape, and RS2 from 2006 on): one asset per named NPC. Each NPC's models are merged, its recolours, retextures and width/height scale applied, and its stand, walk and run sequences baked as `idle`, `walk` and `run`.
+- **2004-era caches** (`main_file_cache.dat` with `idx0`–`idx4`): models only, one asset per model id.
+- `--rs-entry npc:<id>` or `--rs-entry model:<id>` (repeatable) picks what to convert instead of every NPC. `gxbake rs <cache> --find guard` lists NPC ids, names, models and sequences.
+
+All four model encodings are read (the original one and the 0xFFFF, 0xFFFE and 0xFFFD ones). RuneScape models have a 16-bit HSL colour per face instead of a texture, so the colours go into a small palette skin with one 4x4 block per colour (one CMPR block, so the GameCube's compression keeps them exact) and every face samples its block. Textured faces get the texture's sprite as their own skin. Output names are `rs_npc<id>_<name>` or `rs_model<id>`.
+
+Animations move groups of vertices, not bones, so every vertex group gets a studio bone and each frame's rotate and translate steps become bone poses. Settings: **Units per model unit** (0.35 makes a ~200-unit player about 70 units tall; 128 units are one tile) and **Turn**. Not converted yet: items, objects (locs) and maps, skeletal ("animaya") animations of newer OSRS models, translucent faces (drawn opaque) and texture animation. See [docs/runescape.md](docs/runescape.md).
 
 ## The app
 
@@ -178,6 +213,8 @@ The executable opens the app when run with no arguments or with file paths. With
 
 - `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
 - `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, the native readers `source_mdl`, `vtf`, `quake`, `archives`, and `usd` for FreeUSD).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `rose`, `panda`, `archives`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
-- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
+- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, RuneScape caches in `rs_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.

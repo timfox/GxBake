@@ -17,7 +17,8 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, budget, gct, goldsrc, images, media, models, quake, rose, skybox, sprite, studio, studio_slim
+from . import audit, budget, gct, goldsrc, images, media, models, panda, quake, rose, skybox, sprite, studio, studio_slim
+from . import audit, budget, gct, goldsrc, images, media, models, pandaquake, rose, runescape, skybox, sprite, studio, studio_slim
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -58,6 +59,10 @@ def _head(path: Path, n: int = 8) -> bytes:
 
 def detect_kind(path: Path) -> Kind:
 	ext = path.suffix.lower()
+	if panda.is_panda(path):	# .egg/.bam (also .egg.pz/.bam.pz) and .pandactor
+		return Kind.MODEL
+	if runescape.is_cache(path):
+		return Kind.MODEL	# a RuneScape cache: one asset per NPC or model
 	if ext == ".mdl":
 		# GoldSrc studio (IDST v10), Source studio (IDST v44-49) and Quake alias (IDPO) share .mdl.
 		head = _head(path)
@@ -114,6 +119,11 @@ class Settings:
 	rose_scale: float = 39.37	# ROSE Online: GoldSrc units per metre
 	rose_yaw: float = 90.0	# ROSE Online: turn about Z (ROSE models face -Y, GoldSrc +X)
 	rose_entries: list[int] = field(default_factory=list)	# only these ZSC objects / CHR characters ([] = all)
+	panda_scale: float = 12.0	# Panda3D/Toontown: GoldSrc units per Panda unit (a foot in Toontown)
+	panda_yaw: float = -90.0	# Panda3D: turn about Z (Panda models face +Y, GoldSrc +X)
+	rs_scale: float = runescape.DEFAULT_SCALE	# RuneScape: GoldSrc units per model unit (128 = one tile)
+	rs_yaw: float = 0.0	# RuneScape: extra turn about Z (models already face GoldSrc's +X)
+	rs_entries: list[str] = field(default_factory=list)	# RuneScape caches: npc:<id> / model:<id> ([] = every named NPC)
 	spr_scale: int = 2
 	video_width: int = media.GCVID_WIDTH
 	video_height: int = media.GCVID_HEIGHT
@@ -134,7 +144,8 @@ class Settings:
 	def model_options(self) -> models.ModelOptions:
 		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
 			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files,
-			self.model_blend_bones, self.rose_scale, self.rose_yaw)
+			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.panda_scale, self.panda_yaw)
+			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.rs_scale, self.rs_yaw)
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -181,8 +192,8 @@ class Asset:
 		return self.path.name
 
 	@property
-	def entry(self) -> "int | None":
-		"""Which object/character of a ROSE list file (.zsc/.chr) this asset is."""
+	def entry(self) -> "int | str | None":
+		"""Which object/character of a ROSE list file (.zsc/.chr), or which npc:/model: of a RuneScape cache."""
 		return self.extra.get("entry")
 
 	@property
@@ -193,6 +204,12 @@ class Asset:
 	@property
 	def is_rose(self) -> bool:
 		return self.path.suffix.lower() in rose.ROSE_EXTENSIONS
+
+	@property
+	def is_panda(self) -> bool:
+		return panda.is_panda(self.path)
+	def is_runescape(self) -> bool:
+		return runescape.is_cache(self.path)
 
 	@property
 	def size(self) -> int:
@@ -229,7 +246,7 @@ class Project:
 		if path.is_dir():
 			files = [c for c in sorted(path.rglob("*")) if c.is_file() and detect_kind(c) != Kind.UNKNOWN]
 			added = []
-			for child in _skip_rose_parts(files):
+			for child in _skip_panda_parts(_skip_rose_parts(files)):
 				added += self._add_file(child, root=path)
 			return added
 		return self._add_file(path)
@@ -238,11 +255,20 @@ class Project:
 		path = path.resolve()
 		if path.suffix.lower() in rose.LIST_EXTENSIONS:
 			return self._add_rose_list(path)
+		if runescape.is_cache(path):
+			return self._add_rs_cache(path)
 		if any(a.path == path for a in self.assets):
 			return []
 		kind = detect_kind(path)
 		if kind == Kind.MODEL and models.clip_base(path) is not None:
 			return []	# an animation clip; it is merged into its base model
+		if kind == Kind.MODEL and panda.is_panda(path):
+			if panda.is_animation_only(path):
+				return []	# a Panda3D anim file; merged into the model it belongs to
+			if path.name.lower().endswith(".pz"):
+				asset = Asset(path, kind, {"stem": panda._stem(path).lower()})
+				self.assets.append(asset)
+				return [asset]
 		if kind == Kind.IMAGE:
 			sky = images.find_skybox_sides(path)
 			if sky is not None:
@@ -312,6 +338,26 @@ class Project:
 			added.append(asset)
 		return added
 
+	def _add_rs_cache(self, path: Path) -> list[Asset]:
+		"""One asset per NPC (or model) of a RuneScape cache."""
+		have = {a.entry for a in self.assets if a.path == path}
+		try:
+			found = runescape.entries(path, self.settings.rs_entries)
+		except (OSError, ValueError) as exc:
+			if None in have:
+				return []
+			asset = Asset(path, Kind.MODEL, status="Failed", warnings=[f"could not read: {exc}"])
+			self.assets.append(asset)
+			return [asset]
+		added = []
+		for e in found:
+			if e.key in have:
+				continue
+			asset = Asset(path, Kind.MODEL, {"entry": e.key, "label": e.label, "stem": runescape.entry_stem(e)})
+			self.assets.append(asset)
+			added.append(asset)
+		return added
+
 	def remove(self, asset: Asset) -> None:
 		self.assets.remove(asset)
 
@@ -368,6 +414,15 @@ class Project:
 				d["Studio MDL"] = audit.human_bytes(len(mdl))
 				if asset.is_rose:
 					d["Source"] = "ROSE Online" + (f", entry {asset.entry}" if asset.entry is not None else "")
+				if asset.is_panda:
+					kind = panda._kind(asset.path)
+					d["Source"] = {".egg": "Panda3D egg", ".bam": "Panda3D bam", ".pandactor": "Panda3D multi-part actor"}[kind]
+					d["Joints"] = ", ".join(b.name for b in model.bones[1:]) or "-"
+					if kind != ".pandactor":
+						anims = panda.animation_files(asset.path) if self.settings.model_clip_files else []
+						d["Animation files"] = ", ".join(f.name for _l, f in anims) or "-"
+				elif asset.is_runescape:
+					d["Source"] = "RuneScape cache" + (f", {asset.entry}" if asset.entry is not None else "")
 			elif asset.kind == Kind.SPR:
 				raw = asset.path.read_bytes()
 				if raw[:4] == b"IDS2" or (raw[:4] == b"IDSP" and struct.unpack_from("<i", raw, 4)[0] == 1):
@@ -509,6 +564,11 @@ class Project:
 		hit = self._model_cache.get(asset.path)
 		if asset.is_rose:
 			clips: tuple = (opts.rose_scale, opts.rose_yaw)
+		elif asset.is_panda:
+			clips = (opts.panda_scale, opts.panda_yaw, opts.clip_files, *(
+				(f.name, f.stat().st_mtime_ns) for _l, f in (panda.animation_files(asset.path) if opts.clip_files else [])))
+		elif asset.is_runescape:
+			clips = (opts.rs_scale, opts.rs_yaw)
 		else:
 			clips = tuple((p.name, p.stat().st_mtime_ns) for p in models.clip_files(asset.path)) if opts.clip_files else ()
 		key = (asset.path, asset.entry, mtime, clips, opts.scale, opts.up_axis, opts.skin_max_edge,
@@ -519,6 +579,10 @@ class Project:
 			return hit[1], hit[2]
 		if asset.is_rose:
 			model = rose.import_rose(asset.path, opts, asset.entry)
+		elif asset.is_panda:
+			model = panda.import_panda(asset.path, opts)
+		elif asset.is_runescape:
+			model = runescape.import_runescape(asset.path, opts, asset.entry)
 		else:
 			model = models.import_model(asset.path, opts)
 		mdl = models.build_studio_mdl(model, opts)
@@ -810,6 +874,20 @@ def _skip_rose_parts(files: list[Path]) -> list[Path]:
 			continue
 		if ext == ".zsc" and f.parent in chr_dirs and f.name.lower().startswith("part_"):
 			continue
+		out.append(f)
+	return out
+
+
+def _skip_panda_parts(files: list[Path]) -> list[Path]:
+	"""A folder scan with Panda3D models (an extracted Toontown phase tree) drops the textures
+	their eggs/bams point at: images in maps/ folders and the *_a.rgb alpha masks."""
+	if not any(panda.is_panda(f) for f in files):
+		return files
+	out = []
+	for f in files:
+		if f.suffix.lower() in images.IMAGE_EXTENSIONS and not panda.is_panda(f):
+			if any(p.lower() == "maps" for p in f.parent.parts) or f.stem.lower().endswith("_a"):
+				continue
 		out.append(f)
 	return out
 

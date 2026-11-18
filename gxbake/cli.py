@@ -10,6 +10,7 @@
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
 	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
+	gxbake rs <main_file_cache.dat2|.dat> [--find NAME] [--json]
 	gxbake gui [files...]
 """
 
@@ -50,6 +51,11 @@ def _convert(args) -> int:
 	s.rose_scale = args.rose_scale
 	s.rose_yaw = args.rose_yaw
 	s.rose_entries = args.rose_entry or []
+	s.panda_scale = args.panda_scale
+	s.panda_yaw = args.panda_yaw
+	s.rs_scale = args.rs_scale
+	s.rs_yaw = args.rs_yaw
+	s.rs_entries = args.rs_entry or []
 	s.video_width, s.video_height, s.video_fps = args.video_width, args.video_height, args.video_fps
 	s.sky_yaw, s.sky_fov, s.sky_exposure = args.sky_yaw, args.sky_fov, args.sky_exposure
 	s.detect_panoramas = not args.no_sky_detect
@@ -79,6 +85,34 @@ def _inspect(args) -> int:
 			print(f"  contents ({len(kids)}): {', '.join(kids[:40])}{' …' if len(kids) > 40 else ''}")
 		for w in a.warnings:
 			print(f"  warning: {w}")
+	return 0
+
+
+def _rs(args) -> int:
+	from .core import runescape
+
+	try:
+		cache = runescape.Cache(Path(args.path))
+		info = runescape.describe(cache)
+		found = runescape.npcs(cache, args.find or "")
+	except (OSError, ValueError) as exc:
+		print(f"error: {exc}", file=sys.stderr)
+		return 1
+	rows = [{"entry": f"npc:{n.id}", "name": n.name, "models": n.models, "stand": n.stand, "walk": n.walk}
+		for n in found if n.models and (args.all or (n.name and n.name.lower() != "null"))]
+	if args.json:
+		print(json.dumps({**info, "npcs": rows}, indent=2))
+		return 0
+	print(f"{info['path']}: {info['layout']} cache, {info['models']} models")
+	print("  indices: " + ", ".join(f"{i} ({n})" for i, n in info["indices"].items()))
+	if cache.legacy:
+		print("  legacy caches: convert models with --rs-entry model:<id>")
+	for r in rows[:args.limit] if args.limit else rows:
+		anims = ", ".join(f"{k} {r[k]}" for k in ("stand", "walk") if r[k] >= 0)
+		print(f"  {r['entry']:<11} {r['name'] or '-':<28} models {','.join(map(str, r['models']))}"
+			+ (f"  ({anims})" if anims else ""))
+	if args.limit and len(rows) > args.limit:
+		print(f"  … {len(rows) - args.limit} more (--limit 0 lists all)")
 	return 0
 
 
@@ -455,6 +489,15 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--rose-yaw", type=float, default=90.0, help="ROSE Online models: degrees to turn about Z (90 faces them +X)")
 	c.add_argument("--rose-entry", type=int, action="append",
 		help="ROSE .zsc/.chr: convert only this object/character index (repeatable; default all)")
+	c.add_argument("--panda-scale", type=float, default=12.0,
+		help="Panda3D/Toontown models: GoldSrc units per Panda unit (12: a Toontown foot)")
+	c.add_argument("--panda-yaw", type=float, default=-90.0,
+		help="Panda3D models: degrees to turn about Z (-90 turns Panda's +Y forward to GoldSrc's +X)")
+	c.add_argument("--rs-scale", type=float, default=0.35,
+		help="RuneScape caches: GoldSrc units per model unit (128 units = one tile)")
+	c.add_argument("--rs-yaw", type=float, default=0.0, help="RuneScape caches: extra degrees to turn about Z")
+	c.add_argument("--rs-entry", action="append", metavar="KIND:ID",
+		help="RuneScape caches: convert npc:<id> or model:<id> (repeatable; default every named NPC)")
 	c.add_argument("--video-width", type=int, default=320, help="GCVID frame width")
 	c.add_argument("--video-height", type=int, default=240, help="GCVID frame height")
 	c.add_argument("--video-fps", type=int, default=15, help="GCVID frame rate")
@@ -474,6 +517,14 @@ def build_parser() -> argparse.ArgumentParser:
 	i = sub.add_parser("inspect", help="print what GxBake sees in a file or folder")
 	i.add_argument("path", help="file or folder")
 	i.set_defaults(fn=_inspect)
+
+	r = sub.add_parser("rs", help="list the NPCs and models in a RuneScape cache")
+	r.add_argument("path", help="main_file_cache.dat2 (JS5: OSRS / RS2) or main_file_cache.dat (2004-era), or its folder")
+	r.add_argument("--find", help="only NPCs whose name contains this")
+	r.add_argument("--all", action="store_true", help="include NPCs named 'null' (variants the client swaps in)")
+	r.add_argument("--limit", type=int, default=50, help="NPCs to print (0 = all)")
+	r.add_argument("--json", action="store_true", help="print everything as JSON")
+	r.set_defaults(fn=_rs)
 
 	v = sub.add_parser("validate", help="check a staged gamedir like the disc builder does")
 	v.add_argument("path", help="staged gamedir")
@@ -517,8 +568,8 @@ def build_parser() -> argparse.ArgumentParser:
 	dk.add_argument("--json", action="store_true", help="print the report as JSON")
 	dk.set_defaults(fn=_disc)
 
-	x = sub.add_parser("extract", help="unpack a Quake/GoldSrc .pak, Source .vpk or .pk3 archive")
-	x.add_argument("archives", nargs="+", help=".pak, .vpk or .pk3 files")
+	x = sub.add_parser("extract", help="unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive")
+	x.add_argument("archives", nargs="+", help=".pak, .vpk, .pk3 or .mf (e.g. Toontown's phase_3.mf) files")
 	x.add_argument("-o", "--output", required=True, help="folder to extract into")
 	x.add_argument("--match", action="append", help="only members matching this glob, e.g. 'models/*' (repeatable)")
 	x.set_defaults(fn=_extract)
