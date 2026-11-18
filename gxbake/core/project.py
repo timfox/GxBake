@@ -17,10 +17,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, budget, ff7, ffxi, gct, goldsrc, images, media, models, quake, rose, runescape, skybox, sprite, studio, studio_slim
-from . import audit, budget, gct, goldsrc, images, media, models, particles, quake, rose, runescape, skybox, sprite, studio, studio_slim
-from . import audit, budget, gct, goldsrc, images, media, models, panda, quake, rose, skybox, sprite, studio, studio_slim
-from . import audit, budget, gct, goldsrc, images, media, models, pandaquake, rose, runescape, skybox, sprite, studio, studio_slim
+from . import audit, budget, ff7, ffxi, gct, goldsrc, images, media, models, panda, particles, quake, rose, runescape, skybox, sprite, studio, studio_slim
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -61,10 +58,10 @@ def _head(path: Path, n: int = 8) -> bytes:
 
 def detect_kind(path: Path) -> Kind:
 	ext = path.suffix.lower()
-	if panda.is_panda(path):	# .egg/.bam (also .egg.pz/.bam.pz) and .pandactor
-		return Kind.MODEL
 	if runescape.is_cache(path):
 		return Kind.MODEL	# a RuneScape cache: one asset per NPC or model
+	if panda.is_panda(path):	# .egg/.bam (also .egg.pz/.bam.pz) and .pandactor
+		return Kind.MODEL
 	if ext in ffxi.AUDIO_EXTENSIONS:
 		return Kind.AUDIO	# Final Fantasy XI sound effects / music (ADPCM)
 	if ext == ffxi.MANIFEST_EXTENSION or (ext == ".dat" and ffxi.is_model_dat(path)):
@@ -91,10 +88,10 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.VIDEO
 	if ext in media.AUDIO_EXTENSIONS:
 		return Kind.AUDIO
-	if ext in models.MODEL_EXTENSIONS or ext in models.SOURCE2_MODEL_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
+	if (ext in models.MODEL_EXTENSIONS or ext in models.SOURCE2_MODEL_EXTENSIONS or ext in models.USD_EXTENSIONS
+			or ext in rose.ROSE_EXTENSIONS):
 		return Kind.MODEL
 	if ext == ".dmx" and models.native_format(path) == "dmx":
-	if ext in models.MODEL_EXTENSIONS or ext in models.USD_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
 		return Kind.MODEL
 	return {
 		".wad": Kind.WAD,
@@ -134,11 +131,11 @@ class Settings:
 	rose_scale: float = 39.37	# ROSE Online: GoldSrc units per metre
 	rose_yaw: float = 90.0	# ROSE Online: turn about Z (ROSE models face -Y, GoldSrc +X)
 	rose_entries: list[int] = field(default_factory=list)	# only these ZSC objects / CHR characters ([] = all)
-	panda_scale: float = 12.0	# Panda3D/Toontown: GoldSrc units per Panda unit (a foot in Toontown)
-	panda_yaw: float = -90.0	# Panda3D: turn about Z (Panda models face +Y, GoldSrc +X)
 	rs_scale: float = runescape.DEFAULT_SCALE	# RuneScape: GoldSrc units per model unit (128 = one tile)
 	rs_yaw: float = 0.0	# RuneScape: extra turn about Z (models already face GoldSrc's +X)
 	rs_entries: list[str] = field(default_factory=list)	# RuneScape caches: npc:<id> / model:<id> ([] = every named NPC)
+	panda_scale: float = 12.0	# Panda3D/Toontown: GoldSrc units per Panda unit (a foot in Toontown)
+	panda_yaw: float = -90.0	# Panda3D: turn about Z (Panda models face +Y, GoldSrc +X)
 	ffxi_scale: float = ffxi.DEFAULT_SCALE	# Final Fantasy XI: GoldSrc units per FFXI unit
 	ffxi_yaw: float = 0.0	# Final Fantasy XI: extra turn about Z
 	ffxi_skeleton: str = ""	# Final Fantasy XI: race skeleton DAT for equipment/face DATs
@@ -172,10 +169,10 @@ class Settings:
 	def model_options(self) -> models.ModelOptions:
 		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
 			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files,
-			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.rs_scale, self.rs_yaw,
-			self.ffxi_scale, self.ffxi_yaw, self.ffxi_skeleton, self.ff7_scale, self.ff7_yaw, self.ff7_battle_scale)
-			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.panda_scale, self.panda_yaw)
-			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.rs_scale, self.rs_yaw)
+			self.model_blend_bones, rose_scale=self.rose_scale, rose_yaw=self.rose_yaw,
+			panda_scale=self.panda_scale, panda_yaw=self.panda_yaw, rs_scale=self.rs_scale, rs_yaw=self.rs_yaw,
+			ffxi_scale=self.ffxi_scale, ffxi_yaw=self.ffxi_yaw, ffxi_skeleton=self.ffxi_skeleton,
+			ff7_scale=self.ff7_scale, ff7_yaw=self.ff7_yaw, ff7_battle_scale=self.ff7_battle_scale)
 
 	def map_options(self):
 		from .source_map import MapOptions
@@ -247,10 +244,12 @@ class Asset:
 		return self.path.suffix.lower() in rose.ROSE_EXTENSIONS
 
 	@property
-	def is_panda(self) -> bool:
-		return panda.is_panda(self.path)
 	def is_runescape(self) -> bool:
 		return runescape.is_cache(self.path)
+
+	@property
+	def is_panda(self) -> bool:
+		return panda.is_panda(self.path)
 
 	@property
 	def is_ff7(self) -> bool:
@@ -458,13 +457,13 @@ class Project:
 					d.update(vmdl.vmdl_info(asset.path))
 				elif native == "quake":
 					d["Source format"] = "Quake alias model (IDPO v6)"
+				elif asset.path.suffix.lower() in models.USD_EXTENSIONS:
+					d["Source format"] = "USD stage (read with FreeUSD)"
 				elif native == "dmx":
 					from . import dmx
 
 					enc, ver, fmt, fver = dmx.header(_head(asset.path, 200))
 					d["Source format"] = f"DMX {fmt} {fver} ({enc} {ver})"
-				elif asset.path.suffix.lower() in models.USD_EXTENSIONS:
-					d["Source format"] = "USD stage (read with FreeUSD)"
 				model, mdl = self.imported_model(asset)
 				lo, hi = model.bounds()
 				d["Meshes"] = len(model.meshes)
@@ -477,15 +476,15 @@ class Project:
 				d["Studio MDL"] = audit.human_bytes(len(mdl))
 				if asset.is_rose:
 					d["Source"] = "ROSE Online" + (f", entry {asset.entry}" if asset.entry is not None else "")
-				if asset.is_panda:
+				elif asset.is_runescape:
+					d["Source"] = "RuneScape cache" + (f", {asset.entry}" if asset.entry is not None else "")
+				elif asset.is_panda:
 					kind = panda._kind(asset.path)
 					d["Source"] = {".egg": "Panda3D egg", ".bam": "Panda3D bam", ".pandactor": "Panda3D multi-part actor"}[kind]
 					d["Joints"] = ", ".join(b.name for b in model.bones[1:]) or "-"
 					if kind != ".pandactor":
 						anims = panda.animation_files(asset.path) if self.settings.model_clip_files else []
 						d["Animation files"] = ", ".join(f.name for _l, f in anims) or "-"
-				elif asset.is_runescape:
-					d["Source"] = "RuneScape cache" + (f", {asset.entry}" if asset.entry is not None else "")
 				elif asset.is_ff7:
 					d["Source"] = "Final Fantasy VII " + ("battle model" if not asset.path.suffix else "field model")
 				elif asset.is_ffxi:
@@ -661,11 +660,11 @@ class Project:
 		hit = self._model_cache.get(asset.path)
 		if asset.is_rose:
 			clips: tuple = (opts.rose_scale, opts.rose_yaw)
+		elif asset.is_runescape:
+			clips = (opts.rs_scale, opts.rs_yaw)
 		elif asset.is_panda:
 			clips = (opts.panda_scale, opts.panda_yaw, opts.clip_files, *(
 				(f.name, f.stat().st_mtime_ns) for _l, f in (panda.animation_files(asset.path) if opts.clip_files else [])))
-		elif asset.is_runescape:
-			clips = (opts.rs_scale, opts.rs_yaw)
 		elif asset.is_ffxi:
 			clips = (opts.ffxi_scale, opts.ffxi_yaw, opts.ffxi_skeleton)
 		elif asset.is_ff7:
@@ -680,10 +679,10 @@ class Project:
 			return hit[1], hit[2]
 		if asset.is_rose:
 			model = rose.import_rose(asset.path, opts, asset.entry)
-		elif asset.is_panda:
-			model = panda.import_panda(asset.path, opts)
 		elif asset.is_runescape:
 			model = runescape.import_runescape(asset.path, opts, asset.entry)
+		elif asset.is_panda:
+			model = panda.import_panda(asset.path, opts)
 		elif asset.is_ffxi:
 			model = ffxi.import_ffxi(asset.path, opts)
 		elif asset.is_ff7:
@@ -960,12 +959,12 @@ class Project:
 					emit_file(asset, rel)
 					if s.video_audio and media.build_gcpcm_companion(asset.path, out_dir / f"media/{stem}.gcpcm", log=log):
 						emit_file(asset, f"media/{stem}.gcpcm")
-				elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() in ffxi.AUDIO_EXTENSIONS:
-					self._ffxi_sound(asset, out_dir, emit, emit_file, log)
 				elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() == ".vsnd_c":
 					from . import vsnd
 
 					emit(asset, f"sound/{stem}.wav", vsnd.to_port_wav(vsnd.load(asset.path)))
+				elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() in ffxi.AUDIO_EXTENSIONS:
+					self._ffxi_sound(asset, out_dir, emit, emit_file, log)
 				elif asset.kind == Kind.AUDIO:
 					rel = f"media/{stem}.gcpcm"
 					if media.build_gcpcm_companion(asset.path, out_dir / rel, log=log):

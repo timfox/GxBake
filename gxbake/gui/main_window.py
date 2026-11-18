@@ -49,26 +49,17 @@ _MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS | models
 _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
 _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
 _ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
+_PANDA_GLOBS = "*.egg *.bam *.pz *.pandactor"
 _USD_GLOBS = " ".join(f"*{e}" for e in sorted(models.USD_EXTENSIONS))
 FILE_FILTER = (
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.vmap_c *.vwrld_c *.mdl *.spr *.sp2 *.pcf *.vpcf_c *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"{_MODEL_GLOBS} {_ROSE_GLOBS} main_file_cache.dat2 main_file_cache.dat *.dat *.ffximdl *.spw *.bgw *.hrc *.p *.ff7mdl);;"
-	f"{_MODEL_GLOBS} {_USD_GLOBS} {_ROSE_GLOBS});;"
-_PANDA_GLOBS = "*.egg *.bam *.pz *.pandactor"
-FILE_FILTER = (
-	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"{_MODEL_GLOBS} {_ROSE_GLOBS} {_PANDA_GLOBS});;"
+	f"{_MODEL_GLOBS} {_USD_GLOBS} {_ROSE_GLOBS} {_PANDA_GLOBS} main_file_cache.dat2 main_file_cache.dat *.dat *.ffximdl *.spw *.bgw *.hrc *.p *.ff7mdl);;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	f"USD scenes via FreeUSD ({_USD_GLOBS});;"
 	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
 	f"ROSE Online models ({_ROSE_GLOBS});;"
-	f"Panda3D and Toontown models ({_PANDA_GLOBS});;"
-	f"{_MODEL_GLOBS} {_ROSE_GLOBS} main_file_cache.dat2 main_file_cache.dat);;"
-	f"3D models via Assimp ({_MODEL_GLOBS});;"
-	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
-	f"ROSE Online models ({_ROSE_GLOBS});;"
 	"RuneScape caches (main_file_cache.dat2 main_file_cache.dat);;"
+	f"Panda3D and Toontown models ({_PANDA_GLOBS});;"
 	"Final Fantasy XI (*.dat *.ffximdl *.spw *.bgw);;"
 	"Final Fantasy VII field models (*.hrc *.p *.ff7mdl);;"
 	"Final Fantasy VII battle skeletons (*aa);;"
@@ -221,6 +212,23 @@ class SettingsPanel(QWidget):
 		f.addRow("Turn (degrees)", self.rose_yaw)
 		outer.addWidget(ro)
 
+		rsg = QGroupBox("RuneScape caches (main_file_cache.dat2 / .dat)")
+		f = QFormLayout(rsg)
+		self.rs_scale = QDoubleSpinBox()
+		self.rs_scale.setRange(0.01, 10.0)
+		self.rs_scale.setDecimals(3)
+		self.rs_scale.setSingleStep(0.05)
+		self.rs_scale.setValue(settings.rs_scale)
+		self.rs_scale.setToolTip("GoldSrc units per model unit (128 units are one tile). 0.35 makes a player about 70 units tall.")
+		f.addRow("Units per model unit", self.rs_scale)
+		self.rs_yaw = QDoubleSpinBox()
+		self.rs_yaw.setRange(-180.0, 180.0)
+		self.rs_yaw.setDecimals(0)
+		self.rs_yaw.setValue(settings.rs_yaw)
+		self.rs_yaw.setToolTip("Extra turn about the up axis. Models are already turned to face GoldSrc's +X.")
+		f.addRow("Turn (degrees)", self.rs_yaw)
+		outer.addWidget(rsg)
+
 		pa = QGroupBox("Panda3D and Toontown models (.egg .bam .pandactor)")
 		f = QFormLayout(pa)
 		self.panda_scale = QDoubleSpinBox()
@@ -238,22 +246,6 @@ class SettingsPanel(QWidget):
 		if not panda.bam_available():
 			f.addRow(QLabel(".bam needs Panda3D (pip install panda3d) or bam2egg on PATH; .egg works as is."))
 		outer.addWidget(pa)
-		rsg = QGroupBox("RuneScape caches (main_file_cache.dat2 / .dat)")
-		f = QFormLayout(rsg)
-		self.rs_scale = QDoubleSpinBox()
-		self.rs_scale.setRange(0.01, 10.0)
-		self.rs_scale.setDecimals(3)
-		self.rs_scale.setSingleStep(0.05)
-		self.rs_scale.setValue(settings.rs_scale)
-		self.rs_scale.setToolTip("GoldSrc units per model unit (128 units are one tile). 0.35 makes a player about 70 units tall.")
-		f.addRow("Units per model unit", self.rs_scale)
-		self.rs_yaw = QDoubleSpinBox()
-		self.rs_yaw.setRange(-180.0, 180.0)
-		self.rs_yaw.setDecimals(0)
-		self.rs_yaw.setValue(settings.rs_yaw)
-		self.rs_yaw.setToolTip("Extra turn about the up axis. Models are already turned to face GoldSrc's +X.")
-		f.addRow("Turn (degrees)", self.rs_yaw)
-		outer.addWidget(rsg)
 
 		xi = QGroupBox("Final Fantasy XI (ROM .dat, .ffximdl, .spw/.bgw)")
 		f = QFormLayout(xi)
@@ -343,10 +335,8 @@ class SettingsPanel(QWidget):
 				self.model_static, self.model_clips, self.model_blend, self.sky_detect):
 			w.toggled.connect(self._sync)
 		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw,
-				self.rs_scale, self.rs_yaw, self.ffxi_scale, self.ffxi_yaw, self.ff7_scale, self.ff7_battle_scale, self.ff7_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
-				self.panda_scale, self.panda_yaw,
-				self.sky_yaw, self.sky_fov, self.sky_exposure):
-				self.rs_scale, self.rs_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
+				self.rs_scale, self.rs_yaw, self.panda_scale, self.panda_yaw, self.ffxi_scale, self.ffxi_yaw,
+				self.ff7_scale, self.ff7_battle_scale, self.ff7_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
@@ -410,10 +400,10 @@ class SettingsPanel(QWidget):
 		s.model_blend_bones = self.model_blend.isChecked()
 		s.rose_scale = self.rose_scale.value()
 		s.rose_yaw = self.rose_yaw.value()
-		s.panda_scale = self.panda_scale.value()
-		s.panda_yaw = self.panda_yaw.value()
 		s.rs_scale = self.rs_scale.value()
 		s.rs_yaw = self.rs_yaw.value()
+		s.panda_scale = self.panda_scale.value()
+		s.panda_yaw = self.panda_yaw.value()
 		s.ffxi_scale = self.ffxi_scale.value()
 		s.ffxi_yaw = self.ffxi_yaw.value()
 		s.ff7_scale = self.ff7_scale.value()
