@@ -48,6 +48,7 @@ HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.MODEL, Kind.SKYBOX,
 _MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS | models.SOURCE2_MODEL_EXTENSIONS | models.DMX_MODEL_EXTENSIONS))
 _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
 _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
+_VIDEO_GLOBS = " ".join(f"*{e}" for e in sorted(media.VIDEO_EXTENSIONS))
 _ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
 _PANDA_GLOBS = "*.egg *.bam *.pz *.pandactor"
 # one filter per image group (common, HDR/vector/pro, GPU, console, PC game, retro)
@@ -55,9 +56,10 @@ _IMAGE_GROUP_FILTERS = "".join(
 	f"{group} ({' '.join('*' + e for e in exts)});;" for group, exts in imageformats.groups().items() if exts)
 _USD_GLOBS = " ".join(f"*{e}" for e in sorted(models.USD_EXTENSIONS))
 FILE_FILTER = (
-	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.vmap_c *.vwrld_c *.mdl *.spr *.sp2 *.pcf *.vpcf_c *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
+	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.vmap_c *.vwrld_c *.mdl *.spr *.sp2 *.pcf *.vpcf_c {_VIDEO_GLOBS} {_AUDIO_GLOBS} "
 	f"{_MODEL_GLOBS} {_USD_GLOBS} {_ROSE_GLOBS} {_PANDA_GLOBS} main_file_cache.dat2 main_file_cache.dat *.dat *.ffximdl *.spw *.bgw *.hrc *.p *.ff7mdl);;"
 	f"All images ({_IMAGE_GLOBS});;"
+	f"Videos ({_VIDEO_GLOBS});;"
 	f"{_IMAGE_GROUP_FILTERS}"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	f"USD scenes via FreeUSD ({_USD_GLOBS});;"
@@ -70,7 +72,7 @@ FILE_FILTER = (
 	"Final Fantasy XI (*.dat *.ffximdl *.spw *.bgw);;"
 	"Final Fantasy VII field models (*.hrc *.p *.ff7mdl);;"
 	"Final Fantasy VII battle skeletons (*aa);;"
-	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
+	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm *.thp);;All files (*)"
 )
 
 
@@ -304,9 +306,37 @@ class SettingsPanel(QWidget):
 		f.addRow("GCVID size", row)
 		self.fps = self._spin(1, 60, settings.video_fps)
 		f.addRow("Frame rate", self.fps)
-		self.vaudio = QCheckBox("Write .gcpcm audio track")
+		self.vaudio = QCheckBox("Keep the audio track")
+		self.vaudio.setToolTip("GCVID: a .gcpcm next to it. THP: stereo DSP ADPCM inside the .thp.")
 		self.vaudio.setChecked(settings.video_audio)
 		f.addRow(self.vaudio)
+		self.vformat = self._combo(["gcvid", "thp", "both"], settings.video_format)
+		self.vformat.setToolTip("What Convert makes from videos: .gcvid (RGB565 delta, the port's player today), "
+			".thp (the GameCube SDK movie format: JPEG + DSP ADPCM, far smaller), or both. "
+			"Convert Video… always makes THP.")
+		f.addRow("Convert videos to", self.vformat)
+		self.thp_w = self._spin(16, 640, settings.thp_box_width, step=16)
+		self.thp_h = self._spin(16, 480, settings.thp_box_height, step=16)
+		row = QHBoxLayout()
+		row.addWidget(self.thp_w)
+		row.addWidget(QLabel("×"))
+		row.addWidget(self.thp_h)
+		w = QWidget()
+		w.setLayout(row)
+		w.setToolTip("THP pictures fit inside this box, keeping the aspect, rounded down to multiples of 16.")
+		f.addRow("THP max size", w)
+		self.thp_fps = self._spin(1, 60, int(settings.thp_max_fps))
+		self.thp_fps.setToolTip("Faster sources are divided down evenly (59.94 → 29.97).")
+		f.addRow("THP max fps", self.thp_fps)
+		self.thp_q = self._spin(1, 100, settings.thp_quality)
+		f.addRow("THP JPEG quality", self.thp_q)
+		self.thp_kbps = self._spin(0, 20000, int(settings.thp_max_kbps), step=100)
+		self.thp_kbps.setSpecialValueText("no cap")
+		self.thp_kbps.setSuffix(" kbit/s")
+		self.thp_kbps.setToolTip("Frames over this rate drop quality until they fit.")
+		f.addRow("THP video cap", self.thp_kbps)
+		self.thp_rate = self._combo(["32000", "48000"], str(settings.thp_audio_rate))
+		f.addRow("THP audio rate", self.thp_rate)
 		outer.addWidget(vid)
 
 		maps = QGroupBox("Maps (WAD search)")
@@ -336,14 +366,16 @@ class SettingsPanel(QWidget):
 		outer.addWidget(maps)
 		outer.addStretch(1)
 
-		for w in (self.max_edge, self.alpha, self.resample, self.sky, self.mdl_edge, self.spr_scale, self.model_up, self.model_skin):
+		for w in (self.max_edge, self.alpha, self.resample, self.sky, self.mdl_edge, self.spr_scale, self.model_up, self.model_skin,
+				self.vformat, self.thp_rate):
 			w.currentTextChanged.connect(self._sync)
 		for w in (self.mipmaps, self.pack, self.raw_cmp, self.lean_mesh, self.skin_comp, self.vaudio, self.model_full,
 				self.model_static, self.model_clips, self.model_blend, self.sky_detect):
 			w.toggled.connect(self._sync)
 		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw,
 				self.rs_scale, self.rs_yaw, self.panda_scale, self.panda_yaw, self.ffxi_scale, self.ffxi_yaw,
-				self.ff7_scale, self.ff7_battle_scale, self.ff7_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
+				self.ff7_scale, self.ff7_battle_scale, self.ff7_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure,
+				self.thp_w, self.thp_h, self.thp_fps, self.thp_q, self.thp_kbps):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
@@ -420,6 +452,13 @@ class SettingsPanel(QWidget):
 		s.video_height = self.vh.value()
 		s.video_fps = self.fps.value()
 		s.video_audio = self.vaudio.isChecked()
+		s.video_format = self.vformat.currentText()
+		s.thp_box_width = self.thp_w.value()
+		s.thp_box_height = self.thp_h.value()
+		s.thp_max_fps = float(self.thp_fps.value())
+		s.thp_quality = self.thp_q.value()
+		s.thp_max_kbps = float(self.thp_kbps.value())
+		s.thp_audio_rate = int(self.thp_rate.currentText())
 		s.wad_dirs = [self.wad_list.item(i).text() for i in range(self.wad_list.count())]
 		s.cache_dir = self.cache.text().strip()
 		self.on_change()
@@ -472,6 +511,9 @@ class MainWindow(QMainWindow):
 		tb.addSeparator()
 		self.a_convert_sel = act("Convert Selected", lambda: self.convert(selected_only=True), "Ctrl+B")
 		self.a_convert_all = act("Convert All", lambda: self.convert(selected_only=False), "Ctrl+Shift+B")
+		self.a_video = act("Convert Video…", self.convert_video, None,
+			"Pick videos (any format FFmpeg reads) and write <output>/media/<name>.thp: "
+			"the GameCube movie format, sized and capped by the THP settings")
 		self.a_lumps = act("Extract Lumps", self.extract_lumps, None,
 			"Write the selected maps' and baked map files' lumps, entities, sorted references, "
 			".gcmeta, materials and lightmap pages to <output>/lumps/")
@@ -833,6 +875,46 @@ class MainWindow(QMainWindow):
 				continue
 			self.log(f"Extracted {len(written)} files from {a.name} to {dest}")
 
+	def convert_video(self):
+		if self.busy:
+			return
+		files, _ = QFileDialog.getOpenFileNames(self, "Videos to convert to THP", self.qsettings.value("last_dir", ""),
+			f"Videos ({_VIDEO_GLOBS});;All files (*)")
+		if not files:
+			return
+		self.qsettings.setValue("last_dir", str(Path(files[0]).parent))
+		from ..core import thp
+
+		out = Path(self.out_edit.text()).expanduser() / "media"
+		opts = self.project.settings.thp_options()
+		self.busy = True
+		self._update_buttons()
+		self.progress.setVisible(True)
+		self.log(f"--- converting {len(files)} video(s) to THP in {out}")
+
+		def work(signals):
+			done = []
+			for i, f in enumerate(files):
+				name = Path(f).name
+				signals.progress.emit(0, 1, name)
+				try:
+					res = thp.convert(Path(f), out / f"{Path(f).stem.lower()}.thp", opts, log=signals.log.emit,
+						progress=lambda k, n, name=name: signals.progress.emit(k, n, f"{name} frame {k}/{n}"))
+				except (OSError, ValueError) as exc:
+					signals.log.emit(f"{name}: {exc}")
+					continue
+				done.append(res)
+			return done
+
+		task = Task(work)
+		task.signals.log.connect(self.log)
+		task.signals.progress.connect(self._on_progress)
+		task.signals.result.connect(lambda done: self.log(
+			f"--- wrote {len(done)} THP file(s), {audit.human_bytes(sum(r.bytes for r in done))} → {out}"))
+		task.signals.error.connect(self.log)
+		task.signals.finished.connect(self._convert_finished)
+		self.pool.start(task)
+
 	def convert(self, selected_only: bool):
 		if self.busy:
 			return
@@ -901,7 +983,7 @@ class MainWindow(QMainWindow):
 	def _update_buttons(self):
 		has = bool(self.project.assets)
 		sel = bool(self.tree.selectedItems())
-		for a in (self.a_add, self.a_add_dir):
+		for a in (self.a_add, self.a_add_dir, self.a_video):
 			a.setEnabled(not self.busy)
 		self.a_remove.setEnabled(sel and not self.busy)
 		self.a_clear.setEnabled(has and not self.busy)

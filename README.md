@@ -30,10 +30,11 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | RuneScape caches: OSRS / RS2 JS5 (`main_file_cache.dat2` + `.idx*`) and 2004-era (`main_file_cache.dat`) | the same `models/` + `gc_studio/` studio models, one per NPC (or model), with face colours baked into a palette skin and label-group animations as bones | `runescape.import_runescape`, then as above |
 | Final Fantasy XI (PC): ROM `.DAT` models (NPCs, monsters, equipment, weapons), `.ffximdl` manifests, `.spw` / `.bgw` sounds, zone DATs (MZB/MMB) | studio models with skeleton and motions; sound effects as fitted `sound/ffxi/<name>.wav`, music as `media/<name>.gcpcm`; zones as OBJ + PNG (`gxbake ffxi --obj`) for a map editor | `ffxi.import_ffxi`, `ffxi.sound_to_wav`, `ffxi.zone_to_obj` |
 | Final Fantasy VII (PC): field models (`.hrc` + `.rsd` + `.p` + `.tex`, `.a` animations), `.ff7mdl` manifests, lone `.p` models, battle models (`<base>aa` skeletons with their parts, textures and `<base>da` animation packs); `.lgp` archives through `gxbake extract` | studio models, one per skeleton | `ff7.import_ff7` |
-| Video (AVI, MP4…) | `media/<name>.gcvid` (RGB565 delta) and `.gcpcm` | `build_gcvid_companion`, `build_gcpcm_companion` |
+| Video: any codec and container FFmpeg reads (MP4, MKV, MOV, AVI, WebM, MPEG, WMV, FLV, Bink, Smacker, RoQ, PlayStation STR…) | `media/<name>.thp`: THP, the GameCube SDK's movie format (4:2:0 JPEG frames + stereo DSP ADPCM), sized, frame-rate-limited and size-capped; see [docs/video.md](docs/video.md) | `thp.convert` (`gxbake video`, **Convert Video…**) |
+| Video, for the port's current player | `media/<name>.gcvid` (RGB565 delta) and `.gcpcm` (the default for `convert`; `--video-format thp\|both` switches) | `build_gcvid_companion`, `build_gcpcm_companion` |
 | Audio (WAV, MP3, OGG, FLAC, AIFF, VOC, Opus…) | `media/<name>.gcpcm` (48 kHz stereo, s16 big-endian); PCM WAV needs no ffmpeg | `build_gcpcm_companion` |
 
-It also opens the outputs (`.gct`, `.cmp`, `.gcvid`, `.gcpcm`) to inspect them. Every run writes `gxbake-manifest.json` with the settings, every output and its size, and the share of GameCube main RAM it uses.
+It also opens the outputs (`.gct`, `.cmp`, `.gcvid`, `.gcpcm`, `.thp`) to inspect them. Every run writes `gxbake-manifest.json` with the settings, every output and its size, and the share of GameCube main RAM it uses.
 
 ## Image formats
 
@@ -243,6 +244,7 @@ Both read the PC releases. Nothing from either game is in the repository; the te
 
 - Drag files or a whole gamedir onto the window, or use **Add Files…** / **Add Folder…**.
 - Expand a WAD, BSP, model, texture pack or skybox to preview each texture in it.
+- **Convert Video…** turns any video into `<output>/media/<name>.thp` with the THP settings (see [docs/video.md](docs/video.md)).
 - **Add Skybox…** makes the six sky sides from a panorama, cubemap cross or strip, photo, or six face images (see [Skies from panoramas](#skies-from-panoramas)).
 - The middle panes show the source next to the decoded GameCube result, with PSNR and byte counts in the **Inspector** tab.
 ## USD import (FreeUSD)
@@ -251,7 +253,7 @@ Both read the PC releases. Nothing from either game is in the repository; the te
 
 FreeUSD builds a C++ extension, so it is an optional extra: `pip install -e ".[usd]"` (needs CMake and a C++17 compiler; the first build takes several minutes). Binary `.usdc` layers, and `.usdz` packages that hold one, aren't decoded by FreeUSD yet: save them as USDA first (`usdcat -o model.usda model.usdc`). [docs/usd.md](docs/usd.md) lists what is read and the FreeUSD gaps GxBake works around.
 
-- The **Settings** tab holds the optimisation knobs: max texture size, mipmaps, alpha mode and cutoff, resize filter, packing, sky size, model skin size, sprite scale, GCVID size and frame rate, extra WAD search folders, and an encode cache. Changes re-render the preview.
+- The **Settings** tab holds the optimisation knobs: max texture size, mipmaps, alpha mode and cutoff, resize filter, packing, sky size, model skin size, sprite scale, GCVID size and frame rate, what videos convert to and the THP size, frame rate, quality, bit-rate cap and audio rate, extra WAD search folders, and an encode cache. Changes re-render the preview.
 - **Convert Selected** or **Convert All** writes into the output folder. The status bar shows the total against the 24 MiB of main RAM.
 
 ## Run from source
@@ -266,13 +268,14 @@ gxbake budget staged/valve     # per-map memory report
 gxbake extract hl2_misc_dir.vpk -o unpacked --match 'models/*' --match 'materials/*'
 gxbake pack list staged/valve/media/wt_c1a0.gct --sort size
 gxbake sky sunset.hdr -o staged/valve --name sunset
+gxbake video intro.mkv -o staged/valve/media/intro.thp --max-size 20M   # any video → THP
 gxbake formats                 # every image format and which optional packages are missing
 gxbake decode textures/*.tpl -o check   # any supported image to PNG
 ```
 
 Every command and option is listed in the [command line reference](docs/cli.md), and [the porting workflow](docs/workflow.md) shows how they fit together, from unpacking a game to a staged tree that fits the GameCube's memory. The reference is generated from the CLI itself: after changing an option, run `python -m gxbake.clidoc` (a test fails until you do).
 
-Video and audio need `ffmpeg` on `PATH`, next to the executable, or set with `GXBAKE_FFMPEG`.
+Video and audio need `ffmpeg` on `PATH`, next to the executable, or set with `GXBAKE_FFMPEG`; `gxbake video` also needs the `ffprobe` that ships with it.
 
 ## Standalone executable
 

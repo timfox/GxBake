@@ -15,6 +15,7 @@
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
 	gxbake lumps <map.bsp|wd_<map>.gcd|<map>.gcmeta|folder...> [-o OUT] [--textures] [--json]
 	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
+	gxbake video <videos...> -o OUT [--max 512x448] [--quality 80] [--max-kbps N] [--max-size SIZE]
 	gxbake rs <main_file_cache.dat2|.dat> [--find NAME] [--json]
 	gxbake ff7 <.hrc|.p|.a|.tex|<base>aa> [--anims] [--json]
 	gxbake ffxi <DAT|.spw|.bgw|FINAL FANTASY XI folder> [--id N] [--textures DIR] [--wav OUT] [--obj DIR [--prefabs]] [--json]
@@ -79,6 +80,7 @@ def _convert(args) -> int:
 	s.ff7_yaw = args.ff7_yaw
 	s.ff7_battle_scale = args.ff7_battle_scale
 	s.video_width, s.video_height, s.video_fps = args.video_width, args.video_height, args.video_fps
+	s.video_format = args.video_format
 	s.sky_yaw, s.sky_fov, s.sky_exposure = args.sky_yaw, args.sky_fov, args.sky_exposure
 	s.detect_panoramas = not args.no_sky_detect
 	proj = Project(s)
@@ -604,6 +606,45 @@ def _adpcm(args) -> int:
 	return rc
 
 
+def _wh(text: str) -> tuple[int, int]:
+	try:
+		w, h = (int(v) for v in text.lower().replace("×", "x").split("x"))
+	except ValueError:
+		raise argparse.ArgumentTypeError(f"expected WIDTHxHEIGHT, got {text!r}") from None
+	return w, h
+
+
+def _video(args) -> int:
+	from .core import thp
+
+	opts = thp.ThpOptions(quality=args.quality, min_quality=args.min_quality, max_kbps=args.max_kbps,
+		max_bytes=budget.parse_size(args.max_size) if args.max_size else 0, audio=not args.no_audio,
+		audio_rate=args.audio_rate, audio_track=args.audio_track, start=args.start, duration=args.duration,
+		fps=args.fps or 0.0, max_fps=args.max_fps, letterbox=not args.stretch)
+	opts.box_width, opts.box_height = args.max
+	if args.size:
+		opts.width, opts.height = args.size
+	inputs = [Path(p) for p in args.inputs]
+	out = Path(args.output)
+	single = out.suffix.lower() == ".thp"
+	if single and len(inputs) != 1:
+		print("error: -o NAME.thp takes one input; give a folder for several", file=sys.stderr)
+		return 1
+	rows, failed = [], 0
+	for src in inputs:
+		dest = out if single else out / f"{src.stem.lower()}.thp"
+		try:
+			res = thp.convert(src, dest, opts, log=(lambda m: None) if args.json else print)
+		except (OSError, ValueError) as exc:
+			print(f"error: {src.name}: {exc}", file=sys.stderr)
+			failed += 1
+			continue
+		rows.append(res.as_dict())
+	if args.json:
+		print(json.dumps(rows, indent=1))
+	return 1 if failed else 0
+
+
 def _yaz0(args) -> int:
 	from .core import yaz0
 
@@ -841,6 +882,8 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--video-width", type=int, default=320, help="GCVID frame width")
 	c.add_argument("--video-height", type=int, default=240, help="GCVID frame height")
 	c.add_argument("--video-fps", type=int, default=15, help="GCVID frame rate")
+	c.add_argument("--video-format", choices=("gcvid", "thp", "both"), default="gcvid",
+		help="videos become .gcvid + .gcpcm (the port's player today), .thp (the SDK movie format; see gxbake video), or both")
 	c.add_argument("--fit-world", action="store_true",
 		help="trim world texture packs' top mips until they fit the engine's MEM1 pool")
 	c.add_argument("--wt-pool", default="448K", help="pool size for --fit-world")
@@ -1050,6 +1093,28 @@ def build_parser() -> argparse.ArgumentParser:
 		help="also write gfx/env/<name><side>.tga at SIZE (PC builds, the disc builder)")
 	sk.add_argument("--preview", metavar="PNG", help="write the decoded sides as a cross to check seams and orientation")
 	sk.set_defaults(fn=_sky)
+
+	v = sub.add_parser("video", help="convert any video FFmpeg reads to a THP movie (the GameCube SDK's format: JPEG + DSP ADPCM)")
+	v.add_argument("inputs", nargs="+", help="video files (any codec and container FFmpeg reads)")
+	v.add_argument("-o", "--output", required=True, help="NAME.thp for one input, otherwise a folder (one <stem>.thp each)")
+	v.add_argument("--max", type=_wh, default="512x448", metavar="WxH",
+		help="fit the picture inside this box, keeping the aspect; sides round down to multiples of 16, at most 640x480")
+	v.add_argument("--size", type=_wh, metavar="WxH", help="exact size instead (multiples of 16); letterboxed unless --stretch")
+	v.add_argument("--stretch", action="store_true", help="with --size, stretch to fill instead of letterboxing")
+	v.add_argument("--fps", type=float, help="frame rate (default: the source's, halved or thirded to --max-fps)")
+	v.add_argument("--max-fps", type=float, default=30.0, help="highest frame rate kept from the source")
+	v.add_argument("--quality", type=int, default=80, help="JPEG quality 1-100")
+	v.add_argument("--max-kbps", type=float, default=0.0,
+		help="cap the video at this many kbit/s: frames over it drop quality, down to --min-quality")
+	v.add_argument("--max-size", metavar="SIZE", help="cap the whole file (e.g. 20M); sets the per-frame cap from the length")
+	v.add_argument("--min-quality", type=int, default=10, help="lowest JPEG quality a capped frame may drop to")
+	v.add_argument("--audio-rate", type=int, choices=(32000, 48000), default=32000, help="audio sample rate (stereo DSP ADPCM)")
+	v.add_argument("--audio-track", type=int, default=0, help="which audio stream of the source")
+	v.add_argument("--no-audio", action="store_true", help="video only")
+	v.add_argument("--start", type=float, default=0.0, help="start this many seconds in")
+	v.add_argument("--duration", type=float, default=0.0, help="convert this many seconds (0: to the end)")
+	v.add_argument("--json", action="store_true", help="print the results as JSON")
+	v.set_defaults(fn=_video)
 
 	_add_pack_parser(sub)
 
