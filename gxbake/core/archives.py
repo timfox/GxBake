@@ -1,4 +1,4 @@
-"""Game archives: Quake/GoldSrc PACK (.pak), Source VPK (v1/v2), PK3/ZIP, Final Fantasy VII LGP, and Panda3D multifiles (.mf).
+"""Game archives: Quake/GoldSrc PACK (.pak), Source VPK (v1/v2), PK3/ZIP, Panda3D multifiles (.mf) and Final Fantasy VII LGP.
 
 Game content usually ships inside these, so `gxbake extract` unpacks them to
 a folder that `gxbake convert` (or the app) can then take. The Quake palette
@@ -13,9 +13,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-ARCHIVE_EXTENSIONS = {".pak", ".vpk", ".pk3", ".pk4", ".zip", ".lgp"}
+ARCHIVE_EXTENSIONS = {".pak", ".vpk", ".pk3", ".pk4", ".zip", ".mf", ".lgp"}
 LGP_CREATORS = (b"\0\0SQUARESOFT", b"FICEDULA-LGP")
-ARCHIVE_EXTENSIONS = {".pak", ".vpk", ".pk3", ".pk4", ".zip", ".mf"}
 VPK_SIGNATURE = 0x55AA1234
 MF_MAGIC = b"pmf\0\n\r"
 
@@ -232,10 +231,9 @@ def members(path: Path) -> list[Member]:
 	path = Path(path)
 	with path.open("rb") as f:
 		head = f.read(12)
-	if head in LGP_CREATORS:
-		return _lgp_members(path)
-	head = head[:4]
-		head = f.read(4)
+		if head in LGP_CREATORS:
+			return _lgp_members(path)
+		head = head[:4]
 		if head[:1] == b"#" or head[:3] == b"pmf":
 			f.seek(0)
 			start = f.read(4096)
@@ -247,8 +245,7 @@ def members(path: Path) -> list[Member]:
 		return _vpk_members(path)
 	if head[:2] == b"PK":
 		return _zip_members(path)
-	raise ValueError(f"{path.name}: not a PAK, VPK, PK3/ZIP or LGP archive")
-	raise ValueError(f"{path.name}: not a PAK, VPK, PK3/ZIP or Panda3D multifile")
+	raise ValueError(f"{path.name}: not a PAK, VPK, PK3/ZIP or LGP archive, or a Panda3D multifile")
 
 
 def read_member(path: Path, name: str) -> bytes | None:

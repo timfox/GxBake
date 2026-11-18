@@ -32,7 +32,7 @@ A model DAT is a chain of chunks, each with a 16-byte header: 4-character name, 
 | 0x29 | skeleton | uint16, bone count (int16), 30 bytes per bone: parent (255 = root), leaf flag, quaternion xyzw, translation |
 | 0x2A | mesh | see below |
 | 0x2B | motion | version, element count, frame count, speed (float); 84 bytes per element: bone, 4 rotation key indices + defaults, 3 translation + defaults, 3 scale + defaults; key index 0 means "use the default", a negative first index means "not animated". Indices count floats from just after the 10-byte header. Plays at 30·speed fps |
-| 0x1C, 0x2E | zone MZB / MMB | no |
+| 0x1C, 0x2E | zone MZB / MMB | yes, for OBJ export; see Zones |
 
 **Meshes.** A 64-byte header with offsets in 16-bit words from the chunk body: polygon commands, bone table, weight counts (single-bone and two-bone vertex counts), bone assignments (two words per vertex: low/high bone, each 7 bits left, 7 bits mirror bone, 2 bits mirror axis), and vertices. Type bit 0x80 means the assignments index the bone table; type 1 is cloth (no normals). Single-bone vertices are position + normal (24 bytes, 12 for cloth); two-bone vertices interleave both bones (x1 x2 y1 y2 z1 z2 w1 w2, then normals; 56 or 32 bytes), with each position already scaled by its weight. Polygon commands: `0x8000` texture change (16-byte name), `0x8010` material state (46 bytes, skipped), `0x0054` triangle list (30 bytes per triangle with UVs), `0x5453` strip (a first triangle, then 10 bytes per corner), `0x4353`/`0x0043` skipped, `0xFFFF` end. A non-zero flip word draws a second, mirrored copy bound to the mirror bones.
 
@@ -46,6 +46,19 @@ A model DAT is a chain of chunks, each with a 16-byte header: 4-character name, 
 - DXT1 punch-through black is drawn opaque, as Vanalytics does (FFXI blends by material).
 - The palette of a 0xB1 texture starts at byte 61 (POLUtils) or 64 (Vanalytics). GxBake takes whichever start gives FFXI-looking alpha bytes (0…0x80). Rows are read top-down.
 - Motion chunks are grouped into one sequence when they are consecutive, share the first three characters of their name, the frame count and the speed, and drive different bones.
+
+### Zones
+
+A zone DAT holds the zone's textures (0x20), its prefab meshes (0x2E, MMB) and where the prefabs go (0x1C, MZB). Both are scrambled. The descrambling and both layouts follow Vanalytics' zone reader (a port of GalkaReeve's mapViewer); its two 256-byte key tables are copied into `ffxi.py` with Vanalytics' MIT notice.
+
+- **MZB descrambling.** When byte 3 is 0x1B or more: bytes 0–2 are a length, the key starts at `table1[byte7 ^ 0xFF]`; from byte 8, runs of `((key >> 4) & 7) + 16` bytes are XORed with 0xFF when `key & 1` (and the run ends before the length), with the key growing by 1, 2, 3, …. Then the first 16 bytes of every 100-byte record (from byte 32) are XORed with 0x55. Doing it twice gives the input back.
+- **MMB descrambling.** When byte 3 is 5 or more: a rolling XOR from byte 8, the key from `table1[byte5 ^ 0xF0]`. Then, when bytes 6 and 7 are 0xFF, 8-byte blocks of the first half swap with the second half where `table2`'s running key is odd.
+- **MMB.** 16-byte head (byte 4 = 2 means 48-byte vertices and triangle lists; otherwise 36-byte vertices and strips, unless the head starts `MMB` with type 0), then the prefab name (16 bytes), piece count, bounding box and the first piece's offset (byte 60), then the other pieces' offsets. A piece is a 32-byte header (model count, box, face count) and its models: 16-byte texture name (blank means the zone's most used texture), vertex count, blending, the vertices (position, [a second vector], normal, BGRA colour, UV), a uint32 index count and uint16 indices (padded to 4 bytes).
+- **MZB.** A 32-byte header with the record count (24 bits at byte 4), then 100-byte records: prefab name, translation, rotation (radians), scale, and 64 bytes not read. A prefab is scaled, rotated by `Rz·Ry·Rx`, then moved. All MMB blocks with the same name are drawn for one record. `sunsphere` and `moonsphere` are left out (the sky).
+
+**How it is exported.** `gxbake ffxi <DAT> --obj DIR` writes `<name>.obj`, `<name>.mtl` and `textures/*.png`, with every placed prefab in world space, turned into GoldSrc axes like the models (`(x, y, z) → (x, z, -y)`, then scale and yaw), and each triangle turned to agree with its normals. `--prefabs` writes one OBJ per prefab instead. No BSP is made: a map editor (with an OBJ import) and the usual compilers turn it into a map, and `gxbake budget` then checks it.
+
+**Guessed, to check on real data:** the MMB vertex layout for the 48-byte case (the second vector is skipped), the strip/list choice, the blank-texture fallback, and whether textures that live in companion DATs need adding (they are not looked up yet; such materials get no `map_Kd`).
 
 ### Sounds
 

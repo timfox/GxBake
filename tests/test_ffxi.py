@@ -286,3 +286,67 @@ def test_cli_describes_and_extracts(tmp_path, capsys):
 	assert sfx.read_wav((tmp_path / "se.wav").read_bytes()).frames == 16
 	assert cli.main(["convert", str(p), "-o", str(tmp_path / "out"), "--ffxi-scale", "20"]) == 0
 	assert (tmp_path / "out" / "gc_studio" / "ffxi_rom_27_82.mdl").is_file()
+
+
+def _zone_dat(tmp_path):
+	"""A tree prefab (a textured quad strip + a blank-named quad), a lone rock prefab, the sun (skipped),
+	and placements: two trees, one turned 90° and doubled in size, and a name with no prefab."""
+	pos, nrm, uv, idx = ff.quad_strip(1.0)
+	tree = ff.mmb("tree", [[("bark", pos, nrm, uv, idx)], [("", pos, nrm, uv, [0, 1, 2, 3])]])
+	rock = ff.mmb("rock", [[("bark", pos, nrm, uv, [0, 1, 2, 1, 3, 2])]], tri_list=True, seed=0x11)
+	sun = ff.mmb("sunsphere", [[("bark", pos, nrm, uv, idx)]])
+	placements = ff.mzb([("tree", (10.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
+		("tree", (0.0, -5.0, 0.0), (0.0, np.pi / 2, 0.0), (2.0, 2.0, 2.0)),
+		("ghost", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0))])
+	data = ff.dat(ff.chunk("bark", 0x20, ff.dxt_texture("bark", 4, 4, (0, 255, 0))),
+		ff.chunk("tree", 0x2E, tree), ff.chunk("rock", 0x2E, rock), ff.chunk("sun", 0x2E, sun),
+		ff.chunk("zone", 0x1C, placements))
+	p = tmp_path / "ROM" / "1" / "20.DAT"
+	p.parent.mkdir(parents=True)
+	p.write_bytes(data)
+	return p
+
+
+def test_zone_unscramble_and_read(tmp_path):
+	p = _zone_dat(tmp_path)
+	assert ffxi.is_zone_dat(p) and not ffxi.is_model_dat(p)
+	zone = ffxi.read_zone(p)
+	assert sorted(zone.prefabs) == ["rock", "tree"]	# the sun is left to the sky
+	assert [len(m.tris) for m in zone.prefabs["tree"]] == [2, 2]
+	assert len(zone.prefabs["rock"][0].tris) == 2	# a triangle list
+	assert zone.prefabs["tree"][1].texture == "bark"	# blank → the zone's main texture
+	assert [i.name for i in zone.instances] == ["tree", "tree", "ghost"] and len(zone.placed()) == 2
+	m = zone.instances[1].matrix
+	assert np.allclose(m[:3, :3] @ [1, 0, 0], [0, 0, -2], atol=1e-6) and np.allclose(m[:3, 3], [0, -5, 0])
+	info = ffxi.describe(p)["zone"]
+	assert info["placed triangles"] == 8 and info["unmatched names"] == ["ghost"]
+
+
+def test_zone_to_obj(tmp_path):
+	p = _zone_dat(tmp_path)
+	files = ffxi.zone_to_obj(p, tmp_path / "out", scale=10.0)
+	obj = next(f for f in files if f.suffix == ".obj")
+	assert obj.name == "ffxi_rom_1_20.obj" and (tmp_path / "out" / "textures" / "bark.png").is_file()
+	v, faces = [], []
+	for line in obj.read_text().splitlines():
+		if line.startswith("v "):
+			v.append([float(x) for x in line.split()[1:]])
+		elif line.startswith("f "):
+			faces.append([int(c.split("/")[0]) - 1 for c in line.split()[1:]])
+	v, faces = np.array(v), np.array(faces)
+	assert len(faces) == 8
+	# FFXI x → GoldSrc x, FFXI -y (up) → GoldSrc z: the second tree stands 5 units up, scaled by 10
+	assert np.isclose(v[:, 2].max(), 50.0) and np.isclose(v[:, 0].max(), 110.0)
+	t = v[faces]
+	n = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
+	assert (n[:, 2] > 0).all()	# every quad faces up, whatever way the strips wound it
+	assert "map_Kd textures/bark.png" in (tmp_path / "out" / "ffxi_rom_1_20.mtl").read_text()
+	props = ffxi.zone_to_obj(p, tmp_path / "props", prefabs=True)
+	assert sorted(f.name for f in props if f.suffix == ".obj") == ["rock.obj", "tree.obj"]
+
+
+def test_zone_cli(tmp_path, capsys):
+	p = _zone_dat(tmp_path)
+	assert cli.main(["ffxi", str(p), "--obj", str(tmp_path / "o")]) == 0
+	out = capsys.readouterr().out
+	assert "zone: 2 prefabs" in out and "2 of 3 placements" in out and "ghost" in out and "wrote 1 OBJ" in out

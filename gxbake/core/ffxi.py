@@ -31,7 +31,10 @@ a .ffximdl manifest:
 	 "parts": ["ROM/28/53.dat", "id:12345"],
 	 "motions": ["ROM/32/13.dat"]}
 
-Format references (read for layout, no code copied): POLUtils (Apache-2.0) for
+Zone DATs (MZB placements + MMB prefabs) export to OBJ through zone_to_obj; see
+the notes above read_zone.
+
+Format references (read for layout, no code copied except the zone key tables): POLUtils (Apache-2.0) for
 the file tables, image headers and the ADPCM codec; Vanalytics' ffxi-dat reader
 (MIT) for the chunk chain, skeleton, mesh and motion layouts.
 
@@ -632,7 +635,13 @@ def describe(path: Path) -> dict:
 	counts: dict[str, int] = {}
 	for c in dat.chunks:
 		counts[c.kind] = counts.get(c.kind, 0) + 1
-	return {
+	zone = None
+	if any(c.type == T_MMB for c in dat.chunks):
+		try:
+			zone = describe_zone(read_zone(path))
+		except ValueError as exc:
+			dat.problems.append(str(exc))
+	return {"zone": zone,
 		"path": str(path), "chunks": counts,
 		"textures": [{"name": t.name, "format": t.format, "size": f"{t.rgba.shape[1]}x{t.rgba.shape[0]}"}
 			for t in dat.textures.values()],
@@ -644,6 +653,393 @@ def describe(path: Path) -> dict:
 		"problems": dat.problems,
 	}
 
+
+# -- zones --------------------------------------------------------------------------
+#
+# A zone DAT holds the zone's textures (0x20), its prefab meshes (0x2E, "MMB") and
+# the placements of those prefabs (0x1C, "MZB"). MMB and MZB bodies are lightly
+# scrambled. The descrambling and both layouts follow Vanalytics' zone reader, a
+# port of GalkaReeve's mapViewer; the two key tables below are copied from
+# Vanalytics (src/Vanalytics.Web/src/lib/ffxi-dat/ZoneDecrypt.ts):
+#
+#	Copyright (c) 2026 Soverance Studios. MIT License: the above copyright notice
+#	and this permission notice shall be included in all copies or substantial
+#	portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY
+#	OF ANY KIND.
+
+T_MZB, T_MMB = 0x1C, 0x2E
+_ZONE_KEYS = bytes.fromhex(
+	"e2e506a9ed26f44215f4817fde9aded01a982091394948a40a9f4069ecbd8181"
+	"8dad10b8c188150511b1aaf00f1e34e681aacdac0284330a19389ee6734a115d"
+	"bf857708cdd9960d7978cc35068ef9fe66b9210320291e27ca8682e64507dda9"
+	"b6d5a203ecad62452dce79bd8f2d1018e60a6faa6f4684329f292cc2f0eb186f"
+	"f23adcea7b0c812dcceba151772cfb49e890f790ce5c01f35cf441ab04e716cc"
+	"3a055455dceda4d6bf3f9e0893b5633890f75af0a25f56c80870cb2416ddd274"
+	"953a1a2a74c49debaf69aa51396594a24b1f1a605239e823ee5839063d226a2d"
+	"d29125a52e7162a50bc1e56e43497c5846199f4549c64009a2995b7b987fa0d0"
+)
+_ZONE_KEYS_2 = bytes.fromhex(
+	"b8c5f784e45a237bc8901df65d0951c10724ef5b1d739008a5701c225f6bebb0"
+	"06c72a3ad26681db4162f29717fe05efa3dc22b345703e182db4ba0a651d87c3"
+	"12ce8f9df70d50243af3ca706b679cb2c24d6a0ca8fa81a679ebbefe89b7ac7f"
+	"6543ec565b35da813cab6d28602c5f31ebdf8e0f4ffaa3da127ef1a5d222a00c"
+	"868c0a0c06c76518cef2a368fe359695a6fa58634159eadd7fd31ba84844ab91"
+	"fd13b16801ac3a11783033d84e6a89057b068eb086fd9fd7485404aef3061736"
+	"533fa81153caa195c2cde61f57b47faaf36bf9a027d009eff6687360dc502a25"
+	"0f77b9b0040be1cc353184e622f9c2ab959161d92bb9724e107631660a0b2e83"
+)
+
+def _mzb_unscramble(body: bytes) -> bytes:
+	"""MZB bodies: runs of bytes XORed with 0xFF, then each record's name XORed with 0x55.
+	Applying it twice gives the input back."""
+	buf = bytearray(body)
+	if len(buf) < 8 or buf[3] < 0x1B:
+		return bytes(buf)
+	length = buf[0] | buf[1] << 8 | buf[2] << 16
+	key = _ZONE_KEYS[buf[7] ^ 0xFF]
+	counter = 0
+	pos = 8
+	limit = min(length, len(buf))
+	while pos < limit:
+		run = ((key >> 4) & 7) + 16
+		if key & 1 and pos + run < length:
+			end = min(pos + run, len(buf))
+			buf[pos:end] = bytes(b ^ 0xFF for b in buf[pos:end])
+		counter += 1
+		key += counter
+		pos += run
+	records = buf[4] | buf[5] << 8 | buf[6] << 16
+	at = 32
+	for _ in range(records):
+		if at + 16 > len(buf):
+			break
+		buf[at:at + 16] = bytes(b ^ 0x55 for b in buf[at:at + 16])
+		at += 100
+	return bytes(buf)
+
+
+def _mmb_xor(buf: bytearray) -> None:
+	if len(buf) < 8 or buf[3] < 5:
+		return
+	length = min(buf[0] | buf[1] << 8 | buf[2] << 16, len(buf))
+	key = _ZONE_KEYS[buf[5] ^ 0xF0]
+	counter = 0
+	for pos in range(8, length):
+		x = (key & 0xFF) << 8 | (key & 0xFF)
+		counter += 1
+		key += counter
+		buf[pos] ^= (x >> (key & 7)) & 0xFF
+		counter += 1
+		key += counter
+
+
+def _mmb_swap(buf: bytearray) -> None:
+	if len(buf) < 8 or buf[6] != 0xFF or buf[7] != 0xFF:
+		return
+	length = buf[0] | buf[1] << 8 | buf[2] << 16
+	key1 = buf[5] ^ 0xF0
+	key2 = _ZONE_KEYS_2[key1]
+	count = ((length - 8) & ~0xF) >> 1
+	d1, d2 = 8, 8 + count
+	for _ in range(0, count, 8):
+		if key2 & 1 and d1 + 7 < len(buf) and d2 + 7 < len(buf):
+			buf[d1:d1 + 8], buf[d2:d2 + 8] = buf[d2:d2 + 8], buf[d1:d1 + 8]
+		key1 += 9
+		key2 += key1
+		d1 += 8
+		d2 += 8
+
+
+def _mmb_unscramble(body: bytes) -> bytes:
+	"""MMB bodies: a rolling XOR, then 8-byte blocks swapped between the two halves."""
+	buf = bytearray(body)
+	_mmb_xor(buf)
+	_mmb_swap(buf)
+	return bytes(buf)
+
+
+def _cstr(raw: bytes) -> str:
+	return raw.split(b"\0")[0].decode("latin-1").strip()
+
+
+@dataclass
+class ZoneMesh:
+	texture: str
+	positions: "np.ndarray"	# (n, 3) prefab space
+	normals: "np.ndarray"	# (n, 3)
+	colors: "np.ndarray"	# (n, 4) RGBA
+	uvs: "np.ndarray"	# (n, 2)
+	tris: "np.ndarray"	# (m, 3)
+	blending: int
+
+
+@dataclass
+class ZoneInstance:
+	name: str
+	matrix: "np.ndarray"	# 4x4, FFXI space: rotate (Z·Y·X, radians) a scaled prefab, then translate
+
+
+def _strip(idx: list[int]) -> list[tuple[int, int, int]]:
+	out = []
+	for i in range(len(idx) - 2):
+		a, b, c = idx[i], idx[i + 1], idx[i + 2]
+		if a == b or b == c or a == c:
+			continue
+		out.append((a, b, c) if i % 2 == 0 else (a, c, b))
+	return out
+
+
+def read_mmb(body: bytes, name: str = "mmb") -> tuple[str, list[ZoneMesh]]:
+	"""A descrambled MMB body → (prefab name, meshes)."""
+	if len(body) < 64:
+		raise ValueError(f"{name}: truncated")
+	is_mmb = body[:3] == b"MMB"
+	packed = struct.unpack_from("<I", body, 3)[0]
+	d3 = body[4]
+	stride = 48 if d3 == 2 else 36
+	tri_list = (is_mmb and (packed & 0x7F) == 0) or (not is_mmb and d3 == 2)
+	prefab = _cstr(body[16:32])
+	pieces, = struct.unpack_from("<i", body, 32)
+	first, = struct.unpack_from("<I", body, 60)
+	if not 0 < pieces <= 200:
+		raise ValueError(f"{name}: {pieces} pieces")
+	pos = 64
+	offsets = []
+	if first == 0:
+		for _ in range(8):
+			if pos + 4 > len(body):
+				break
+			off, = struct.unpack_from("<I", body, pos)
+			pos += 4
+			if off:
+				offsets.append(off)
+	else:
+		offsets.append(first)
+		while pos + 4 <= min(first, len(body)):
+			off, = struct.unpack_from("<I", body, pos)
+			pos += 4
+			if off:
+				offsets.append(off)
+	meshes: list[ZoneMesh] = []
+	for piece in range(pieces):
+		if piece < len(offsets):
+			pos = offsets[piece]
+		if pos + 32 > len(body):
+			break
+		models, = struct.unpack_from("<i", body, pos)
+		pos += 32
+		if not 0 < models <= 50:
+			break
+		for _ in range(models):
+			if pos + 20 > len(body):
+				break
+			tex = _cstr(body[pos:pos + 16])
+			count, blending = struct.unpack_from("<HH", body, pos + 16)
+			pos += 20
+			if count == 0 or pos + count * stride + 4 > len(body):
+				raise ValueError(f"{name}: vertices run past the end")
+			v = np.frombuffer(body, np.uint8, count * stride, pos).reshape(count, stride)
+			pos += count * stride
+			f = v.view("<f4").reshape(count, stride // 4).astype(np.float64)
+			n0 = 6 if stride == 48 else 3
+			positions, normals = f[:, 0:3], f[:, n0:n0 + 3]
+			bgra = v[:, (n0 + 3) * 4:(n0 + 4) * 4]
+			colors = bgra[:, [2, 1, 0, 3]].copy()
+			uvs = f[:, n0 + 4:n0 + 6]
+			nidx = struct.unpack_from("<I", body, pos)[0] & 0xFFFF
+			pos += 4
+			if nidx == 0 or pos + 2 * nidx > len(body):
+				raise ValueError(f"{name}: indices run past the end")
+			idx = list(struct.unpack_from(f"<{nidx}H", body, pos))
+			pos += 2 * nidx + (2 if nidx % 2 else 0)
+			tris = [tuple(idx[i:i + 3]) for i in range(0, nidx - 2, 3)] if tri_list else _strip(idx)
+			tris = [t for t in tris if max(t) < count]
+			if tris:
+				meshes.append(ZoneMesh(tex, positions, normals, colors, uvs, np.array(tris, np.int64), blending))
+	return prefab, meshes
+
+
+def read_mzb(body: bytes, name: str = "mzb") -> list[ZoneInstance]:
+	"""A descrambled MZB body → prefab placements."""
+	if len(body) < 32:
+		raise ValueError(f"{name}: truncated")
+	count = struct.unpack_from("<I", body, 4)[0] & 0xFFFFFF
+	if count > 200000:
+		raise ValueError(f"{name}: {count} records")
+	out = []
+	for i in range(count):
+		at = 32 + 100 * i
+		if at + 100 > len(body):
+			break
+		t = struct.unpack_from("<9f", body, at + 16)
+		cx, sx = math.cos(t[3]), math.sin(t[3])
+		cy, sy = math.cos(t[4]), math.sin(t[4])
+		cz, sz = math.cos(t[5]), math.sin(t[5])
+		rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+		ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+		rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+		m = np.eye(4)
+		m[:3, :3] = rz @ ry @ rx @ np.diag(t[6:9])
+		m[:3, 3] = t[0:3]
+		out.append(ZoneInstance(_cstr(body[at:at + 16]), m))
+	return out
+
+
+SKY_PREFABS = {"sunsphere", "moonsphere"}
+
+
+@dataclass
+class Zone:
+	textures: dict[str, Texture]
+	prefabs: dict[str, list[ZoneMesh]]	# name → meshes of every MMB with that name
+	instances: list[ZoneInstance]
+	problems: list[str]
+
+	def placed(self) -> list[ZoneInstance]:
+		return [i for i in self.instances if i.name in self.prefabs]
+
+
+def is_zone_dat(path: Path) -> bool:
+	census = chunk_census(path)
+	return bool(census) and census.get(T_MMB, 0) > 0
+
+
+def read_zone(path: Path, data: bytes | None = None) -> Zone:
+	path = Path(path)
+	data = path.read_bytes() if data is None else data
+	chunks = read_chunks(data, path.name)
+	zone = Zone({}, {}, [], [])
+	for c in chunks:
+		body = data[c.start:c.end]
+		label = f"{path.name} {c.kind} {c.name!r}"
+		try:
+			if c.type == T_TEXTURE:
+				tex = read_texture(body, label)
+				zone.textures.setdefault(tex.name, tex)
+			elif c.type == T_MMB:
+				prefab, meshes = read_mmb(_mmb_unscramble(body), label)
+				if prefab.lower() not in SKY_PREFABS and meshes:
+					zone.prefabs.setdefault(prefab, []).extend(meshes)
+			elif c.type == T_MZB:
+				zone.instances.extend(read_mzb(_mzb_unscramble(body), label))
+		except (ValueError, struct.error) as exc:
+			zone.problems.append(str(exc))
+	if not zone.prefabs:
+		raise ValueError(f"{path.name}: no zone meshes (MMB chunks)")
+	# a blank texture name means the zone's main ground texture: take the most used one
+	used: dict[str, int] = {}
+	for meshes in zone.prefabs.values():
+		for m in meshes:
+			if m.texture in zone.textures:
+				used[m.texture] = used.get(m.texture, 0) + 1
+	if used:
+		main = max(used, key=used.get)
+		for meshes in zone.prefabs.values():
+			for m in meshes:
+				if not m.texture:
+					m.texture = main
+	return zone
+
+
+def describe_zone(zone: Zone) -> dict:
+	placed = zone.placed()
+	tris = {k: sum(len(m.tris) for m in v) for k, v in zone.prefabs.items()}
+	return {"prefabs": len(zone.prefabs), "placements": len(zone.instances), "placed": len(placed),
+		"unmatched names": sorted({i.name for i in zone.instances} - set(zone.prefabs))[:20],
+		"prefab triangles": sum(tris.values()), "placed triangles": sum(tris[i.name] for i in placed),
+		"textures": len(zone.textures)}
+
+
+def _zone_geometry(meshes: list[ZoneMesh], matrix: "np.ndarray", rot: "np.ndarray", k: float):
+	"""Yield (texture, positions, normals, uvs, tris) in GoldSrc space, each triangle turned to agree with its normals."""
+	m3 = matrix[:3, :3]
+	nrm = np.linalg.inv(m3).T if abs(np.linalg.det(m3)) > 1e-12 else m3
+	for m in meshes:
+		p = (m.positions @ m3.T + matrix[:3, 3]) @ rot.T * k
+		n = m.normals @ nrm.T @ rot.T
+		lens = np.linalg.norm(n, axis=1, keepdims=True)
+		n = np.where(lens > 1e-9, n / np.maximum(lens, 1e-9), 0.0)
+		t = m.tris.copy()
+		fn = np.cross(p[t[:, 1]] - p[t[:, 0]], p[t[:, 2]] - p[t[:, 0]])
+		flip = np.einsum("ij,ij->i", fn, n[t].sum(1)) < 0
+		t[flip] = t[flip][:, [0, 2, 1]]
+		yield m.texture, p, n, m.uvs, t
+
+
+def _safe(name: str) -> str:
+	return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "texture"
+
+
+def zone_to_obj(path: Path, out_dir: Path, scale: float = DEFAULT_SCALE, yaw: float = 0.0,
+		prefabs: bool = False) -> list[Path]:
+	"""Write a zone as Wavefront OBJ + MTL + PNG textures in GoldSrc axes and units: the whole
+	placed zone as <stem>.obj, or with prefabs=True one OBJ per prefab (in its own space) to
+	convert as studio props. Returns the files written."""
+	from PIL import Image
+
+	path = Path(path)
+	zone = read_zone(path)
+	opts = _m.ModelOptions(ffxi_scale=scale, ffxi_yaw=yaw)
+	rot, k = _to_gold(opts)
+	out_dir = Path(out_dir)
+	tex_dir = out_dir / "textures"
+	tex_dir.mkdir(parents=True, exist_ok=True)
+	written: list[Path] = []
+	tex_files: dict[str, str] = {}
+	stems: set[str] = set()
+	for name, t in zone.textures.items():
+		stem = _safe(name)
+		while stem.lower() in stems:
+			stem += "_"
+		stems.add(stem.lower())
+		p = tex_dir / f"{stem}.png"
+		Image.fromarray(t.rgba, "RGBA").save(p)
+		tex_files[name] = f"textures/{p.name}"
+		written.append(p)
+
+	def write(stem: str, parts) -> None:
+		mtl = out_dir / f"{stem}.mtl"
+		obj = out_dir / f"{stem}.obj"
+		mats: set[tuple[str, str]] = set()
+		lines = [f"# {path.name}: FFXI zone, written by GxBake", f"mtllib {mtl.name}"]
+		base = 1
+		for tex, p, n, uv, t in parts:
+			mat = _safe(tex) if tex else "untextured"
+			mats.add((mat, tex))
+			lines += [f"usemtl {mat}"]
+			lines += [f"v {x:.4f} {y:.4f} {z:.4f}" for x, y, z in p]
+			lines += [f"vt {u:.5f} {1.0 - v:.5f}" for u, v in uv]
+			lines += [f"vn {x:.4f} {y:.4f} {z:.4f}" for x, y, z in n]
+			lines += [f"f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}" for a, b, c in (t + base)]
+			base += len(p)
+		obj.write_text("\n".join(lines) + "\n")
+		mt = []
+		for mat, tex in sorted(mats):
+			mt += [f"newmtl {mat}", "Kd 1 1 1"]
+			if tex in tex_files:
+				mt += [f"map_Kd {tex_files[tex]}"]
+				if zone.textures[tex].rgba[..., 3].min() < 128:
+					mt += [f"map_d {tex_files[tex]}"]
+			mt.append("")
+		mtl.write_text("\n".join(mt))
+		written.extend([obj, mtl])
+
+	if prefabs:
+		used: set[str] = set()
+		for name, meshes in zone.prefabs.items():
+			stem = _safe(name)
+			while stem.lower() in used:
+				stem += "_"
+			used.add(stem.lower())
+			write(stem, list(_zone_geometry(meshes, np.eye(4), rot, k)))
+	else:
+		parts = []
+		for inst in zone.placed():
+			parts += list(_zone_geometry(zone.prefabs[inst.name], inst.matrix, rot, k))
+		if not parts:
+			raise ValueError(f"{path.name}: no placement names a prefab in this DAT")
+		write(dat_stem(path), parts)
+	return written
 
 # -- sounds -----------------------------------------------------------------------
 

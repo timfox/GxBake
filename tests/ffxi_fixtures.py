@@ -188,3 +188,64 @@ def write(path: Path, data: bytes) -> Path:
 	path.parent.mkdir(parents=True, exist_ok=True)
 	path.write_bytes(data)
 	return path
+
+
+# -- zones ----------------------------------------------------------------------
+
+
+def mmb(name: str, pieces: list[list[tuple]], tri_list: bool = False, seed: int = 0x37) -> bytes:
+	"""A scrambled MMB body. pieces: lists of models (texture, positions, normals, uvs, indices);
+	tri_list picks 48-byte vertices and triangle lists, else 36-byte vertices and strips."""
+	from gxbake.core import ffxi
+
+	stride = 48 if tri_list else 36
+	head = bytearray(16)
+	head[3], head[4], head[5], head[6], head[7] = 5, 2 if tri_list else 0, seed, 0xFF, 0xFF
+	table_end = 64 + 4 * (len(pieces) - 1)
+	blobs = []
+	for models in pieces:
+		b = struct.pack("<i6fi", len(models), 0, 0, 0, 0, 0, 0, 0)
+		for tex, pos, nrm, uv, idx in models:
+			b += tex.encode("latin-1").ljust(16, b" ")[:16] + struct.pack("<HH", len(pos), 0)
+			for i, p in enumerate(pos):
+				b += struct.pack("<3f", *p)
+				if stride == 48:
+					b += struct.pack("<3f", 0, 0, 0)
+				b += struct.pack("<3f", *nrm[i]) + bytes([200, 150, 100, 255]) + struct.pack("<2f", *uv[i])
+			b += struct.pack("<I", len(idx)) + struct.pack(f"<{len(idx)}H", *idx)
+			if len(idx) % 2:
+				b += b"\0\0"
+		blobs.append(b)
+	offsets, at = [], table_end
+	for b in blobs:
+		offsets.append(at)
+		at += len(b)
+	header = name.encode("latin-1").ljust(16, b"\0") + struct.pack("<i6fI", len(pieces), 0, 0, 0, 0, 0, 0, offsets[0])
+	body = bytearray(bytes(head) + header + b"".join(struct.pack("<I", o) for o in offsets[1:]) + b"".join(blobs))
+	n = len(body)
+	body[0:3] = bytes([n & 0xFF, (n >> 8) & 0xFF, n >> 16])
+	ffxi._mmb_swap(body)	# scramble: the reverse order of unscrambling
+	ffxi._mmb_xor(body)
+	return bytes(body)
+
+
+def mzb(records: list[tuple[str, tuple, tuple, tuple]], seed: int = 0x5A) -> bytes:
+	"""A scrambled MZB body. records: (prefab name, translation, rotation radians xyz, scale xyz)."""
+	from gxbake.core import ffxi
+
+	body = bytearray(32)
+	for name, t, r, s in records:
+		body += name.encode("latin-1").ljust(16, b"\0") + struct.pack("<9f", *t, *r, *s) + b"\0" * 48
+	n = len(body)
+	body[0:4] = bytes([n & 0xFF, (n >> 8) & 0xFF, n >> 16, 0x1B])
+	c = len(records)
+	body[4:8] = bytes([c & 0xFF, (c >> 8) & 0xFF, c >> 16, seed])
+	return ffxi._mzb_unscramble(bytes(body))	# the scramble is its own inverse
+
+
+def quad_strip(size: float = 1.0, z: float = 0.0):
+	"""A square in the FFXI x/z plane facing up (-y), as a strip: positions, normals, uvs, indices."""
+	pos = [(-size, z, -size), (size, z, -size), (-size, z, size), (size, z, size)]
+	nrm = [(0.0, -1.0, 0.0)] * 4
+	uv = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+	return pos, nrm, uv, [0, 1, 2, 3]
