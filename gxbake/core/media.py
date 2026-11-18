@@ -34,7 +34,14 @@ GCPCM_RATE = 48000
 GCPCM_CHANNELS = 2
 GCPCM_WIDTH = 2
 
-VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm", ".mpg", ".mpeg", ".wmv", ".bik"}
+# Anything FFmpeg demuxes works (gxbake video takes any file); these are the ones picked up by extension.
+VIDEO_EXTENSIONS = {
+	".avi", ".mp4", ".m4v", ".mkv", ".mov", ".qt", ".webm", ".wmv", ".asf", ".flv", ".f4v", ".ogv", ".ogm",
+	".mpg", ".mpeg", ".m1v", ".m2v", ".mpv", ".vob", ".ts", ".m2ts", ".mts", ".3gp", ".3g2", ".mxf", ".dv",
+	".nut", ".y4m", ".ivf", ".rm", ".rmvb", ".divx", ".h264", ".264", ".h265", ".hevc", ".vc1",
+	# game movie formats FFmpeg reads
+	".bik", ".bk2", ".smk", ".roq", ".mve", ".vqa", ".str", ".xmv", ".fmv", ".cin", ".dpg", ".mobi",
+}
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".voc", ".opus", ".m4a", ".wma",
 	".vsnd_c"}	# Source 2 sounds become sound/<name>.wav (vsnd.py)
 

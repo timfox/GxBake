@@ -51,6 +51,14 @@ gxbake convert src/valve -o staged/valve --cache ~/.cache/gxbake \
 	--fit-world --mdl-anim-step 2
 ```
 
+Videos become `.gcvid` + `.gcpcm` for the port's current player. For THP movies
+(the SDK format, far smaller, needs a THP player in the port: see
+[video.md](video.md)), add `--video-format thp`, or convert them on their own:
+
+```sh
+gxbake video src/movies/*.avi -o staged/valve/media --max 448x336 --max-kbps 4000
+```
+
 - `--fit-world` trims each map's texture pack until it fits the MEM1 pool (see step 5).
 - `--mdl-anim-step 2` halves the animation frames in every `gc_studio` model (see step 6).
 - `--cache` keeps encoded CMPR between runs, so a second run only encodes what changed.

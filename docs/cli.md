@@ -34,6 +34,7 @@ build or CI job.
 | [`adpcm`](#gxbake-adpcm) | encode WAV or .gcpcm audio as GameCube DSP ADPCM (.dsp, one per channel) |
 | [`yaz0`](#gxbake-yaz0) | Yaz0-compress files (Nintendo LZ), or decompress with -d |
 | [`sky`](#gxbake-sky) | turn a panorama, cubemap cross/strip, photo or six faces into the port's sky sides |
+| [`video`](#gxbake-video) | convert any video FFmpeg reads to a THP movie (the GameCube SDK's format: JPEG + DSP ADPCM) |
 | [`pack`](#gxbake-pack) | list, extract, build and edit .gct texture packs |
 | [`gui`](#gxbake-gui) | open the desktop app |
 
@@ -51,11 +52,11 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     [--panda-yaw PANDA_YAW] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW] [--rs-entry KIND:ID]
     [--ffxi-scale FFXI_SCALE] [--ffxi-yaw FFXI_YAW] [--ffxi-skeleton DAT] [--ffxi-music-wav]
     [--ff7-scale FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale FF7_BATTLE_SCALE] [--video-width
-    VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool
-    WT_POOL] [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
-    [--map-disp-power {0,1,2,3,4}] [--map-vis-merge LEAVES] [--no-map-hulls] [--no-map-shadows]
-    [--no-map-props] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV]
-    [--sky-exposure SKY_EXPOSURE]
+    VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--video-format
+    {gcvid,thp,both}] [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK]
+    [--map-texture-max MAP_TEXTURE_MAX] [--map-disp-power {0,1,2,3,4}] [--map-vis-merge LEAVES]
+    [--no-map-hulls] [--no-map-shadows] [--no-map-props] [--cache CACHE] [--no-sky-detect]
+    [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |
@@ -98,6 +99,7 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--video-width VIDEO_WIDTH` | `320` | GCVID frame width |
 | `--video-height VIDEO_HEIGHT` | `240` | GCVID frame height |
 | `--video-fps VIDEO_FPS` | `15` | GCVID frame rate |
+| `--video-format {gcvid,thp,both}` | `gcvid` | videos become .gcvid + .gcpcm (the port's player today), .thp (the SDK movie format; see gxbake video), or both |
 | `--fit-world` |  | trim world texture packs' top mips until they fit the engine's MEM1 pool |
 | `--wt-pool WT_POOL` | `448K` | pool size for --fit-world |
 | `--wad-dir WAD_DIR` |  | extra WAD search folder (repeatable) |
@@ -440,6 +442,37 @@ gxbake sky inputs [inputs ...] --output OUTPUT [--name NAME] [--layout
 | `--size SIZE` | `128` | side size; the port loads only 128 |
 | `--env SIZE` |  | also write gfx/env/<name><side>.tga at SIZE (PC builds, the disc builder) |
 | `--preview PNG` |  | write the decoded sides as a cross to check seams and orientation |
+
+## `gxbake video`
+
+Convert any video FFmpeg reads to a THP movie (the GameCube SDK's format: JPEG + DSP ADPCM).
+
+```
+gxbake video inputs [inputs ...] --output OUTPUT [--max WxH] [--size WxH] [--stretch] [--fps FPS]
+    [--max-fps MAX_FPS] [--quality QUALITY] [--max-kbps MAX_KBPS] [--max-size SIZE] [--min-quality
+    MIN_QUALITY] [--audio-rate {32000,48000}] [--audio-track AUDIO_TRACK] [--no-audio] [--start
+    START] [--duration DURATION] [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `inputs` … |  | video files (any codec and container FFmpeg reads) |
+| `-o OUTPUT`, `--output OUTPUT` |  | **Required.** NAME.thp for one input, otherwise a folder (one <stem>.thp each) |
+| `--max WxH` | `512x448` | fit the picture inside this box, keeping the aspect; sides round down to multiples of 16, at most 640x480 |
+| `--size WxH` |  | exact size instead (multiples of 16); letterboxed unless --stretch |
+| `--stretch` |  | with --size, stretch to fill instead of letterboxing |
+| `--fps FPS` |  | frame rate (default: the source's, halved or thirded to --max-fps) |
+| `--max-fps MAX_FPS` | `30.0` | highest frame rate kept from the source |
+| `--quality QUALITY` | `80` | JPEG quality 1-100 |
+| `--max-kbps MAX_KBPS` |  | cap the video at this many kbit/s: frames over it drop quality, down to --min-quality |
+| `--max-size SIZE` |  | cap the whole file (e.g. 20M); sets the per-frame cap from the length |
+| `--min-quality MIN_QUALITY` | `10` | lowest JPEG quality a capped frame may drop to |
+| `--audio-rate {32000,48000}` | `32000` | audio sample rate (stereo DSP ADPCM) |
+| `--audio-track AUDIO_TRACK` |  | which audio stream of the source |
+| `--no-audio` |  | video only |
+| `--start START` |  | start this many seconds in |
+| `--duration DURATION` |  | convert this many seconds (0: to the end) |
+| `--json` |  | print the results as JSON |
 
 ## `gxbake pack`
 

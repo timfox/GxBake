@@ -137,3 +137,25 @@ def test_extract_lumps_action(tmp_path):
 	w.extract_lumps()
 	assert (tmp_path / "out/lumps/wd_demo_gcd/lightmaps/atlas.png").is_file(), w.log_view.toPlainText()
 	w.close()
+
+
+def test_video_settings_and_button():
+	from gxbake.gui.main_window import FILE_FILTER, MainWindow
+
+	app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+	w = MainWindow()
+	w.qsettings.clear()
+	panel = w.settings_panel
+	panel.vformat.setCurrentText("thp")
+	panel.thp_q.setValue(65)
+	panel.thp_kbps.setValue(1500)
+	s = w.project.settings
+	assert (s.video_format, s.thp_quality, s.thp_max_kbps) == ("thp", 65, 1500.0)
+	assert s.thp_options().max_kbps == 1500.0
+	assert w.a_video.isEnabled()
+	for group in FILE_FILTER.split(";;"):	# no glob twice in one filter
+		globs = group[group.find("(") + 1:group.rfind(")")].split()
+		assert len(globs) == len(set(globs)), group[:40]
+	assert "*.thp" in FILE_FILTER and "*.bik" in FILE_FILTER
+	w.close()
+	app.processEvents()

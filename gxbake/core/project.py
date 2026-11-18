@@ -17,7 +17,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, budget, ff7, ffxi, gct, goldsrc, images, media, models, panda, particles, quake, rose, runescape, skybox, sprite, studio, studio_slim
+from . import audit, budget, ff7, ffxi, gct, goldsrc, images, media, models, panda, particles, quake, rose, runescape, skybox, sprite, studio, studio_slim, thp
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -42,6 +42,7 @@ class Kind(str, Enum):
 	CMP = "GX CMPR (raw)"
 	GCVID = "GCVID video"
 	GCPCM = "GCPCM audio"
+	THP = "THP movie"
 	GCMAP = "GX map bake"	# media/wd_<map>.gcd, wd_<map>_lf.gcd, <map>.gcmeta (gxbake lumps)
 	UNKNOWN = "Unsupported"
 
@@ -103,6 +104,7 @@ def detect_kind(path: Path) -> Kind:
 		".cmp": Kind.CMP,
 		".gcvid": Kind.GCVID,
 		".gcpcm": Kind.GCPCM,
+		".thp": Kind.THP,
 		".gcd": Kind.GCMAP,
 		".gcmeta": Kind.GCMAP,
 	}.get(ext, Kind.UNKNOWN)
@@ -152,6 +154,13 @@ class Settings:
 	video_fps: int = media.GCVID_FPS_NUM
 	video_still_frame: int = media.GCVID_STILL_FRAME_INDEX
 	video_audio: bool = True
+	video_format: str = "gcvid"	# convert videos to: gcvid (the port's player today), thp, or both
+	thp_box_width: int = thp.DEFAULT_BOX[0]	# THP: fit inside this box, keeping the aspect
+	thp_box_height: int = thp.DEFAULT_BOX[1]
+	thp_max_fps: float = thp.DEFAULT_MAX_FPS
+	thp_quality: int = thp.DEFAULT_QUALITY
+	thp_max_kbps: float = 0.0	# THP: per-frame video cap (0 = quality only)
+	thp_audio_rate: int = thp.DEFAULT_AUDIO_RATE
 	wt_fit: bool = False	# trim world packs' top mips until they fit the engine's MEM1 pool
 	wt_pool: int = 448 * 1024	# that pool (GC_WT_POOL_BYTES)
 	wad_dirs: list[str] = field(default_factory=list)
@@ -183,6 +192,10 @@ class Settings:
 
 		return MapOptions(max_texture=self.map_texture_max, disp_power=self.map_disp_power, props=self.map_props,
 			hulls=self.map_hulls, shadows=self.map_shadows, vis_merge=self.map_vis_merge, search=[Path(p) for p in self.source_dirs])
+
+	def thp_options(self) -> thp.ThpOptions:
+		return thp.ThpOptions(box_width=self.thp_box_width, box_height=self.thp_box_height, max_fps=self.thp_max_fps,
+			quality=self.thp_quality, max_kbps=self.thp_max_kbps, audio=self.video_audio, audio_rate=self.thp_audio_rate)
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -547,6 +560,8 @@ class Project:
 				d.update(media.read_gcvid_header(asset.path.read_bytes()[:64]))
 			elif asset.kind == Kind.GCPCM:
 				d.update(media.read_gcpcm_header(asset.path.read_bytes()[:16]))
+			elif asset.kind == Kind.THP:
+				d.update(thp.read_info(asset.path.read_bytes()[:0x100]).as_dict())
 			elif asset.kind == Kind.WAD:
 				d["Textures"] = len(goldsrc.wad_miptex(asset.path))
 				pics = goldsrc.wad_pictures(asset.path)
@@ -699,6 +714,8 @@ class Project:
 			else:
 				info["Lean"] = "not applicable (multi-frame, or size not divisible by scale)"
 			return Preview(asset.name, src, res_frames[0] if res_frames else None, info)
+		if k == Kind.VIDEO and s.video_format == "thp":
+			return self._thp_preview(asset)
 		if k == Kind.VIDEO:
 			src = media.video_still(asset.path)
 			small = media.video_still(asset.path, width=s.video_width, height=s.video_height)
@@ -710,7 +727,32 @@ class Project:
 		if k == Kind.GCVID:
 			data = asset.path.read_bytes()
 			return Preview(asset.name, None, media.gcvid_first_frame(data), media.read_gcvid_header(data))
+		if k == Kind.THP:
+			data = asset.path.read_bytes()
+			return Preview(asset.name, None, thp.frame_rgba(data, 0), thp.read_info(data).as_dict())
 		return Preview(asset.name, info=self.info(asset))
+
+	def _thp_preview(self, asset: Asset) -> Preview:
+		"""The source, and its frame at the THP size and JPEG quality (4:2:0, as the player decodes it)."""
+		import io
+
+		from PIL import Image
+
+		opts = self.settings.thp_options()
+		src = media.video_still(asset.path)
+		if src is None:
+			return Preview(asset.name, None, None, {"Note": "ffmpeg not found; install it or set GXBAKE_FFMPEG"})
+		info = thp.probe(asset.path)
+		w, h = thp.plan_size(info, opts)
+		small = media.video_still(asset.path, width=w, height=h)
+		jpg = thp.encode_jpeg(np.ascontiguousarray(small[..., :3]), opts.quality)
+		with Image.open(io.BytesIO(thp.to_jpeg(jpg))) as img:
+			res = np.asarray(img.convert("RGBA")).copy()
+		fps = thp.plan_fps(info.fps, opts)
+		return Preview(asset.name, src, res, {
+			"Source": f"{info.video_codec} {info.width}x{info.height} @ {info.fps:.3f} fps, {info.duration:.1f} s",
+			"Target": f"THP {w}x{h} @ {fps:.3f} fps, JPEG q{opts.quality}",
+			"Frame bytes": f"{len(jpg):,} (≈{len(jpg) * fps * 8 / 1000:.0f} kbit/s)"})
 
 	def imported_model(self, asset: Asset) -> "tuple[models.ImportedModel, bytes]":
 		"""Assimp import + baked studio MDL, cached per file and model settings."""
@@ -1016,15 +1058,20 @@ class Project:
 						lean = raw
 					emit(asset, f"sprites/{asset.path.stem.lower()}.spr", lean)
 				elif asset.kind == Kind.VIDEO:
-					rel = f"media/{stem}.gcvid"
-					media.build_gcvid_companion(
-						asset.path, out_dir / rel,
-						width=s.video_width, height=s.video_height,
-						fps_num=s.video_fps, fps_den=1,
-						still_frame_index=s.video_still_frame, rgb565=True, log=log)
-					emit_file(asset, rel)
-					if s.video_audio and media.build_gcpcm_companion(asset.path, out_dir / f"media/{stem}.gcpcm", log=log):
-						emit_file(asset, f"media/{stem}.gcpcm")
+					if s.video_format in ("thp", "both"):
+						res = thp.convert(asset.path, out_dir / f"media/{stem}.thp", s.thp_options(), log=log)
+						asset.warnings += res.warnings
+						emit_file(asset, f"media/{stem}.thp")
+					if s.video_format in ("gcvid", "both"):
+						rel = f"media/{stem}.gcvid"
+						media.build_gcvid_companion(
+							asset.path, out_dir / rel,
+							width=s.video_width, height=s.video_height,
+							fps_num=s.video_fps, fps_den=1,
+							still_frame_index=s.video_still_frame, rgb565=True, log=log)
+						emit_file(asset, rel)
+						if s.video_audio and media.build_gcpcm_companion(asset.path, out_dir / f"media/{stem}.gcpcm", log=log):
+							emit_file(asset, f"media/{stem}.gcpcm")
 				elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() == ".vsnd_c":
 					from . import vsnd
 
