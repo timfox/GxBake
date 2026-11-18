@@ -20,11 +20,12 @@ loads. GxBake checks against those windows:
 
 ## 1. Get the files out of their archives
 
-Quake and GoldSrc `.pak`, Source `.vpk` and `.pk3` archives unpack with `extract`:
+Quake and GoldSrc `.pak`, Source `.vpk`, `.pk3` and Panda3D `.mf` archives unpack with `extract`:
 
 ```sh
 gxbake extract valve/pak0.pak -o src/valve
 gxbake extract hl2/hl2_misc_dir.vpk -o src/hl2 --match 'models/*' --match 'materials/*'
+gxbake extract toontown/phase_*.mf -o src/toontown
 ```
 
 ## 2. Look before converting
@@ -53,6 +54,9 @@ gxbake convert src/valve -o staged/valve --cache ~/.cache/gxbake \
 - `--fit-world` trims each map's texture pack until it fits the MEM1 pool (see step 5).
 - `--mdl-anim-step 2` halves the animation frames in every `gc_studio` model (see step 6).
 - `--cache` keeps encoded CMPR between runs, so a second run only encodes what changed.
+
+New models can come from any format Assimp reads, and USD stages (`.usda`, `.usdz`)
+come in through FreeUSD once the `usd` extra is installed; see [USD import](usd.md).
 
 ### Skies
 

@@ -226,6 +226,13 @@ def looks_like_panorama(path: Path) -> bool:
 	path = Path(path)
 	if path.suffix.lower() == ".hdr":
 		return True
+	if path.name.lower().endswith(".vtex_c"):
+		try:
+			from . import vtex
+
+			return vtex.load(path).cube
+		except (OSError, ValueError):
+			return False
 	try:
 		from PIL import Image
 
@@ -415,6 +422,18 @@ def open_source(paths: list[Path], opts: SkyOptions | None = None, name: str | N
 		raise ValueError(f"unknown layout {layout!r} (one of {', '.join(LAYOUTS)})")
 	notes: list[str] = []
 	work = SKY_SIZE * max(1, opts.supersample)	# texels per 90° the renderer will ask for
+
+	if len(paths) == 1 and paths[0].name.lower().endswith(".vtex_c"):
+		from . import s2map, vtex
+
+		tex = vtex.load(paths[0])
+		if tex.cube:
+			sample = s2map.cube_face_sampler([_shrink(tex.rgba(face=f)[..., :3], work) for f in range(6)])
+			turn = math.radians(opts.yaw - DEFAULT_YAW)
+			c, s_ = math.cos(turn), math.sin(turn)
+			rot = np.array([[c, -s_, 0.0], [s_, c, 0.0], [0.0, 0.0, 1.0]])
+			stem = name or re.sub(r"[^a-z0-9_]+", "_", paths[0].name.split(".")[0].lower()).strip("_") or "sky"
+			return SkySource("cubemap", stem, lambda d, _s=sample, _r=rot: _s(np.asarray(d) @ _r), notes)
 
 	faces = None
 	if len(paths) > 1 or paths[0].is_dir() or layout == "faces":

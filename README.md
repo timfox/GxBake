@@ -10,14 +10,23 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | --- | --- | --- |
 | PNG / TGA / BMP / JPG / DDS / TIFF / PSD / PCX / QOI, Source `.vtf`, Quake II `.wal`, Blizzard `.blp` | `media/<pack>.gct`: CMPR, power-of-two, mip chain, 1-bit alpha | `gx_cmpr_encode_blocks`, `wt_encode` mip loop |
 | Skybox (`<name>rt/bk/lf/ft/up/dn`) | `media/sky_<name><side>.cmp`: 128² CMPR, 8 KiB per side | `gx_cmpr_encode`, `build_sky_cmpr_overlays` |
-| Panoramas (equirectangular, Radiance `.hdr`), cubemap crosses and strips, six named faces, flat photos | the same six `media/sky_<name><side>.cmp`, rendered in the engine's orientation | `skybox.build` |
-| WAD3, Quake WAD2 | `media/<wad>.gct` | `wt_read_miptex`, `wt_encode` |
+| Panoramas (equirectangular, Radiance `.hdr`), cubemap crosses and strips, six named faces, flat photos, Source 2 cubemap `.vtex_c` | the same six `media/sky_<name><side>.cmp`, rendered in the engine's orientation | `skybox.build` |
+| WAD3 (miptex, plus the qpic pictures and console fonts of gfx.wad and fonts.wad, index 255 see-through), Quake WAD2 | `media/<wad>.gct` | `wt_read_miptex`, `wt_encode` |
 | BSP v30, Quake BSP v29 | `media/wt_<map>.gct` (world textures resolved through the map's WADs, or embedded with the Quake palette) and its sky | `build_world_texture_packs`, `wt_read_wads` |
+| Source BSP v19–21 and 25 (`VBSP`) | `maps/<map>.bsp` rebuilt as BSP30, plus its `media/wt_<map>.gct` and `media/sky_<sky>*.cmp` | `source_map.convert` |
+| Source 2 map (`<map>.vmap_c` or `maps/<map>/world.vwrld_c`) | the same `maps/<map>.bsp`, world pack and sky | `s2map.convert` |
 | Studio `.mdl` | `gc_studio/<name>.mdl` (lean mesh) and `gc_studio/<name>t.mdl` (downsampled skins) | `lean_studio_mesh_bytes`, `lean_studio_tex_companion_bytes` |
 | 3D models via Assimp (OBJ, FBX, glTF/GLB, DAE, 3DS, Blend, MD2/MD3/MD5, IQM, B3D, SMD, MS3D and ~25 more) | `models/<name>.mdl` (studio MDL v10 with bones, sequences and paletted skins), then the same `gc_studio/<name>.mdl` + `<name>t.mdl` as a studio model | `models.import_model`, `models.build_studio_mdl`, then the two functions above |
+| USD stages via FreeUSD (`.usda`, `.usd`, `.usdz`; skinned meshes, UsdPreviewSurface textures, UsdSkel animation) | the same `models/` and `gc_studio/` outputs as an Assimp model | `usd.import_usd`, then `models.build_studio_mdl` |
 | Source `.mdl` (v44–49) + `.vvd` + `.vtx`, Quake `.mdl` | the same `models/` and `gc_studio/` outputs as an Assimp model | `source_mdl.import_source`, `quake.import_alias`, then `models.build_studio_mdl` |
+| Source 2 `.vmdl_c` / `.vmesh_c` (with their `.vmat_c`, `.vtex_c` and embedded or `.vagrp_c` animations) | the same `models/` and `gc_studio/` outputs | `vmdl.import_vmdl`, `vanim.model_sequences`, then `models.build_studio_mdl` |
+| DMX model sources (`.dmx`, binary 1–5 and 9 or keyvalues2, from Blender Source Tools, the SFM or ModelDoc), with their joints, skin weights and `animationList` clips | the same `models/` and `gc_studio/` outputs (each vertex follows its heaviest joint; flexes are dropped) | `dmx_model.import_dmx`, then `models.build_studio_mdl` |
+| Source 2 `.vtex_c` | an entry in `media/<pack>.gct`, like any image | `vtex.load`, then as an image |
+| Source 2 `.vsnd_c` (PCM, MS-ADPCM, MP3) | `sound/<name>.wav`: Microsoft PCM at up to 22050 Hz, loop kept as a cue point | `vsnd.to_port_wav` |
 | Sprite `.spr` (Half-Life, Quake), Quake II `.sp2` | `sprites/<name>.spr`: a Half-Life sprite, downsampled, keeping thin alpha-test strokes | `quake.hl_sprite_bytes`, `lean_hl_spr_bytes` |
+| Particle systems: Source `.pcf`, Source 2 `.vpcf_c` | `sprites/<system>.spr` for each system that renders a texture: a parallel sprite from its spritecard (the sprite sheet's first sequence, or the VTF's frames), additive when the material is, index-alpha for soft smoke, alpha-test otherwise. Emitters and operators have no GoldSrc equivalent | `particles.convert` |
 | ROSE Online `.zms` meshes, `.zsc` object lists, `.chr` character lists (with `.zmd` skeletons, `.zmo` motions, `.dds` textures) | the same `models/` + `gc_studio/` studio models, one per object or character | `rose.import_rose`, then as above |
+| Panda3D `.egg`, `.bam` (and `.pz`), Toontown actors and props (with their animation files, `.jpg` + `_a.rgb` textures); `.pandactor` multi-part actors | the same `models/` + `gc_studio/` studio models | `panda.import_panda`, then as above |
 | RuneScape caches: OSRS / RS2 JS5 (`main_file_cache.dat2` + `.idx*`) and 2004-era (`main_file_cache.dat`) | the same `models/` + `gc_studio/` studio models, one per NPC (or model), with face colours baked into a palette skin and label-group animations as bones | `runescape.import_runescape`, then as above |
 | Final Fantasy XI (PC): ROM `.DAT` models (NPCs, monsters, equipment, weapons), `.ffximdl` manifests, `.spw` / `.bgw` sounds, zone DATs (MZB/MMB) | studio models with skeleton and motions; sound effects as fitted `sound/ffxi/<name>.wav`, music as `media/<name>.gcpcm`; zones as OBJ + PNG (`gxbake ffxi --obj`) for a map editor | `ffxi.import_ffxi`, `ffxi.sound_to_wav`, `ffxi.zone_to_obj` |
 | Final Fantasy VII (PC): field models (`.hrc` + `.rsd` + `.p` + `.tex`, `.a` animations), `.ff7mdl` manifests, lone `.p` models, battle models (`<base>aa` skeletons with their parts, textures and `<base>da` animation packs); `.lgp` archives through `gxbake extract` | studio models, one per skeleton | `ff7.import_ff7` |
@@ -114,13 +123,45 @@ Studio skinning is rigid, so a vertex weighted between two bones would tear at t
 
 **VTF textures** (7.0–7.5): DXT1/3/5, ATI1N/ATI2N, the 8888/888/565/5551/4444 orders, I8/IA88/A8 and 16-bit float (tone-mapped). The largest mip of the first frame and face becomes a GCWT entry, and six `<name>rt/bk/lf/ft/up/dn.vtf` make a skybox.
 
+**Source maps** (`.bsp`, VBSP versions 19 to 21 and 25, as in Half-Life 2, Counter-Strike: Source, Team Fortress 2 and most mods) are rebuilt as the port's BSP30, so they load like any GoldSrc map:
+
+- Faces keep Source's own BSP tree (nodes, leafs, PVS); each face is split so no lightmap is wider than 16 luxels, and tool faces (nodraw, clip, trigger, hint and so on) are dropped. Sky faces are drawn by the port's sky, whose six sides come from `materials/skybox/<skyname>rt…dn`.
+- Displacements become triangles (at most 4 levels of detail; `--map-disp-power` lowers it) and are added to the leafs they sit in.
+- Lightmaps are resampled from Source's lightmap of each face (LDR when the map has it, else HDR), with every light style, and mapped from Source's display curve to GoldSrc's.
+- Each material's `$basetexture` is looked up in the map's pakfile, then the folders given with `--game-dir`, then the `*_dir.vpk` files in them. It is scaled to about one texel per world unit (at most 256 pixels by default, `--map-texture-max`) and quantized to an 8-bit miptex embedded in the BSP. `$alphatest` textures become `{` (masked) and water becomes `!`.
+- Clip hulls 1 to 3 are built from the player-solid brushes, expanded to each hull's size with bevels, and the displacements get thin collision wedges under their surface. `--no-map-hulls` skips this for a quick look.
+- Entities pass through. Team spawns become `info_player_deathmatch` (and an `info_player_start` is added), and each `prop_static` becomes a `cycler_sprite` naming `models/<name>.mdl`, which you convert from the Source model (`--no-map-props` leaves them out).
+
+- Overlays (`info_overlay`) become decal faces laid half a unit above the face they sit on, lit from that face's lightmap.
+
+Strata Source's version 25 (Momentum Mod), with its 32-bit indices and float bounds, is read too (its overlays are not yet).
+
+Not carried over: detail props (sprite grass), decals placed by `infodecal`, cubemaps, water reflections, areaportals and occluders. Detail brushes collide in hulls 1 to 3 but not in hull 0, because Source keeps them out of the render tree. Big maps can exceed BSP30's 32767 clipnodes, which the converter reports.
+
+## Source 2 assets
+
+GxBake reads Source 2's compiled resources (the `_c` files inside a Source 2 `.vpk`, which `gxbake extract` unpacks) without any Valve tools. The container, KeyValues3 (binary versions 1 to 5, the older VKV3 header and the text form) and the older NTRO-described blocks are all read; LZ4 and Valve's block compression are decoded in Python, and Zstandard needs Python 3.14 or `pip install gxbake[valve]`.
+
+- **Models** (`.vmdl_c`, or a lone `.vmesh_c`): the skeleton, LOD 0 of the default mesh group (embedded meshes or `.vmesh_c` files next to it), meshoptimizer and Zstandard vertex/index buffers, packed normals, and up to eight weights per vertex reduced to the two heaviest, which get helper bones like Source 1 models. Each draw call's `.vmat_c` is followed to its colour texture (`g_tColor` and friends); tool materials are skipped. Animations come from the model's own blocks, from the `.vagrp_c` groups it lists and the `.vanim_c` files they name, decoded segment by segment (every compressed decoder VRF knows) and sampled at **Animation fps**. Delta (additive) animations are skipped, and a sequence too long for studio's 16-bit animation offsets is halved in frame rate until it fits. Resource paths are looked up under the nearest folder above the file that holds `materials/`, `models/`, `maps/` or `sounds/`, case-insensitively.
+- **Textures** (`.vtex_c`): DXT1/DXT5, BC4/BC5 (ATI1N/ATI2N), BC6H (through Pillow, clamped to LDR), BC7, ETC2, ETC2_EAC, R11 and RG11 EAC, the 8-bit orders, I8/IA88/A8, 16- and 32-bit float (tone-mapped), and textures stored as PNG, JPEG or WebP; YCoCg-encoded colour and compressed mips are handled. The top mip goes into the pack; a cubemap becomes a sky instead (its six faces rendered into the port's sides).
+- **Sounds** (`.vsnd_c`): 8/16-bit PCM and Microsoft ADPCM decode directly, MP3 through `ffmpeg`. The result is resampled to 22050 Hz at most and written as `sound/<name>.wav`; `gxbake sfx` then fits it under the port's per-file cap.
+
+- **Maps** (`<map>.vmap_c`, or `maps/<map>/world.vwrld_c` with its `worldnodes/` and `entities/`) become BSP30 like Source 1 maps, but a Source 2 map has no BSP tree, brushes or lightmaps the port can use, so GxBake builds them:
+  - Every scene object and aggregate fragment of the world nodes is placed in world space (LOD 0, tool materials dropped). Coplanar neighbouring triangles with the same texture mapping are merged into convex faces and cut at 16 luxels; texture vectors come from the mesh UVs, with textures scaled to about a texel per unit (`--map-texture-max`).
+  - The tree is an axis-aligned split of the faces into empty leafs, all visible from each other.
+  - Collision comes from `world_physics` (convex hulls become brushes, triangle meshes become thin slabs under each face; trigger and NPC-clip shapes are skipped), or from the render faces when there is none. At most 4000 pieces are kept, largest first.
+  - Light is recomputed per luxel from `light_environment`, the point and spot lights and an ambient term, with shadows traced through the collision (`--no-map-shadows` skips the tracing). Source 2's own lightmaps are not read.
+  - Entity lumps (KeyValues3 and the older hashed binary records) are read. Brush entities whose model lives under `maps/<map>/entities/` become inline models `*N` with their own faces and hulls (triggers keep only their bounds), props become `cycler_sprite` entities naming `models/<name>.mdl`, spawns are adapted as for Source 1, and the `env_sky` cubemap is rendered into the port's six sky sides.
+
+Not converted yet: Source 2 lightmaps and light probes, water volumes, decals and overlays, physics props, morphs, cloth, bodygroups other than the default, and animation-graph (AG2) clips. Readers follow [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 **Quake**: alias models (`.mdl`, IDPO v6) convert their first frame and first skin, since studio models can't morph vertices (the inspector says how many frames there were). BSP v29 world textures and WAD2 miptex carry no palette, so GxBake reads `gfx/palette.lmp` from the game folder or from a `pak*.pak` there. Quake sprites (v1) become Half-Life sprites with that palette and index 255 transparent.
 
 **Quake II**: `.wal` textures use the palette in `pics/colormap.pcx`, and `.sp2` sprites become Half-Life sprites built from their PCX frames.
 
 Without the palette files, a greyscale ramp is used and the asset warns. Neither palette is shipped with GxBake, since both are game data.
 
-**Archives.** Game data usually sits in `.pak`, `.vpk` or `.pk3` files. `gxbake extract pak0.pak -o unpacked` unpacks one (`--match 'models/*'` to pick), then convert the folder. For Source, pass the `_dir.vpk`; its numbered `_000.vpk` chunks are read from beside it.
+**Archives.** Game data usually sits in `.pak`, `.vpk`, `.pk3` or (Panda3D) `.mf` files. `gxbake extract pak0.pak -o unpacked` unpacks one (`--match 'models/*'` to pick), then convert the folder. For Source, pass the `_dir.vpk`; its numbered `_000.vpk` chunks are read from beside it.
 ## ROSE Online models
 
 GxBake reads ROSE Online's own formats directly (Assimp knows none of them): ZMS meshes, ZMD skeletons, ZMO motions, ZSC object lists and LIST_NPC.CHR character lists, plus DDS textures through Pillow. Point it at an extracted client tree (the folder that holds `3DDATA`) or at single files:
@@ -134,6 +175,27 @@ Paths inside ZSC/CHR files are matched case-insensitively against the `3DDATA` r
 
 ROSE is Z-up like GoldSrc. Settings: **Units per metre** (39.37 keeps real size) and **Turn** (ROSE models face -Y; 90° makes them face GoldSrc's +X). Skinning is rigid (each vertex follows its heaviest bone), double-sided materials get back faces, and alpha-tested materials become masked skins. Not converted yet: per-part ZSC animations, UV/alpha ZMO tracks, effects, and maps; see [docs/rose-online.md](docs/rose-online.md).
 
+## Panda3D and Toontown models
+
+GxBake reads Panda3D's formats itself, so Toontown's actors and props convert like any other model. See [docs/panda3d.md](docs/panda3d.md) for the details.
+
+- **`.egg`** (Panda's text format) is parsed directly: vertex pools, polygons, textures, materials, characters, joints with vertex membership, and animation tables. `.egg.pz` (zlib) works too.
+- **`.bam`** (Panda's binary format, which is what Toontown ships) changes with every engine version, so Panda3D itself turns it into egg first: `pip install panda3d` (or `gxbake[panda]`), or a `bam2egg` program on `PATH` or named by `GXBAKE_BAM2EGG`. The standalone executable does not bundle Panda3D, so it needs `bam2egg`.
+- **`.mf`** multifiles (Toontown's `phase_3.mf`, `phase_4.mf`…) unpack with `gxbake extract phase_3.mf -o tt`. Encrypted members are skipped with a message.
+
+Animations sit in their own files, as Panda actors load them. Next to a model, GxBake adds the animation-only files that share its name: `panda-model.egg` takes `panda-walk.egg`, Toontown's `tt_a_chr_dgm_shorts_legs_1000.bam` takes `tt_a_chr_dgm_shorts_legs_neutral.bam`, `suitA-mod.bam` takes `suitA-walk.bam`, and `<model>@<clip>` works as for Assimp. In an extracted Toontown tree it also looks in the same folder under the other `phase_N` folders, because a model's animations are spread across phases. Animation files are not listed as assets of their own, and neither are the textures in `maps/` folders when a folder scan finds Panda models.
+
+Textures are found the way Panda's model-path finds them: Toontown eggs say `phase_3/maps/x.jpg` relative to the install root, so GxBake looks next to the model and in each folder above it, case-insensitively, and under another image extension if the file was converted. A texture's `alpha-file` (Toontown pairs `x.jpg` with `x_a.rgb`) becomes the skin's alpha, and SGI `.rgb` images also convert on their own.
+
+A **`.pandactor`** JSON file joins a multi-part actor, such as a toon's legs, torso and head, into one studio model. Each part's root joints hang from a joint of an earlier part, and every part's animations are found as above (or listed under `anims`). The file and joint names below show the shape; check them against your own data:
+
+```json
+{"parts": [{"model": "phase_3/models/char/tt_a_chr_dgm_shorts_legs_1000.bam"},
+           {"model": "phase_3/models/char/tt_a_chr_dgm_shorts_torso_1000.bam", "attach": "joint_hips"},
+           {"model": "phase_3/models/char/dogM_heads_1000.bam", "attach": "def_head"}]}
+```
+
+Settings: **Units per Panda unit** (12 by default, since Toontown's unit is a foot and GoldSrc's is an inch) and **Turn** (Panda models face +Y; −90° makes them face GoldSrc's +X). Lower LODs (`<SwitchCondition>` groups) and collision geometry (`<Collide>`, collision `<ObjectType>`s) are left out. Skinning is rigid, double-sided (`<BFace>`) polygons get back faces, and untextured polygons share one small skin of their colours. Not converted yet: Toontown's `.dna` street and building layouts, morph (blend shape) animation, texture transforms and multitexturing beyond the first texture.
 ## RuneScape caches
 
 GxBake reads RuneScape's client cache in place; nothing needs extracting first. Point it at `main_file_cache.dat2` (or the folder holding it and its `.idx` files):
@@ -160,6 +222,12 @@ Both read the PC releases. Nothing from either game is in the repository; the te
 - Expand a WAD, BSP, model, texture pack or skybox to preview each texture in it.
 - **Add Skybox…** makes the six sky sides from a panorama, cubemap cross or strip, photo, or six face images (see [Skies from panoramas](#skies-from-panoramas)).
 - The middle panes show the source next to the decoded GameCube result, with PSNR and byte counts in the **Inspector** tab.
+## USD import (FreeUSD)
+
+`.usda`, `.usd` and `.usdz` files are read with [FreeUSD](https://github.com/gopexllc/freeusd), a clean-room OpenUSD implementation, and baked into the same studio model as an Assimp import. GxBake opens and composes the stage (sublayers, references, payloads), then reads every visible mesh with its normals and UVs, the UsdPreviewSurface colour texture of each bound material (GeomSubsets included), UsdSkel skeletons with the skinned points on their heaviest joint, the SkelAnimation on the stage timeline, and xformOp animation of rigid meshes. `<model>@<clip>.usda` files beside the model add sequences. The stage's `upAxis` and `metersPerUnit` set the axis swap and scale, so a centimetre Y-up character arrives at its real size in inches; **Scale** multiplies on top.
+
+FreeUSD builds a C++ extension, so it is an optional extra: `pip install -e ".[usd]"` (needs CMake and a C++17 compiler; the first build takes several minutes). Binary `.usdc` layers, and `.usdz` packages that hold one, aren't decoded by FreeUSD yet: save them as USDA first (`usdcat -o model.usda model.usdc`). [docs/usd.md](docs/usd.md) lists what is read and the FreeUSD gaps GxBake works around.
+
 - The **Settings** tab holds the optimisation knobs: max texture size, mipmaps, alpha mode and cutoff, resize filter, packing, sky size, model skin size, sprite scale, GCVID size and frame rate, extra WAD search folders, and an encode cache. Changes re-render the preview.
 - **Convert Selected** or **Convert All** writes into the output folder. The status bar shows the total against the 24 MiB of main RAM.
 
@@ -196,3 +264,11 @@ The executable opens the app when run with no arguments or with file paths. With
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
 - `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, RuneScape caches in `rs_fixtures.py`, Final Fantasy files in `ffxi_fixtures.py` and `ff7_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`, and `source_bsp`, `source_map`, `bsp30`, and for Source 2 `vres`, `vents`, `s2map`, `kv3`, `kv3text`, `valvecomp`, `vtex`, `vsnd`, `vmdl`, `vanim`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, the native readers `source_mdl`, `vtf`, `quake`, `archives`, and `usd` for FreeUSD).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `rose`, `panda`, `archives`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`).
+- `gxbake/gui/`: the PySide6 front end.
+- `gxbake/cli.py`: the command line.
+- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, a Source map in `s1_fixtures.py`, DMX models and particle systems in `dmx_fixtures.py`, Source 2 resources in `s2_fixtures.py` and a Source 2 map in `s2map_fixtures.py`, RuneScape caches in `rs_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.

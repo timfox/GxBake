@@ -35,7 +35,13 @@ MODEL_EXTENSIONS = {
 	".nff", ".ter",
 }
 # Animation-only files, used as <model>@<clip>.<ext> clips.
+# Source 2 compiled models, read natively (vmdl.py)
+SOURCE2_MODEL_EXTENSIONS = {".vmdl_c", ".vmesh_c"}
+# Valve Datamodel model sources (Blender Source Tools, SFM), read natively (dmx_model.py)
+DMX_MODEL_EXTENSIONS = {".dmx"}
 CLIP_EXTENSIONS = MODEL_EXTENSIONS | {".bvh", ".md5anim"}
+# USD stages, read through FreeUSD (usd.py) rather than Assimp. Their clips are USD files too.
+USD_EXTENSIONS = {".usd", ".usda", ".usdc", ".usdz"}
 
 # GoldSrc / Xash studio limits (studio.h).
 MAXSTUDIOVERTS = 2048
@@ -94,6 +100,8 @@ class ModelOptions:
 	blend_bones: bool = True	# native Source import: helper bones stand in for two-bone weights
 	rose_scale: float = 39.37	# ROSE Online models: GoldSrc units per metre (scale above is for Assimp only)
 	rose_yaw: float = 90.0	# ROSE Online models face -Y; turn about Z so they face GoldSrc's +X
+	panda_scale: float = 12.0	# Panda3D models: GoldSrc units per Panda unit (Toontown's unit is a foot)
+	panda_yaw: float = -90.0	# Panda3D models face +Y; turn about Z so they face GoldSrc's +X
 	rs_scale: float = 0.35	# RuneScape models: GoldSrc units per model unit (128 units = one tile)
 	rs_yaw: float = 0.0	# RuneScape models: extra turn about Z (they are already turned to face +X)
 	ffxi_scale: float = 39.37	# Final Fantasy XI models: GoldSrc units per FFXI unit
@@ -244,9 +252,10 @@ def clip_base(path: Path) -> "Path | None":
 	if "@" not in path.stem:
 		return None
 	base = path.stem.split("@", 1)[0].lower()
+	exts = USD_EXTENSIONS if path.suffix.lower() in USD_EXTENSIONS else MODEL_EXTENSIONS
 	try:
 		for p in path.parent.iterdir():
-			if p.is_file() and p.stem.lower() == base and p.suffix.lower() in MODEL_EXTENSIONS:
+			if p.is_file() and p.stem.lower() == base and p.suffix.lower() in exts:
 				return p
 	except OSError:
 		pass
@@ -255,16 +264,24 @@ def clip_base(path: Path) -> "Path | None":
 
 def clip_files(path: Path) -> list[Path]:
 	"""Unity-style animation clips next to the model: <stem>@<clip>.<ext>."""
+	path = Path(path)
+	exts = USD_EXTENSIONS if path.suffix.lower() in USD_EXTENSIONS else CLIP_EXTENSIONS
 	try:
 		return sorted(p for p in path.parent.iterdir()
 			if p.is_file() and p.stem.lower().startswith(path.stem.lower() + "@")
-			and p.suffix.lower() in CLIP_EXTENSIONS)
+			and p.suffix.lower() in exts)
 	except OSError:
 		return []
 
 
 def native_format(path: Path) -> str | None:
-	"""'source' or 'quake' when GxBake reads the file itself instead of Assimp."""
+	"""'source', 'source2', 'dmx' or 'quake' when GxBake reads the file itself instead of Assimp."""
+	if Path(path).suffix.lower() in SOURCE2_MODEL_EXTENSIONS:
+		return "source2"
+	if Path(path).suffix.lower() == ".dmx":
+		from .dmx_model import is_dmx_model
+
+		return "dmx" if is_dmx_model(path) else None
 	try:
 		with Path(path).open("rb") as f:
 			head = f.read(8)
@@ -283,16 +300,31 @@ def native_format(path: Path) -> str | None:
 def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
 	"""Read a model into triangulated submeshes, bones and sequences.
 
-	Source (.mdl v44-49) and Quake (.mdl IDPO) models are parsed natively;
+	Source (.mdl v44-49), Source 2 (.vmdl_c, .vmesh_c), DMX model sources and
+	Quake (.mdl IDPO) models are parsed natively;
 	everything else goes through Assimp.
+	Source (.mdl v44-49) and Quake (.mdl IDPO) models are parsed natively,
+	USD stages go through FreeUSD, and everything else goes through Assimp.
 	"""
 	opts = opts or ModelOptions()
 	path = Path(path)
+	if path.suffix.lower() in USD_EXTENSIONS:
+		from .usd import import_usd
+
+		return import_usd(path, opts)
 	native = native_format(path)
 	if native == "source":
 		from .source_mdl import import_source
 
 		return import_source(path, opts)
+	if native == "source2":
+		from .vmdl import import_vmdl
+
+		return import_vmdl(path, opts)
+	if native == "dmx":
+		from .dmx_model import import_dmx
+
+		return import_dmx(path, opts)
 	if native == "quake":
 		from .quake import import_alias
 
@@ -835,7 +867,17 @@ def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> 
 	for sq in seqs:
 		align()
 		anim_offs.append(len(out))
-		out += _sk.encode_anim_block(sq.frames, rest, scales)
+		while True:
+			try:
+				out += _sk.encode_anim_block(sq.frames, rest, scales)
+				break
+			except ValueError:
+				if len(sq.frames) <= 2:
+					raise
+				# too long for the 16-bit stream offsets: halve the frame rate of this one sequence
+				sq.frames = sq.frames[::2]
+				sq.fps = sq.fps / 2.0
+				model.warnings.append(f"sequence {sq.name}: halved to {sq.fps:g} fps to fit studio offsets")
 	align()
 	seq_off = len(out)
 	for sq, anim_off in zip(seqs, anim_offs):

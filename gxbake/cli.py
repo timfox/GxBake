@@ -31,7 +31,12 @@ from .core.project import CONVERTIBLE, Project, Settings
 
 
 def _convert(args) -> int:
-	s = Settings(cache_dir=args.cache or "", wad_dirs=args.wad_dir or [])
+	s = Settings(cache_dir=args.cache or "", wad_dirs=args.wad_dir or [], source_dirs=args.game_dir or [])
+	s.map_hulls = not args.no_map_hulls
+	s.map_props = not args.no_map_props
+	s.map_texture_max = args.map_texture_max
+	s.map_disp_power = args.map_disp_power
+	s.map_shadows = not args.no_map_shadows
 	s.image.max_edge = args.max_edge
 	s.image.mipmaps = not args.no_mipmaps
 	s.image.alpha = args.alpha
@@ -54,6 +59,8 @@ def _convert(args) -> int:
 	s.rose_scale = args.rose_scale
 	s.rose_yaw = args.rose_yaw
 	s.rose_entries = args.rose_entry or []
+	s.panda_scale = args.panda_scale
+	s.panda_yaw = args.panda_yaw
 	s.rs_scale = args.rs_scale
 	s.rs_yaw = args.rs_yaw
 	s.rs_entries = args.rs_entry or []
@@ -594,8 +601,8 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--mdl-anim-step", type=int, default=1,
 		help="keep every Nth animation frame in gc_studio/<name>.mdl (seqgroup 0 only)")
 	c.add_argument("--spr-scale", type=int, default=2, help="sprite downscale factor")
-	c.add_argument("--model-scale", type=float, default=1.0, help="3D model import: source units → GoldSrc units")
-	c.add_argument("--model-up", choices=("y", "z"), default="y", help="3D model import: source up axis")
+	c.add_argument("--model-scale", type=float, default=1.0, help="3D model import: source units → GoldSrc units (USD: multiplies the stage's metersPerUnit scale)")
+	c.add_argument("--model-up", choices=("y", "z"), default="y", help="3D model import: source up axis (USD files use their own upAxis)")
 	c.add_argument("--model-skin-max-edge", type=int, default=256, help="3D model import: largest skin side in models/<name>.mdl")
 	c.add_argument("--no-model-full", action="store_true", help="skip models/<name>.mdl for imported 3D models")
 	c.add_argument("--model-static", action="store_true", help="3D model import: ignore skeletons and animations")
@@ -607,6 +614,10 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--rose-yaw", type=float, default=90.0, help="ROSE Online models: degrees to turn about Z (90 faces them +X)")
 	c.add_argument("--rose-entry", type=int, action="append",
 		help="ROSE .zsc/.chr: convert only this object/character index (repeatable; default all)")
+	c.add_argument("--panda-scale", type=float, default=12.0,
+		help="Panda3D/Toontown models: GoldSrc units per Panda unit (12: a Toontown foot)")
+	c.add_argument("--panda-yaw", type=float, default=-90.0,
+		help="Panda3D models: degrees to turn about Z (-90 turns Panda's +Y forward to GoldSrc's +X)")
 	c.add_argument("--rs-scale", type=float, default=0.35,
 		help="RuneScape caches: GoldSrc units per model unit (128 units = one tile)")
 	c.add_argument("--rs-yaw", type=float, default=0.0, help="RuneScape caches: extra degrees to turn about Z")
@@ -629,6 +640,17 @@ def build_parser() -> argparse.ArgumentParser:
 		help="trim world texture packs' top mips until they fit the engine's MEM1 pool")
 	c.add_argument("--wt-pool", default="448K", help="pool size for --fit-world")
 	c.add_argument("--wad-dir", action="append", help="extra WAD search folder (repeatable)")
+	c.add_argument("--game-dir", action="append", metavar="DIR_OR_VPK",
+		help="Source maps: game folder or _dir.vpk to find materials in (repeatable; the map's own pakfile and "
+		"the folder above maps/ are searched first)")
+	c.add_argument("--map-texture-max", type=int, default=256, help="Source maps: largest embedded texture side")
+	c.add_argument("--map-disp-power", type=int, default=2, choices=range(0, 5),
+		help="Source maps: displacement detail kept (2 = 5x5 vertices per displacement)")
+	c.add_argument("--no-map-hulls", action="store_true",
+		help="Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0)")
+	c.add_argument("--no-map-shadows", action="store_true",
+		help="Source 2 maps: light without tracing shadows (faster)")
+	c.add_argument("--no-map-props", action="store_true", help="Source maps: don't turn prop_static into cycler_sprite entities")
 	c.add_argument("--cache", help="CMPR encode cache folder")
 	c.add_argument("--no-sky-detect", action="store_true",
 		help="keep big 2:1 images, crosses, strips and .hdr files as textures instead of making skies of them")
@@ -711,8 +733,8 @@ def build_parser() -> argparse.ArgumentParser:
 	dk.add_argument("--json", action="store_true", help="print the report as JSON")
 	dk.set_defaults(fn=_disc)
 
-	x = sub.add_parser("extract", help="unpack a Quake/GoldSrc .pak, Source .vpk or .pk3 archive")
-	x.add_argument("archives", nargs="+", help=".pak, .vpk or .pk3 files")
+	x = sub.add_parser("extract", help="unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive")
+	x.add_argument("archives", nargs="+", help=".pak, .vpk, .pk3 or .mf (e.g. Toontown's phase_3.mf) files")
 	x.add_argument("-o", "--output", required=True, help="folder to extract into")
 	x.add_argument("--match", action="append", help="only members matching this glob, e.g. 'models/*' (repeatable)")
 	x.set_defaults(fn=_extract)

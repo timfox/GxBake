@@ -14,7 +14,7 @@ excluded_qt = [
 a = Analysis(
 	[str(root / "gxbake" / "__main__.py")],
 	pathex=[str(root)],
-	excludes=["tkinter", "matplotlib", *excluded_qt],
+	excludes=["tkinter", "matplotlib", "panda3d", *excluded_qt],	# .bam: bam2egg on PATH in frozen builds
 	noarchive=False,
 )
 pyz = PYZ(a.pure)

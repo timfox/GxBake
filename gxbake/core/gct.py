@@ -310,6 +310,15 @@ def build_wad_texture_pack(
 		alpha = name.startswith("{")
 		key, tw, th, levels, body = wt_encode_cached(w, h, pixels, palette, alpha, cache)
 		entries.append(GctEntry(name, tw, th, levels, GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body))
+	if include is None:	# gfx.wad / fonts.wad: HUD pictures and console fonts, index 255 see-through
+		from .goldsrc import wad_pictures
+
+		for name, pic in wad_pictures(wad).items():
+			if name in found:
+				continue
+			alpha = pic.transparent
+			key, tw, th, levels, body = wt_encode_cached(pic.width, pic.height, pic.pixels, pic.palette, alpha, cache)
+			entries.append(GctEntry(name, tw, th, levels, GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body))
 	if progress:
 		progress(len(names), len(names), "")
 	return (write_gct(entries) if entries else None), entries
