@@ -20,7 +20,6 @@ QI = (0.0, 0.0, 0.0, 1.0)
 def _npc(flip=False, two_bone=False, anim=True):
 	"""Root at the origin, a 'head' bone one unit up (FFXI is y-down) with a red cube on it,
 	and a second cube half a unit out along +x (the way FFXI characters face)."""
-	skel = ff.skeleton([(255, QI, (0, 0, 0)), (0, QI, (0, -1.0, 0))])
 	head_v, head_f = ff.box(0, 0, 0)	# bone-local
 	nose_v, nose_f = ff.box(0.5, -1.0, 0, 0.05)	# root-local
 	one = head_v + nose_v
@@ -236,7 +235,6 @@ def test_adpcm_decoder():
 	assert pcm[4, 0] == 0	# filter 0 ignores history
 	prev = 0
 	expect = []
-	v = 256 + 0
 	for k in range(16):
 		x = (1 << 8 if k == 0 else 0) + int(prev * 0xF0 / 256)
 		expect.append(x)

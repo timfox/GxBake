@@ -11,6 +11,7 @@
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
 	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
 	gxbake rs <main_file_cache.dat2|.dat> [--find NAME] [--json]
+	gxbake ff7 <.hrc|.p|.a|.tex> [--anims] [--json]
 	gxbake ffxi <DAT|.spw|.bgw|FINAL FANTASY XI folder> [--id N] [--textures DIR] [--wav OUT] [--json]
 	gxbake gui [files...]
 """
@@ -18,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import struct
 import sys
 from pathlib import Path
 
@@ -59,6 +61,8 @@ def _convert(args) -> int:
 	s.ffxi_yaw = args.ffxi_yaw
 	s.ffxi_skeleton = args.ffxi_skeleton or ""
 	s.ffxi_music = not args.ffxi_music_wav
+	s.ff7_scale = args.ff7_scale
+	s.ff7_yaw = args.ff7_yaw
 	s.video_width, s.video_height, s.video_fps = args.video_width, args.video_height, args.video_fps
 	s.sky_yaw, s.sky_fov, s.sky_exposure = args.sky_yaw, args.sky_fov, args.sky_exposure
 	s.detect_panoramas = not args.no_sky_detect
@@ -178,6 +182,37 @@ def _ffxi(args) -> int:
 	if args.textures:
 		for p in ffxi.extract_textures(path, Path(args.textures)):
 			print(f"wrote {p}")
+	return 0
+
+
+def _ff7(args) -> int:
+	from .core import ff7
+
+	path = Path(args.path)
+	try:
+		info = ff7.describe(path)
+	except (OSError, ValueError, struct.error) as exc:
+		print(f"error: {exc}", file=sys.stderr)
+		return 1
+	matches = []
+	if args.anims and info["type"] == "skeleton":
+		matches = [p.name for p in ff7.animations_for(path.parent, len(info["bones"]))]
+		info["animations"] = matches
+	if args.json:
+		print(json.dumps(info, indent=2))
+		return 0
+	print(f"{path}: {info['type']}")
+	if info["type"] == "skeleton":
+		for b in info["bones"]:
+			res = f"  parts {', '.join(b['resources'])}" if b["resources"] else ""
+			print(f"  {b['name']:<12} ← {b['parent']:<12} length {b['length']:g}{res}")
+		if args.anims:
+			print(f"  {len(matches)} animations with {len(info['bones'])} bones: {', '.join(matches[:30])}"
+				+ (" …" if len(matches) > 30 else ""))
+	else:
+		for k, v in info.items():
+			if k not in ("path", "type"):
+				print(f"  {k}: {v}")
 	return 0
 
 
@@ -565,6 +600,8 @@ def build_parser() -> argparse.ArgumentParser:
 		help="Final Fantasy XI: race skeleton DAT for equipment and face DATs that have none of their own")
 	c.add_argument("--ffxi-music-wav", action="store_true",
 		help="Final Fantasy XI: write .bgw music as WAVs under sound/ffxi/ instead of media/<name>.gcpcm")
+	c.add_argument("--ff7-scale", type=float, default=2.5, help="Final Fantasy VII field models: GoldSrc units per FF7 unit")
+	c.add_argument("--ff7-yaw", type=float, default=0.0, help="Final Fantasy VII field models: extra degrees to turn about Z")
 	c.add_argument("--video-width", type=int, default=320, help="GCVID frame width")
 	c.add_argument("--video-height", type=int, default=240, help="GCVID frame height")
 	c.add_argument("--video-fps", type=int, default=15, help="GCVID frame rate")
@@ -592,6 +629,12 @@ def build_parser() -> argparse.ArgumentParser:
 	r.add_argument("--limit", type=int, default=50, help="NPCs to print (0 = all)")
 	r.add_argument("--json", action="store_true", help="print everything as JSON")
 	r.set_defaults(fn=_rs)
+
+	f7 = sub.add_parser("ff7", help="look inside Final Fantasy VII field models (.hrc, .p, .a, .tex)")
+	f7.add_argument("path", help="a skeleton (.hrc), polygon model (.p), animation (.a) or texture (.tex)")
+	f7.add_argument("--anims", action="store_true", help="for a .hrc: list the .a files beside it with the same bone count")
+	f7.add_argument("--json", action="store_true", help="print as JSON")
+	f7.set_defaults(fn=_ff7)
 
 	ff = sub.add_parser("ffxi", help="look inside Final Fantasy XI DATs, sounds and file tables")
 	ff.add_argument("path", help="a ROM DAT, a .spw/.bgw sound, or the FINAL FANTASY XI folder (with --id)")

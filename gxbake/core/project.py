@@ -17,7 +17,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, budget, ffxi, gct, goldsrc, images, media, models, quake, rose, runescape, skybox, sprite, studio, studio_slim
+from . import audit, budget, ff7, ffxi, gct, goldsrc, images, media, models, quake, rose, runescape, skybox, sprite, studio, studio_slim
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -64,6 +64,8 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.AUDIO	# Final Fantasy XI sound effects / music (ADPCM)
 	if ext == ffxi.MANIFEST_EXTENSION or (ext == ".dat" and ffxi.is_model_dat(path)):
 		return Kind.MODEL	# a Final Fantasy XI model DAT
+	if ext in ff7.FF7_EXTENSIONS:
+		return Kind.MODEL if ff7.is_ff7(path) else Kind.UNKNOWN	# Final Fantasy VII field models
 	if ext == ".mdl":
 		# GoldSrc studio (IDST v10), Source studio (IDST v44-49) and Quake alias (IDPO) share .mdl.
 		head = _head(path)
@@ -126,6 +128,8 @@ class Settings:
 	ffxi_scale: float = ffxi.DEFAULT_SCALE	# Final Fantasy XI: GoldSrc units per FFXI unit
 	ffxi_yaw: float = 0.0	# Final Fantasy XI: extra turn about Z
 	ffxi_skeleton: str = ""	# Final Fantasy XI: race skeleton DAT for equipment/face DATs
+	ff7_scale: float = ff7.DEFAULT_SCALE	# Final Fantasy VII: GoldSrc units per field unit
+	ff7_yaw: float = 0.0	# Final Fantasy VII: extra turn about Z
 	ffxi_music: bool = True	# Final Fantasy XI .bgw music → media/<name>.gcpcm (else a WAV like the .spw effects)
 	spr_scale: int = 2
 	video_width: int = media.GCVID_WIDTH
@@ -148,7 +152,7 @@ class Settings:
 		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
 			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files,
 			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.rs_scale, self.rs_yaw,
-			self.ffxi_scale, self.ffxi_yaw, self.ffxi_skeleton)
+			self.ffxi_scale, self.ffxi_yaw, self.ffxi_skeleton, self.ff7_scale, self.ff7_yaw)
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -211,6 +215,10 @@ class Asset:
 	@property
 	def is_runescape(self) -> bool:
 		return runescape.is_cache(self.path)
+
+	@property
+	def is_ff7(self) -> bool:
+		return self.path.suffix.lower() in ff7.FF7_EXTENSIONS
 
 	@property
 	def is_ffxi(self) -> bool:
@@ -415,6 +423,8 @@ class Project:
 					d["Source"] = "ROSE Online" + (f", entry {asset.entry}" if asset.entry is not None else "")
 				elif asset.is_runescape:
 					d["Source"] = "RuneScape cache" + (f", {asset.entry}" if asset.entry is not None else "")
+				elif asset.is_ff7:
+					d["Source"] = "Final Fantasy VII field model"
 				elif asset.is_ffxi:
 					d["Source"] = "Final Fantasy XI DAT" if asset.path.suffix.lower() == ".dat" else "Final Fantasy XI manifest"
 			elif asset.kind == Kind.SPR:
@@ -562,6 +572,8 @@ class Project:
 			clips = (opts.rs_scale, opts.rs_yaw)
 		elif asset.is_ffxi:
 			clips = (opts.ffxi_scale, opts.ffxi_yaw, opts.ffxi_skeleton)
+		elif asset.is_ff7:
+			clips = (opts.ff7_scale, opts.ff7_yaw)
 		else:
 			clips = tuple((p.name, p.stat().st_mtime_ns) for p in models.clip_files(asset.path)) if opts.clip_files else ()
 		key = (asset.path, asset.entry, mtime, clips, opts.scale, opts.up_axis, opts.skin_max_edge,
@@ -576,6 +588,8 @@ class Project:
 			model = runescape.import_runescape(asset.path, opts, asset.entry)
 		elif asset.is_ffxi:
 			model = ffxi.import_ffxi(asset.path, opts)
+		elif asset.is_ff7:
+			model = ff7.import_ff7(asset.path, opts)
 		else:
 			model = models.import_model(asset.path, opts)
 		mdl = models.build_studio_mdl(model, opts)
@@ -882,6 +896,9 @@ class Project:
 def _skip_rose_parts(files: list[Path]) -> list[Path]:
 	"""A folder scan of ROSE data keeps the list files (.zsc/.chr) and drops what they
 	reference: loose .zms meshes and .dds textures, and the PART_*.ZSC beside a .chr."""
+	skels = {f.parent for f in files if f.suffix.lower() in (".hrc", ".ff7mdl")}
+	if skels:	# FF7: skeletons draw the .p parts beside them
+		files = [f for f in files if not (f.suffix.lower() == ".p" and f.parent in skels)]
 	lists = [f for f in files if f.suffix.lower() in rose.LIST_EXTENSIONS]
 	if not lists:
 		return files
