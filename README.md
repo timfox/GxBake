@@ -16,6 +16,9 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | Studio `.mdl` | `gc_studio/<name>.mdl` (lean mesh) and `gc_studio/<name>t.mdl` (downsampled skins) | `lean_studio_mesh_bytes`, `lean_studio_tex_companion_bytes` |
 | 3D models via Assimp (OBJ, FBX, glTF/GLB, DAE, 3DS, Blend, MD2/MD3/MD5, IQM, B3D, SMD, MS3D and ~25 more) | `models/<name>.mdl` (studio MDL v10 with bones, sequences and paletted skins), then the same `gc_studio/<name>.mdl` + `<name>t.mdl` as a studio model | `models.import_model`, `models.build_studio_mdl`, then the two functions above |
 | Source `.mdl` (v44–49) + `.vvd` + `.vtx`, Quake `.mdl` | the same `models/` and `gc_studio/` outputs as an Assimp model | `source_mdl.import_source`, `quake.import_alias`, then `models.build_studio_mdl` |
+| Source 2 `.vmdl_c` / `.vmesh_c` (with their `.vmat_c`, `.vtex_c` and embedded or `.vagrp_c` animations) | the same `models/` and `gc_studio/` outputs | `vmdl.import_vmdl`, `vanim.model_sequences`, then `models.build_studio_mdl` |
+| Source 2 `.vtex_c` | an entry in `media/<pack>.gct`, like any image | `vtex.load`, then as an image |
+| Source 2 `.vsnd_c` (PCM, MS-ADPCM, MP3) | `sound/<name>.wav`: Microsoft PCM at up to 22050 Hz, loop kept as a cue point | `vsnd.to_port_wav` |
 | Sprite `.spr` (Half-Life, Quake), Quake II `.sp2` | `sprites/<name>.spr`: a Half-Life sprite, downsampled, keeping thin alpha-test strokes | `quake.hl_sprite_bytes`, `lean_hl_spr_bytes` |
 | ROSE Online `.zms` meshes, `.zsc` object lists, `.chr` character lists (with `.zmd` skeletons, `.zmo` motions, `.dds` textures) | the same `models/` + `gc_studio/` studio models, one per object or character | `rose.import_rose`, then as above |
 | RuneScape caches: OSRS / RS2 JS5 (`main_file_cache.dat2` + `.idx*`) and 2004-era (`main_file_cache.dat`) | the same `models/` + `gc_studio/` studio models, one per NPC (or model), with face colours baked into a palette skin and label-group animations as bones | `runescape.import_runescape`, then as above |
@@ -112,6 +115,16 @@ Studio skinning is rigid, so a vertex weighted between two bones would tear at t
 
 **VTF textures** (7.0–7.5): DXT1/3/5, ATI1N/ATI2N, the 8888/888/565/5551/4444 orders, I8/IA88/A8 and 16-bit float (tone-mapped). The largest mip of the first frame and face becomes a GCWT entry, and six `<name>rt/bk/lf/ft/up/dn.vtf` make a skybox.
 
+## Source 2 assets
+
+GxBake reads Source 2's compiled resources (the `_c` files inside a Source 2 `.vpk`, which `gxbake extract` unpacks) without any Valve tools. The container, KeyValues3 (binary versions 1 to 5, the older VKV3 header and the text form) and the older NTRO-described blocks are all read; LZ4 and Valve's block compression are decoded in Python, and Zstandard needs Python 3.14 or `pip install gxbake[valve]`.
+
+- **Models** (`.vmdl_c`, or a lone `.vmesh_c`): the skeleton, LOD 0 of the default mesh group (embedded meshes or `.vmesh_c` files next to it), meshoptimizer and Zstandard vertex/index buffers, packed normals, and up to eight weights per vertex reduced to the two heaviest, which get helper bones like Source 1 models. Each draw call's `.vmat_c` is followed to its colour texture (`g_tColor` and friends); tool materials are skipped. Animations come from the model's own blocks, from the `.vagrp_c` groups it lists and the `.vanim_c` files they name, decoded segment by segment (every compressed decoder VRF knows) and sampled at **Animation fps**. Delta (additive) animations are skipped, and a sequence too long for studio's 16-bit animation offsets is halved in frame rate until it fits. Resource paths are looked up under the nearest folder above the file that holds `materials/`, `models/`, `maps/` or `sounds/`, case-insensitively.
+- **Textures** (`.vtex_c`): DXT1/DXT5, BC4/BC5 (ATI1N/ATI2N), BC7, the 8-bit orders, I8/IA88/A8, 16- and 32-bit float (tone-mapped), and textures stored as PNG, JPEG or WebP; YCoCg-encoded colour and compressed mips are handled. The top mip of the first face goes into the pack.
+- **Sounds** (`.vsnd_c`): 8/16-bit PCM and Microsoft ADPCM decode directly, MP3 through `ffmpeg`. The result is resampled to 22050 Hz at most and written as `sound/<name>.wav`; `gxbake sfx` then fits it under the port's per-file cap.
+
+Not converted yet: maps (`.vmap_c`/`.vwrld_c`, planned to become BSP30), BC6H and ETC2 textures, cubemap skies (only the first face is packed), physics, morphs, cloth, bodygroups other than the default, and animation-graph (AG2) clips. Readers follow [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 **Quake**: alias models (`.mdl`, IDPO v6) convert their first frame and first skin, since studio models can't morph vertices (the inspector says how many frames there were). BSP v29 world textures and WAD2 miptex carry no palette, so GxBake reads `gfx/palette.lmp` from the game folder or from a `pak*.pak` there. Quake sprites (v1) become Half-Life sprites with that palette and index 255 transparent.
 
 **Quake II**: `.wal` textures use the palette in `pics/colormap.pcx`, and `.sp2` sprites become Half-Life sprites built from their PCX frames.
@@ -182,7 +195,7 @@ The executable opens the app when run with no arguments or with file paths. With
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`, and for Source 2 `vres`, `kv3`, `kv3text`, `valvecomp`, `vtex`, `vsnd`, `vmdl`, `vanim`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
-- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, RuneScape caches in `rs_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
+- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, Source 2 resources in `s2_fixtures.py`, RuneScape caches in `rs_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.

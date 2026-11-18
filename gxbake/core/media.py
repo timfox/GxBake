@@ -35,7 +35,8 @@ GCPCM_CHANNELS = 2
 GCPCM_WIDTH = 2
 
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm", ".mpg", ".mpeg", ".wmv", ".bik"}
-AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".voc", ".opus", ".m4a", ".wma"}
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".voc", ".opus", ".m4a", ".wma",
+	".vsnd_c"}	# Source 2 sounds become sound/<name>.wav (vsnd.py)
 
 
 def find_ffmpeg() -> str | None:

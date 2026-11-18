@@ -76,7 +76,7 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.VIDEO
 	if ext in media.AUDIO_EXTENSIONS:
 		return Kind.AUDIO
-	if ext in models.MODEL_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
+	if ext in models.MODEL_EXTENSIONS or ext in models.SOURCE2_MODEL_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
 		return Kind.MODEL
 	return {
 		".wad": Kind.WAD,
@@ -383,6 +383,10 @@ class Project:
 					from . import source_mdl
 
 					d.update(source_mdl.source_info(asset.path))
+				elif native == "source2":
+					from . import vmdl
+
+					d.update(vmdl.vmdl_info(asset.path))
 				elif native == "quake":
 					d["Source format"] = "Quake alias model (IDPO v6)"
 				model, mdl = self.imported_model(asset)
@@ -409,6 +413,14 @@ class Project:
 				from . import vtf
 
 				d.update(vtf.vtf_info(asset.path.read_bytes()))
+			elif asset.kind == Kind.IMAGE and asset.path.suffix.lower() == ".vtex_c":
+				from . import vtex
+
+				d.update(vtex.load(asset.path).info())
+			elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() == ".vsnd_c":
+				from . import vsnd
+
+				d.update(vsnd.load(asset.path).info())
 			elif asset.kind == Kind.BSP:
 				data = asset.path.read_bytes()
 				d["BSP version"] = quake.bsp_version(data)
@@ -768,6 +780,10 @@ class Project:
 					emit_file(asset, rel)
 					if s.video_audio and media.build_gcpcm_companion(asset.path, out_dir / f"media/{stem}.gcpcm", log=log):
 						emit_file(asset, f"media/{stem}.gcpcm")
+				elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() == ".vsnd_c":
+					from . import vsnd
+
+					emit(asset, f"sound/{stem}.wav", vsnd.to_port_wav(vsnd.load(asset.path)))
 				elif asset.kind == Kind.AUDIO:
 					rel = f"media/{stem}.gcpcm"
 					if media.build_gcpcm_companion(asset.path, out_dir / rel, log=log):
