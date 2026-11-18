@@ -17,6 +17,7 @@ from typing import Callable
 
 import numpy as np
 
+from . import audit, budget, gct, goldsrc, images, media, models, particles, quake, rose, runescape, skybox, sprite, studio, studio_slim
 from . import audit, budget, gct, goldsrc, images, media, models, panda, quake, rose, skybox, sprite, studio, studio_slim
 from . import audit, budget, gct, goldsrc, images, media, models, pandaquake, rose, runescape, skybox, sprite, studio, studio_slim
 from .cmpr import cmpr_decode
@@ -73,12 +74,19 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.MDL
 	if ext == ".sp2":
 		return Kind.SPR
+	if ext in particles.PARTICLE_EXTENSIONS or path.name.lower().endswith(".vpcf_c"):
+		return Kind.SPR if particles.is_particles(path) else Kind.UNKNOWN
+	if path.name.lower().endswith((".vmap_c", ".vwrld_c")):
+		return Kind.BSP	# a compiled Source 2 map, rebuilt as BSP30
 	if ext in images.IMAGE_EXTENSIONS:
 		return Kind.IMAGE
 	if ext in media.VIDEO_EXTENSIONS:
 		return Kind.VIDEO
 	if ext in media.AUDIO_EXTENSIONS:
 		return Kind.AUDIO
+	if ext in models.MODEL_EXTENSIONS or ext in models.SOURCE2_MODEL_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
+		return Kind.MODEL
+	if ext == ".dmx" and models.native_format(path) == "dmx":
 	if ext in models.MODEL_EXTENSIONS or ext in models.USD_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
 		return Kind.MODEL
 	return {
@@ -134,6 +142,12 @@ class Settings:
 	wt_pool: int = 448 * 1024	# that pool (GC_WT_POOL_BYTES)
 	wad_dirs: list[str] = field(default_factory=list)
 	cache_dir: str = ""
+	source_dirs: list[str] = field(default_factory=list)	# Source maps: extra game folders or _dir.vpk files
+	map_hulls: bool = True	# Source maps: build collision hulls 1-3
+	map_props: bool = True	# Source maps: prop_static → cycler_sprite entities
+	map_texture_max: int = 256	# Source maps: largest embedded texture
+	map_disp_power: int = 2	# Source maps: displacement detail kept (0-4)
+	map_shadows: bool = True	# Source 2 maps: trace shadows when relighting
 
 	def sky_options(self, layout: str = "auto") -> skybox.SkyOptions:
 		return skybox.SkyOptions(layout=layout, yaw=self.sky_yaw, fov=self.sky_fov, exposure=self.sky_exposure, size=self.sky_size)
@@ -146,6 +160,12 @@ class Settings:
 			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files,
 			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.panda_scale, self.panda_yaw)
 			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.rs_scale, self.rs_yaw)
+
+	def map_options(self):
+		from .source_map import MapOptions
+
+		return MapOptions(max_texture=self.map_texture_max, disp_power=self.map_disp_power, props=self.map_props,
+			hulls=self.map_hulls, shadows=self.map_shadows, search=[Path(p) for p in self.source_dirs])
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -199,7 +219,12 @@ class Asset:
 	@property
 	def stem(self) -> str:
 		"""Output file stem."""
-		return self.extra.get("stem") or self.path.stem.lower()
+		if self.extra.get("stem"):
+			return self.extra["stem"]
+		low = self.path.name.lower()
+		if low.endswith(".vwrld_c"):
+			return self.path.parent.name.lower()
+		return self.path.stem.lower()
 
 	@property
 	def is_rose(self) -> bool:
@@ -367,12 +392,14 @@ class Project:
 		"""Sub-items shown under an asset in the tree (textures, frames...)."""
 		try:
 			if asset.kind == Kind.WAD:
-				return sorted(goldsrc.wad_miptex(asset.path))
+				return sorted(set(goldsrc.wad_miptex(asset.path)) | set(goldsrc.wad_pictures(asset.path)))
 			if asset.kind == Kind.BSP:
-				data = asset.path.read_bytes()
+				data = self._bsp_bytes(asset)
 				return list(dict.fromkeys(n for n, _ in goldsrc.bsp_miptex_offsets(data) if goldsrc.is_world_diffuse(n)))
 			if asset.kind == Kind.GCT:
 				return [e.name for e in gct.read_gct(asset.path.read_bytes())]
+			if asset.kind == Kind.SPR and particles.is_particles(asset.path):
+				return list(self._particle_sprites(asset))
 			if asset.kind == Kind.MDL:
 				return [n for n, _f, _r in studio.studio_textures(asset.path.read_bytes())]
 			if asset.kind == Kind.MODEL:
@@ -398,8 +425,17 @@ class Project:
 					from . import source_mdl
 
 					d.update(source_mdl.source_info(asset.path))
+				elif native == "source2":
+					from . import vmdl
+
+					d.update(vmdl.vmdl_info(asset.path))
 				elif native == "quake":
 					d["Source format"] = "Quake alias model (IDPO v6)"
+				elif native == "dmx":
+					from . import dmx
+
+					enc, ver, fmt, fver = dmx.header(_head(asset.path, 200))
+					d["Source format"] = f"DMX {fmt} {fver} ({enc} {ver})"
 				elif asset.path.suffix.lower() in models.USD_EXTENSIONS:
 					d["Source format"] = "USD stage (read with FreeUSD)"
 				model, mdl = self.imported_model(asset)
@@ -423,6 +459,9 @@ class Project:
 						d["Animation files"] = ", ".join(f.name for _l, f in anims) or "-"
 				elif asset.is_runescape:
 					d["Source"] = "RuneScape cache" + (f", {asset.entry}" if asset.entry is not None else "")
+			elif asset.kind == Kind.SPR and particles.is_particles(asset.path):
+				d.update(particles.info(asset.path))
+				d["Sprites"] = len(self._particle_sprites(asset))
 			elif asset.kind == Kind.SPR:
 				raw = asset.path.read_bytes()
 				if raw[:4] == b"IDS2" or (raw[:4] == b"IDSP" and struct.unpack_from("<i", raw, 4)[0] == 1):
@@ -433,6 +472,23 @@ class Project:
 				from . import vtf
 
 				d.update(vtf.vtf_info(asset.path.read_bytes()))
+			elif asset.kind == Kind.IMAGE and asset.path.suffix.lower() == ".vtex_c":
+				from . import vtex
+
+				d.update(vtex.load(asset.path).info())
+			elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() == ".vsnd_c":
+				from . import vsnd
+
+				d.update(vsnd.load(asset.path).info())
+			elif asset.kind == Kind.BSP and self._is_source_map(asset):
+				from . import s2map, source_map
+
+				d.update((s2map if s2map.is_source2_map(asset.path) else source_map).map_info(asset.path))
+				conv = self.source_map(asset)
+				d["Converted"] = ", ".join(f"{v} {k}" for k, v in conv.stats.items())
+				d["Sky"] = conv.sky or "-"
+				if conv.props:
+					d["Prop models"] = len(conv.props)
 			elif asset.kind == Kind.BSP:
 				data = asset.path.read_bytes()
 				d["BSP version"] = quake.bsp_version(data)
@@ -448,6 +504,9 @@ class Project:
 				d.update(media.read_gcpcm_header(asset.path.read_bytes()[:16]))
 			elif asset.kind == Kind.WAD:
 				d["Textures"] = len(goldsrc.wad_miptex(asset.path))
+				pics = goldsrc.wad_pictures(asset.path)
+				if pics:
+					d["Pictures and fonts"] = len(pics)
 		except Exception as exc:	# noqa: BLE001
 			d["Error"] = str(exc)
 		return d
@@ -489,8 +548,8 @@ class Project:
 			mip = self._find_miptex(asset, name)
 			if mip is None:
 				return Preview(name, info={"Status": "missing: not embedded and not found in any WAD search dir"})
-			_, w, h, pixels, palette = mip
-			alpha = name.startswith("{")
+			_, w, h, pixels, palette = mip[:5]
+			alpha = name.startswith("{") or (k == Kind.WAD and len(mip) > 5 and mip[5])
 			src = goldsrc.miptex_rgba(w, h, pixels, palette, alpha)
 			key, tw, th, levels, body = gct.wt_encode_cached(w, h, pixels, palette, alpha, s.cache())
 			entry = gct.GctEntry(name, tw, th, levels, gct.GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body)
@@ -527,7 +586,14 @@ class Project:
 		if k == Kind.MODEL:
 			return self._model_preview(asset, child)
 		if k == Kind.SPR:
-			raw = quake.hl_sprite_bytes(asset.path, asset.warnings)
+			if particles.is_particles(asset.path):
+				sprites = self._particle_sprites(asset)
+				name = child if child in sprites else next(iter(sprites), None)
+				if name is None:
+					return Preview(asset.name, info={"Note": "no system renders a texture that was found"})
+				raw = sprites[name]
+			else:
+				raw = quake.hl_sprite_bytes(asset.path, asset.warnings)
 			frames = sprite.spr_frames(raw)
 			src = frames[0] if frames else None
 			lean = sprite.lean_hl_spr_bytes_from(raw, s.spr_scale)
@@ -634,6 +700,13 @@ class Project:
 			pal = quake.GREY_PALETTE
 		return pal
 
+	def _particle_sprites(self, asset: Asset) -> dict[str, bytes]:
+		"""Particle system name → Half-Life sprite, built once per asset."""
+		if "particle_sprites" not in asset.extra:
+			asset.extra["particle_sprites"] = particles.convert(asset.path, [Path(p) for p in self.settings.source_dirs],
+				warnings=asset.warnings)
+		return asset.extra["particle_sprites"]
+
 	def _needs_quake_palette(self, asset: Asset) -> bool:
 		head = _head(asset.path, 4)
 		return head == b"WAD2" or (asset.kind == Kind.BSP and head == struct.pack("<i", 29))
@@ -642,8 +715,11 @@ class Project:
 		pal = self._quake_palette(asset) if self._needs_quake_palette(asset) else None
 		if asset.kind == Kind.WAD:
 			found = goldsrc.wad_miptex(asset.path)
-			return goldsrc.read_miptex(*found[name], pal) if name in found else None
-		data = asset.path.read_bytes()
+			if name in found:
+				return goldsrc.read_miptex(*found[name], pal)
+			pic = goldsrc.wad_pictures(asset.path).get(name)
+			return (name, pic.width, pic.height, pic.pixels, pic.palette, pic.transparent) if pic else None
+		data = self._bsp_bytes(asset)
 		for n, off in goldsrc.bsp_miptex_offsets(data):
 			if n == name:
 				mip = goldsrc.read_miptex(data, off, pal)
@@ -724,8 +800,24 @@ class Project:
 					if data:
 						emit(asset, f"media/{stem}.gct", data)
 				elif asset.kind == Kind.BSP:
+					bsp_path = asset.path
+					if self._is_source_map(asset):
+						conv = self.source_map(asset, log)
+						for w in conv.warnings:
+							if w not in asset.warnings:
+								asset.warnings.append(w)
+							log("  warning: " + w)
+						emit(asset, f"maps/{stem}.bsp", conv.bsp)
+						bsp_path = out_dir / f"maps/{stem}.bsp"
+						if conv.sky and len(conv.sky_sides) == 6:
+							for sfx in images.GC_SKY_SUFFIXES:
+								emit(asset, f"media/sky_{conv.sky}{sfx}.cmp",
+									images.sky_side_cmpr(conv.sky_sides[sfx], s.sky_size))
+						if conv.props:
+							log(f"  {len(conv.props)} prop models referenced (convert them to models/<name>.mdl): "
+								+ ", ".join(Path(p).stem for p in conv.props[:8]) + (" …" if len(conv.props) > 8 else ""))
 					data, report, _entries = gct.build_world_texture_pack(
-						asset.path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache())
+						bsp_path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache())
 					log(f"  {len(report.wads)} WADs searched, {report.entries} textures packed")
 					for note in report.notes:
 						asset.warnings.append(note)
@@ -743,7 +835,8 @@ class Project:
 							asset.warnings.append(f"world pack still over budget: {res.reason}")
 					if data:
 						emit(asset, f"media/wt_{stem}.gct", data)
-					self._bsp_sky(asset, emit)
+					if not self._is_source_map(asset):
+						self._bsp_sky(asset, emit)
 				elif asset.kind == Kind.MDL:
 					if s.mdl_lean_mesh:
 						lean = studio.lean_studio_mesh_bytes(asset.path)
@@ -778,6 +871,13 @@ class Project:
 						comp = studio.lean_studio_tex_companion_bytes_from(mdl, s.mdl_max_edge)
 						if comp:
 							emit(asset, f"gc_studio/{stem}t.mdl", comp)
+				elif asset.kind == Kind.SPR and particles.is_particles(asset.path):
+					sprites = self._particle_sprites(asset)
+					if not sprites:
+						log("  no particle system renders a texture that was found")
+					for name, raw in sprites.items():
+						emit(asset, f"sprites/{name.lower().replace(' ', '_')}.spr",
+							sprite.lean_hl_spr_bytes_from(raw, s.spr_scale) or raw)
 				elif asset.kind == Kind.SPR:
 					raw = quake.hl_sprite_bytes(asset.path, asset.warnings)
 					if raw[:8] != asset.path.read_bytes()[:8]:
@@ -797,6 +897,10 @@ class Project:
 					emit_file(asset, rel)
 					if s.video_audio and media.build_gcpcm_companion(asset.path, out_dir / f"media/{stem}.gcpcm", log=log):
 						emit_file(asset, f"media/{stem}.gcpcm")
+				elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() == ".vsnd_c":
+					from . import vsnd
+
+					emit(asset, f"sound/{stem}.wav", vsnd.to_port_wav(vsnd.load(asset.path)))
 				elif asset.kind == Kind.AUDIO:
 					rel = f"media/{stem}.gcpcm"
 					if media.build_gcpcm_companion(asset.path, out_dir / rel, log=log):
@@ -823,6 +927,27 @@ class Project:
 			progress(len(todo), len(todo), "")
 		self.write_manifest(out_dir, written)
 		return written
+
+	@staticmethod
+	def _is_source_map(asset: Asset) -> bool:
+		if asset.kind != Kind.BSP:
+			return False
+		return asset.path.name.lower().endswith((".vmap_c", ".vwrld_c")) or _head(asset.path, 4) == b"VBSP"
+
+	def source_map(self, asset: Asset, log: Log = lambda _m: None):
+		"""The Source 1 or Source 2 map converted to BSP30 (cached on the asset)."""
+		from . import s2map, source_map
+
+		key = ("source_map", json.dumps(asdict(self.settings.map_options()), default=str))
+		cached = asset.extra.get("source_map")
+		if cached is None or cached[0] != key:
+			conv = s2map.convert if s2map.is_source2_map(asset.path) else source_map.convert
+			cached = (key, conv(asset.path, self.settings.map_options(), log=log))
+			asset.extra["source_map"] = cached
+		return cached[1]
+
+	def _bsp_bytes(self, asset: Asset) -> bytes:
+		return self.source_map(asset).bsp if self._is_source_map(asset) else asset.path.read_bytes()
 
 	def _bsp_sky(self, asset: Asset, emit) -> None:
 		data = asset.path.read_bytes()

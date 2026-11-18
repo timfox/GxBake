@@ -19,6 +19,7 @@ GC_SKY_CMPR_SIZE = 128
 GC_SKY_SUFFIXES = ("rt", "bk", "lf", "ft", "up", "dn")
 IMAGE_EXTENSIONS = {".png", ".tga", ".bmp", ".jpg", ".jpeg", ".gif", ".webp", ".dds", ".tif", ".tiff", ".psd", ".pcx", ".qoi", ".ppm",
 	".vtf",	# Source (vtf.py)
+	".vtex_c",	# Source 2 (vtex.py)
 	".wal",	# Quake II (quake.py)
 	".blp", ".ftc", ".ftu",	# Blizzard BLP1/BLP2 and Fat textures, through Pillow
 	".rgb", ".rgba", ".sgi", ".bw",	# SGI (Panda3D / Toontown textures), through Pillow
@@ -33,6 +34,13 @@ def load_rgba(path: Path, warnings: list[str] | None = None) -> "np.ndarray":
 		from .vtf import load_vtf
 
 		return load_vtf(path)
+	if ext == ".vtex_c":
+		from . import vtex
+
+		tex = vtex.load(path)
+		if tex.cube and warnings is not None:
+			warnings.append("cubemap: only the first face (+X) is packed")
+		return tex.rgba(0)
 	if ext == ".wal":
 		from .quake import load_wal
 

@@ -35,6 +35,10 @@ MODEL_EXTENSIONS = {
 	".nff", ".ter",
 }
 # Animation-only files, used as <model>@<clip>.<ext> clips.
+# Source 2 compiled models, read natively (vmdl.py)
+SOURCE2_MODEL_EXTENSIONS = {".vmdl_c", ".vmesh_c"}
+# Valve Datamodel model sources (Blender Source Tools, SFM), read natively (dmx_model.py)
+DMX_MODEL_EXTENSIONS = {".dmx"}
 CLIP_EXTENSIONS = MODEL_EXTENSIONS | {".bvh", ".md5anim"}
 # USD stages, read through FreeUSD (usd.py) rather than Assimp. Their clips are USD files too.
 USD_EXTENSIONS = {".usd", ".usda", ".usdc", ".usdz"}
@@ -265,7 +269,13 @@ def clip_files(path: Path) -> list[Path]:
 
 
 def native_format(path: Path) -> str | None:
-	"""'source' or 'quake' when GxBake reads the file itself instead of Assimp."""
+	"""'source', 'source2', 'dmx' or 'quake' when GxBake reads the file itself instead of Assimp."""
+	if Path(path).suffix.lower() in SOURCE2_MODEL_EXTENSIONS:
+		return "source2"
+	if Path(path).suffix.lower() == ".dmx":
+		from .dmx_model import is_dmx_model
+
+		return "dmx" if is_dmx_model(path) else None
 	try:
 		with Path(path).open("rb") as f:
 			head = f.read(8)
@@ -284,6 +294,9 @@ def native_format(path: Path) -> str | None:
 def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
 	"""Read a model into triangulated submeshes, bones and sequences.
 
+	Source (.mdl v44-49), Source 2 (.vmdl_c, .vmesh_c), DMX model sources and
+	Quake (.mdl IDPO) models are parsed natively;
+	everything else goes through Assimp.
 	Source (.mdl v44-49) and Quake (.mdl IDPO) models are parsed natively,
 	USD stages go through FreeUSD, and everything else goes through Assimp.
 	"""
@@ -298,6 +311,14 @@ def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
 		from .source_mdl import import_source
 
 		return import_source(path, opts)
+	if native == "source2":
+		from .vmdl import import_vmdl
+
+		return import_vmdl(path, opts)
+	if native == "dmx":
+		from .dmx_model import import_dmx
+
+		return import_dmx(path, opts)
 	if native == "quake":
 		from .quake import import_alias
 
@@ -840,7 +861,17 @@ def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> 
 	for sq in seqs:
 		align()
 		anim_offs.append(len(out))
-		out += _sk.encode_anim_block(sq.frames, rest, scales)
+		while True:
+			try:
+				out += _sk.encode_anim_block(sq.frames, rest, scales)
+				break
+			except ValueError:
+				if len(sq.frames) <= 2:
+					raise
+				# too long for the 16-bit stream offsets: halve the frame rate of this one sequence
+				sq.frames = sq.frames[::2]
+				sq.fps = sq.fps / 2.0
+				model.warnings.append(f"sequence {sq.name}: halved to {sq.fps:g} fps to fit studio offsets")
 	align()
 	seq_off = len(out)
 	for sq, anim_off in zip(seqs, anim_offs):

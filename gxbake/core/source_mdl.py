@@ -346,6 +346,33 @@ def _local_matrix(pos: np.ndarray, quat: np.ndarray, scale: float) -> np.ndarray
 	return m
 
 
+def source_skin(name: str, search_dirs: list[str], roots: list[Path], opts, warnings: list[str]):
+	"""A Source material (.vmt → $basetexture .vtf) as a models.Material; grey when it can't be found."""
+	from . import models as _m
+
+	vtf_path, params = _vtf.resolve_material(name, search_dirs, roots) if roots else (None, {})
+	rgba = None
+	if vtf_path is not None:
+		try:
+			rgba = _vtf.load_vtf(vtf_path)
+		except (OSError, ValueError) as exc:
+			warnings.append(f"material {name}: {vtf_path.name}: {exc}")
+	if rgba is None:
+		if not roots:
+			warnings.append(f"material {name}: no materials/ folder above the model; using grey")
+		else:
+			warnings.append(f"material {name}: .vmt/.vtf not found under {roots[0]}; using grey")
+		rgba = np.full((8, 8, 4), (180, 180, 180, 255), np.uint8)
+	cutout = params.get("$alphatest", "0") not in ("0", "") or params.get("$translucent", "0") not in ("0", "")
+	if not cutout:
+		rgba = rgba.copy()
+		rgba[..., 3] = 255	# Source packs spec/phong masks in alpha; only cut-outs keep it
+	rgba = _m._fit_skin(rgba, opts.skin_max_edge)
+	masked = bool((rgba[..., 3] < opts.alpha_threshold).any())
+	return _m.Material(Path(name).name or name, rgba, masked,
+		str(vtf_path.relative_to(roots[0].parent)) if vtf_path is not None and roots else "")
+
+
 def import_source(path: Path, opts=None):
 	"""Read a Source .mdl (+ .vvd/.vtx) into models.ImportedModel."""
 	from . import models as _m
@@ -390,28 +417,9 @@ def import_source(path: Path, opts=None):
 		if tex in mat_of_tex:
 			return mat_of_tex[tex]
 		name = tex_names[tex] if 0 <= tex < len(tex_names) else f"skin{tex}"
-		vtf_path, params = _vtf.resolve_material(name, cd_dirs, roots) if roots else (None, {})
-		rgba = None
-		if vtf_path is not None:
-			try:
-				rgba = _vtf.load_vtf(vtf_path)
-			except (OSError, ValueError) as exc:
-				warnings.append(f"material {name}: {vtf_path.name}: {exc}")
-		if rgba is None:
-			if not roots:
-				warnings.append(f"material {name}: no materials/ folder above the model; using grey")
-			else:
-				warnings.append(f"material {name}: .vmt/.vtf not found under {roots[0]}; using grey")
-			rgba = np.full((8, 8, 4), (180, 180, 180, 255), np.uint8)
-		cutout = params.get("$alphatest", "0") not in ("0", "") or params.get("$translucent", "0") not in ("0", "")
-		if not cutout:
-			rgba = rgba.copy()
-			rgba[..., 3] = 255	# Source packs spec/phong masks in alpha; only cut-outs keep it
-		rgba = _m._fit_skin(rgba, opts.skin_max_edge)
-		masked = bool((rgba[..., 3] < opts.alpha_threshold).any())
+		mat = source_skin(name, cd_dirs, roots, opts, warnings)
 		mat_of_tex[tex] = len(materials)
-		materials.append(_m.Material(Path(name).name or name, rgba, masked,
-			str(vtf_path.relative_to(roots[0].parent)) if vtf_path is not None and roots else ""))
+		materials.append(mat)
 		return mat_of_tex[tex]
 
 	model = _m.ImportedModel(path.stem, materials, [], warnings)

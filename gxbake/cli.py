@@ -28,7 +28,12 @@ from .core.project import CONVERTIBLE, Project, Settings
 
 
 def _convert(args) -> int:
-	s = Settings(cache_dir=args.cache or "", wad_dirs=args.wad_dir or [])
+	s = Settings(cache_dir=args.cache or "", wad_dirs=args.wad_dir or [], source_dirs=args.game_dir or [])
+	s.map_hulls = not args.no_map_hulls
+	s.map_props = not args.no_map_props
+	s.map_texture_max = args.map_texture_max
+	s.map_disp_power = args.map_disp_power
+	s.map_shadows = not args.no_map_shadows
 	s.image.max_edge = args.max_edge
 	s.image.mipmaps = not args.no_mipmaps
 	s.image.alpha = args.alpha
@@ -505,6 +510,17 @@ def build_parser() -> argparse.ArgumentParser:
 		help="trim world texture packs' top mips until they fit the engine's MEM1 pool")
 	c.add_argument("--wt-pool", default="448K", help="pool size for --fit-world")
 	c.add_argument("--wad-dir", action="append", help="extra WAD search folder (repeatable)")
+	c.add_argument("--game-dir", action="append", metavar="DIR_OR_VPK",
+		help="Source maps: game folder or _dir.vpk to find materials in (repeatable; the map's own pakfile and "
+		"the folder above maps/ are searched first)")
+	c.add_argument("--map-texture-max", type=int, default=256, help="Source maps: largest embedded texture side")
+	c.add_argument("--map-disp-power", type=int, default=2, choices=range(0, 5),
+		help="Source maps: displacement detail kept (2 = 5x5 vertices per displacement)")
+	c.add_argument("--no-map-hulls", action="store_true",
+		help="Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0)")
+	c.add_argument("--no-map-shadows", action="store_true",
+		help="Source 2 maps: light without tracing shadows (faster)")
+	c.add_argument("--no-map-props", action="store_true", help="Source maps: don't turn prop_static into cycler_sprite entities")
 	c.add_argument("--cache", help="CMPR encode cache folder")
 	c.add_argument("--no-sky-detect", action="store_true",
 		help="keep big 2:1 images, crosses, strips and .hdr files as textures instead of making skies of them")
