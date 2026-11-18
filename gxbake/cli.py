@@ -11,8 +11,8 @@
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
 	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
 	gxbake rs <main_file_cache.dat2|.dat> [--find NAME] [--json]
-	gxbake ff7 <.hrc|.p|.a|.tex> [--anims] [--json]
-	gxbake ffxi <DAT|.spw|.bgw|FINAL FANTASY XI folder> [--id N] [--textures DIR] [--wav OUT] [--json]
+	gxbake ff7 <.hrc|.p|.a|.tex|<base>aa> [--anims] [--json]
+	gxbake ffxi <DAT|.spw|.bgw|FINAL FANTASY XI folder> [--id N] [--textures DIR] [--wav OUT] [--obj DIR [--prefabs]] [--json]
 	gxbake gui [files...]
 """
 
@@ -178,11 +178,25 @@ def _ffxi(args) -> int:
 				+ (", mirrored" if m["mirrored"] else ""))
 		for m in info["motions"]:
 			print(f"  motion {m['name']}: {m['chunks']} chunk(s), {m['frames']} frames at {m['fps']:g} fps")
+		z = info.get("zone")
+		if z:
+			print(f"  zone: {z['prefabs']} prefabs ({z['prefab triangles']} triangles), {z['placed']} of {z['placements']}"
+				f" placements drawn ({z['placed triangles']} triangles)")
+			if z["unmatched names"]:
+				print(f"  placements naming no prefab here: {', '.join(z['unmatched names'])}")
 		for p in info["problems"]:
 			print(f"  warning: {p}")
 	if args.textures:
 		for p in ffxi.extract_textures(path, Path(args.textures)):
 			print(f"wrote {p}")
+	if args.obj:
+		try:
+			files = ffxi.zone_to_obj(path, Path(args.obj), args.scale, args.yaw, prefabs=args.prefabs)
+		except (OSError, ValueError) as exc:
+			print(f"error: {exc}", file=sys.stderr)
+			return 1
+		objs = [p for p in files if p.suffix == ".obj"]
+		print(f"wrote {len(objs)} OBJ file(s) and {len(files) - 2 * len(objs)} texture(s) to {args.obj}")
 	return 0
 
 
@@ -647,6 +661,11 @@ def build_parser() -> argparse.ArgumentParser:
 	ff.add_argument("--id", type=int, help="resolve this file id through VTABLE/FTABLE and describe that DAT")
 	ff.add_argument("--textures", metavar="DIR", help="write the DAT's textures as PNGs here")
 	ff.add_argument("--wav", metavar="OUT", help="decode a .spw/.bgw to this WAV")
+	ff.add_argument("--obj", metavar="DIR",
+		help="zone DATs: write the placed zone as OBJ + MTL + PNG textures here (GoldSrc axes and units)")
+	ff.add_argument("--prefabs", action="store_true", help="with --obj: one OBJ per zone prefab instead of the placed zone")
+	ff.add_argument("--scale", type=float, default=39.37, help="with --obj: GoldSrc units per FFXI unit")
+	ff.add_argument("--yaw", type=float, default=0.0, help="with --obj: extra degrees to turn about Z")
 	ff.add_argument("--json", action="store_true", help="print as JSON")
 	ff.set_defaults(fn=_ffxi)
 

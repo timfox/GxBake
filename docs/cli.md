@@ -141,7 +141,8 @@ gxbake ff7 path [--anims] [--json]
 Look inside Final Fantasy XI DATs, sounds and file tables.
 
 ```
-gxbake ffxi path [--id ID] [--textures DIR] [--wav OUT] [--json]
+gxbake ffxi path [--id ID] [--textures DIR] [--wav OUT] [--obj DIR] [--prefabs] [--scale SCALE]
+    [--yaw YAW] [--json]
 ```
 
 | Argument | Default | Description |
@@ -150,6 +151,10 @@ gxbake ffxi path [--id ID] [--textures DIR] [--wav OUT] [--json]
 | `--id ID` |  | resolve this file id through VTABLE/FTABLE and describe that DAT |
 | `--textures DIR` |  | write the DAT's textures as PNGs here |
 | `--wav OUT` |  | decode a .spw/.bgw to this WAV |
+| `--obj DIR` |  | zone DATs: write the placed zone as OBJ + MTL + PNG textures here (GoldSrc axes and units) |
+| `--prefabs` |  | with --obj: one OBJ per zone prefab instead of the placed zone |
+| `--scale SCALE` | `39.37` | with --obj: GoldSrc units per FFXI unit |
+| `--yaw YAW` |  | with --obj: extra degrees to turn about Z |
 | `--json` |  | print as JSON |
 
 ## `gxbake validate`
