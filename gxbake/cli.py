@@ -51,6 +51,8 @@ def _convert(args) -> int:
 	s.rose_scale = args.rose_scale
 	s.rose_yaw = args.rose_yaw
 	s.rose_entries = args.rose_entry or []
+	s.panda_scale = args.panda_scale
+	s.panda_yaw = args.panda_yaw
 	s.rs_scale = args.rs_scale
 	s.rs_yaw = args.rs_yaw
 	s.rs_entries = args.rs_entry or []
@@ -487,6 +489,10 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--rose-yaw", type=float, default=90.0, help="ROSE Online models: degrees to turn about Z (90 faces them +X)")
 	c.add_argument("--rose-entry", type=int, action="append",
 		help="ROSE .zsc/.chr: convert only this object/character index (repeatable; default all)")
+	c.add_argument("--panda-scale", type=float, default=12.0,
+		help="Panda3D/Toontown models: GoldSrc units per Panda unit (12: a Toontown foot)")
+	c.add_argument("--panda-yaw", type=float, default=-90.0,
+		help="Panda3D models: degrees to turn about Z (-90 turns Panda's +Y forward to GoldSrc's +X)")
 	c.add_argument("--rs-scale", type=float, default=0.35,
 		help="RuneScape caches: GoldSrc units per model unit (128 units = one tile)")
 	c.add_argument("--rs-yaw", type=float, default=0.0, help="RuneScape caches: extra degrees to turn about Z")
@@ -562,8 +568,8 @@ def build_parser() -> argparse.ArgumentParser:
 	dk.add_argument("--json", action="store_true", help="print the report as JSON")
 	dk.set_defaults(fn=_disc)
 
-	x = sub.add_parser("extract", help="unpack a Quake/GoldSrc .pak, Source .vpk or .pk3 archive")
-	x.add_argument("archives", nargs="+", help=".pak, .vpk or .pk3 files")
+	x = sub.add_parser("extract", help="unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive")
+	x.add_argument("archives", nargs="+", help=".pak, .vpk, .pk3 or .mf (e.g. Toontown's phase_3.mf) files")
 	x.add_argument("-o", "--output", required=True, help="folder to extract into")
 	x.add_argument("--match", action="append", help="only members matching this glob, e.g. 'models/*' (repeatable)")
 	x.set_defaults(fn=_extract)

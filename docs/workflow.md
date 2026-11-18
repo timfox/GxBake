@@ -20,11 +20,12 @@ loads. GxBake checks against those windows:
 
 ## 1. Get the files out of their archives
 
-Quake and GoldSrc `.pak`, Source `.vpk` and `.pk3` archives unpack with `extract`:
+Quake and GoldSrc `.pak`, Source `.vpk`, `.pk3` and Panda3D `.mf` archives unpack with `extract`:
 
 ```sh
 gxbake extract valve/pak0.pak -o src/valve
 gxbake extract hl2/hl2_misc_dir.vpk -o src/hl2 --match 'models/*' --match 'materials/*'
+gxbake extract toontown/phase_*.mf -o src/toontown
 ```
 
 ## 2. Look before converting

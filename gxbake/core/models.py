@@ -94,6 +94,8 @@ class ModelOptions:
 	blend_bones: bool = True	# native Source import: helper bones stand in for two-bone weights
 	rose_scale: float = 39.37	# ROSE Online models: GoldSrc units per metre (scale above is for Assimp only)
 	rose_yaw: float = 90.0	# ROSE Online models face -Y; turn about Z so they face GoldSrc's +X
+	panda_scale: float = 12.0	# Panda3D models: GoldSrc units per Panda unit (Toontown's unit is a foot)
+	panda_yaw: float = -90.0	# Panda3D models face +Y; turn about Z so they face GoldSrc's +X
 	rs_scale: float = 0.35	# RuneScape models: GoldSrc units per model unit (128 units = one tile)
 	rs_yaw: float = 0.0	# RuneScape models: extra turn about Z (they are already turned to face +X)
 
