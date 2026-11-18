@@ -51,11 +51,12 @@ _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
 _ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
 FILE_FILTER = (
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
-	f"{_MODEL_GLOBS} {_ROSE_GLOBS} main_file_cache.dat2 main_file_cache.dat);;"
+	f"{_MODEL_GLOBS} {_ROSE_GLOBS} main_file_cache.dat2 main_file_cache.dat *.dat *.ffximdl *.spw *.bgw);;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
 	f"ROSE Online models ({_ROSE_GLOBS});;"
 	"RuneScape caches (main_file_cache.dat2 main_file_cache.dat);;"
+	"Final Fantasy XI (*.dat *.ffximdl *.spw *.bgw);;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
 )
 
@@ -216,6 +217,22 @@ class SettingsPanel(QWidget):
 		f.addRow("Turn (degrees)", self.rs_yaw)
 		outer.addWidget(rsg)
 
+		xi = QGroupBox("Final Fantasy XI (ROM .dat, .ffximdl, .spw/.bgw)")
+		f = QFormLayout(xi)
+		self.ffxi_scale = QDoubleSpinBox()
+		self.ffxi_scale.setRange(0.01, 1000.0)
+		self.ffxi_scale.setDecimals(2)
+		self.ffxi_scale.setValue(settings.ffxi_scale)
+		self.ffxi_scale.setToolTip("GoldSrc units per FFXI unit (taken as a metre; not yet checked against real data).")
+		f.addRow("Units per FFXI unit", self.ffxi_scale)
+		self.ffxi_yaw = QDoubleSpinBox()
+		self.ffxi_yaw.setRange(-180.0, 180.0)
+		self.ffxi_yaw.setDecimals(0)
+		self.ffxi_yaw.setValue(settings.ffxi_yaw)
+		self.ffxi_yaw.setToolTip("Extra turn about the up axis. Models are turned from FFXI's y-down space and assumed to face +X.")
+		f.addRow("Turn (degrees)", self.ffxi_yaw)
+		outer.addWidget(xi)
+
 		vid = QGroupBox("Video and audio")
 		f = QFormLayout(vid)
 		self.vw = self._spin(8, 640, settings.video_width, step=8)
@@ -265,7 +282,7 @@ class SettingsPanel(QWidget):
 				self.model_static, self.model_clips, self.model_blend, self.sky_detect):
 			w.toggled.connect(self._sync)
 		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw,
-				self.rs_scale, self.rs_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
+				self.rs_scale, self.rs_yaw, self.ffxi_scale, self.ffxi_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
@@ -331,6 +348,8 @@ class SettingsPanel(QWidget):
 		s.rose_yaw = self.rose_yaw.value()
 		s.rs_scale = self.rs_scale.value()
 		s.rs_yaw = self.rs_yaw.value()
+		s.ffxi_scale = self.ffxi_scale.value()
+		s.ffxi_yaw = self.ffxi_yaw.value()
 		s.video_width = self.vw.value()
 		s.video_height = self.vh.value()
 		s.video_fps = self.fps.value()

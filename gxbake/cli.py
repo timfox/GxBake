@@ -11,6 +11,7 @@
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
 	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
 	gxbake rs <main_file_cache.dat2|.dat> [--find NAME] [--json]
+	gxbake ffxi <DAT|.spw|.bgw|FINAL FANTASY XI folder> [--id N] [--textures DIR] [--wav OUT] [--json]
 	gxbake gui [files...]
 """
 
@@ -54,6 +55,10 @@ def _convert(args) -> int:
 	s.rs_scale = args.rs_scale
 	s.rs_yaw = args.rs_yaw
 	s.rs_entries = args.rs_entry or []
+	s.ffxi_scale = args.ffxi_scale
+	s.ffxi_yaw = args.ffxi_yaw
+	s.ffxi_skeleton = args.ffxi_skeleton or ""
+	s.ffxi_music = not args.ffxi_music_wav
 	s.video_width, s.video_height, s.video_fps = args.video_width, args.video_height, args.video_fps
 	s.sky_yaw, s.sky_fov, s.sky_exposure = args.sky_yaw, args.sky_fov, args.sky_exposure
 	s.detect_panoramas = not args.no_sky_detect
@@ -111,6 +116,68 @@ def _rs(args) -> int:
 			+ (f"  ({anims})" if anims else ""))
 	if args.limit and len(rows) > args.limit:
 		print(f"  … {len(rows) - args.limit} more (--limit 0 lists all)")
+	return 0
+
+
+def _ffxi(args) -> int:
+	from .core import ffxi
+
+	path = Path(args.path)
+	try:
+		if path.is_dir() or args.id is not None:
+			root = path if path.is_dir() else path.parent
+			rom = ffxi.Rom(root)
+			if args.id is None:
+				info = {"root": str(root), "roms": [n for n, _v, _f in rom.tables], "files": rom.count()}
+				if args.json:
+					print(json.dumps(info, indent=2))
+				else:
+					print(f"{root}: ROM tables {', '.join(map(str, info['roms']))}, {info['files']} files")
+					print("  look one up with --id N")
+				return 0
+			found = rom.path(args.id)
+			if found is None:
+				print(f"error: file id {args.id} is not in the tables", file=sys.stderr)
+				return 1
+			print(f"id {args.id} → {found}")
+			path = found
+		if path.suffix.lower() in ffxi.AUDIO_EXTENSIONS:
+			data = path.read_bytes()
+			h = ffxi.read_sound_header(data)
+			fmt = {0: "ADPCM", 1: "PCM", 3: "ATRAC3"}.get(h.format, str(h.format))
+			if args.json:
+				print(json.dumps(h.__dict__, indent=2))
+			else:
+				loop = f", loops from block {h.loop_start}" if h.loop_start >= 0 else ""
+				print(f"{path.name}: {h.kind}, {fmt}, {h.channels} ch, {h.rate} Hz, id {h.id}{loop}")
+			if args.wav:
+				wav, _ = ffxi.sound_to_wav(data)
+				Path(args.wav).parent.mkdir(parents=True, exist_ok=True)
+				Path(args.wav).write_bytes(wav)
+				print(f"wrote {args.wav}")
+			return 0
+		info = ffxi.describe(path)
+	except (OSError, ValueError) as exc:
+		print(f"error: {exc}", file=sys.stderr)
+		return 1
+	if args.json:
+		print(json.dumps(info, indent=2))
+	else:
+		print(f"{path}: " + ", ".join(f"{n} {k}" for k, n in info["chunks"].items()))
+		for t in info["textures"]:
+			print(f"  texture {t['name']!r}: {t['format']}, {t['size']}")
+		if info["bones"]:
+			print(f"  skeleton: {info['bones']} bones")
+		for m in info["meshes"]:
+			print(f"  mesh {m['name']!r}: {m['vertices']} vertices, {m['triangles']} triangles"
+				+ (", mirrored" if m["mirrored"] else ""))
+		for m in info["motions"]:
+			print(f"  motion {m['name']}: {m['chunks']} chunk(s), {m['frames']} frames at {m['fps']:g} fps")
+		for p in info["problems"]:
+			print(f"  warning: {p}")
+	if args.textures:
+		for p in ffxi.extract_textures(path, Path(args.textures)):
+			print(f"wrote {p}")
 	return 0
 
 
@@ -492,6 +559,12 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--rs-yaw", type=float, default=0.0, help="RuneScape caches: extra degrees to turn about Z")
 	c.add_argument("--rs-entry", action="append", metavar="KIND:ID",
 		help="RuneScape caches: convert npc:<id> or model:<id> (repeatable; default every named NPC)")
+	c.add_argument("--ffxi-scale", type=float, default=39.37, help="Final Fantasy XI models: GoldSrc units per FFXI unit")
+	c.add_argument("--ffxi-yaw", type=float, default=0.0, help="Final Fantasy XI models: extra degrees to turn about Z")
+	c.add_argument("--ffxi-skeleton", metavar="DAT",
+		help="Final Fantasy XI: race skeleton DAT for equipment and face DATs that have none of their own")
+	c.add_argument("--ffxi-music-wav", action="store_true",
+		help="Final Fantasy XI: write .bgw music as WAVs under sound/ffxi/ instead of media/<name>.gcpcm")
 	c.add_argument("--video-width", type=int, default=320, help="GCVID frame width")
 	c.add_argument("--video-height", type=int, default=240, help="GCVID frame height")
 	c.add_argument("--video-fps", type=int, default=15, help="GCVID frame rate")
@@ -519,6 +592,14 @@ def build_parser() -> argparse.ArgumentParser:
 	r.add_argument("--limit", type=int, default=50, help="NPCs to print (0 = all)")
 	r.add_argument("--json", action="store_true", help="print everything as JSON")
 	r.set_defaults(fn=_rs)
+
+	ff = sub.add_parser("ffxi", help="look inside Final Fantasy XI DATs, sounds and file tables")
+	ff.add_argument("path", help="a ROM DAT, a .spw/.bgw sound, or the FINAL FANTASY XI folder (with --id)")
+	ff.add_argument("--id", type=int, help="resolve this file id through VTABLE/FTABLE and describe that DAT")
+	ff.add_argument("--textures", metavar="DIR", help="write the DAT's textures as PNGs here")
+	ff.add_argument("--wav", metavar="OUT", help="decode a .spw/.bgw to this WAV")
+	ff.add_argument("--json", action="store_true", help="print as JSON")
+	ff.set_defaults(fn=_ffxi)
 
 	v = sub.add_parser("validate", help="check a staged gamedir like the disc builder does")
 	v.add_argument("path", help="staged gamedir")

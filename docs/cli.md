@@ -17,6 +17,7 @@ build or CI job.
 | [`convert`](#gxbake-convert) | convert files or folders |
 | [`inspect`](#gxbake-inspect) | print what GxBake sees in a file or folder |
 | [`rs`](#gxbake-rs) | list the NPCs and models in a RuneScape cache |
+| [`ffxi`](#gxbake-ffxi) | look inside Final Fantasy XI DATs, sounds and file tables |
 | [`validate`](#gxbake-validate) | check a staged gamedir like the disc builder does |
 | [`budget`](#gxbake-budget) | per-map memory report against the GameCube port's windows |
 | [`fit`](#gxbake-fit) | trim a .gct's top mips until it fits the world texture budget |
@@ -39,7 +40,8 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     {y,z}] [--model-skin-max-edge MODEL_SKIN_MAX_EDGE] [--no-model-full] [--model-static]
     [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale ROSE_SCALE]
     [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW]
-    [--rs-entry KIND:ID] [--video-width VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps
+    [--rs-entry KIND:ID] [--ffxi-scale FFXI_SCALE] [--ffxi-yaw FFXI_YAW] [--ffxi-skeleton DAT]
+    [--ffxi-music-wav] [--video-width VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps
     VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR] [--cache CACHE]
     [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
 ```
@@ -71,6 +73,10 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--rs-scale RS_SCALE` | `0.35` | RuneScape caches: GoldSrc units per model unit (128 units = one tile) |
 | `--rs-yaw RS_YAW` |  | RuneScape caches: extra degrees to turn about Z |
 | `--rs-entry KIND:ID` |  | RuneScape caches: convert npc:<id> or model:<id> (repeatable; default every named NPC) |
+| `--ffxi-scale FFXI_SCALE` | `39.37` | Final Fantasy XI models: GoldSrc units per FFXI unit |
+| `--ffxi-yaw FFXI_YAW` |  | Final Fantasy XI models: extra degrees to turn about Z |
+| `--ffxi-skeleton DAT` |  | Final Fantasy XI: race skeleton DAT for equipment and face DATs that have none of their own |
+| `--ffxi-music-wav` |  | Final Fantasy XI: write .bgw music as WAVs under sound/ffxi/ instead of media/<name>.gcpcm |
 | `--video-width VIDEO_WIDTH` | `320` | GCVID frame width |
 | `--video-height VIDEO_HEIGHT` | `240` | GCVID frame height |
 | `--video-fps VIDEO_FPS` | `15` | GCVID frame rate |
@@ -110,6 +116,22 @@ gxbake rs path [--find FIND] [--all] [--limit LIMIT] [--json]
 | `--all` |  | include NPCs named `null` (variants the client swaps in) |
 | `--limit LIMIT` | `50` | NPCs to print (0 = all) |
 | `--json` |  | print everything as JSON |
+
+## `gxbake ffxi`
+
+Look inside Final Fantasy XI DATs, sounds and file tables.
+
+```
+gxbake ffxi path [--id ID] [--textures DIR] [--wav OUT] [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `path` |  | a ROM DAT, a .spw/.bgw sound, or the FINAL FANTASY XI folder (with --id) |
+| `--id ID` |  | resolve this file id through VTABLE/FTABLE and describe that DAT |
+| `--textures DIR` |  | write the DAT's textures as PNGs here |
+| `--wav OUT` |  | decode a .spw/.bgw to this WAV |
+| `--json` |  | print as JSON |
 
 ## `gxbake validate`
 

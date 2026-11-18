@@ -225,7 +225,7 @@ def wav_to_pcm48k(path: Path) -> bytes | None:
 	import wave
 
 	try:
-		with wave.open(str(path), "rb") as w:
+		with wave.open(path if hasattr(path, "read") else str(path), "rb") as w:
 			ch, width, rate, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
 			raw = w.readframes(n)
 	except (wave.Error, EOFError, OSError):

@@ -96,6 +96,9 @@ class ModelOptions:
 	rose_yaw: float = 90.0	# ROSE Online models face -Y; turn about Z so they face GoldSrc's +X
 	rs_scale: float = 0.35	# RuneScape models: GoldSrc units per model unit (128 units = one tile)
 	rs_yaw: float = 0.0	# RuneScape models: extra turn about Z (they are already turned to face +X)
+	ffxi_scale: float = 39.37	# Final Fantasy XI models: GoldSrc units per FFXI unit
+	ffxi_yaw: float = 0.0	# Final Fantasy XI models: extra turn about Z (they are turned y-down → Z-up, facing +X)
+	ffxi_skeleton: str = ""	# Final Fantasy XI: race skeleton DAT for equipment/face DATs without their own
 
 
 @dataclass
