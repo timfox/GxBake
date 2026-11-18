@@ -262,3 +262,94 @@ def test_squeeze_presets(tmp_path, capsys):
 	m = out / "gc_studio/guy.mdl"
 	if m.exists():	# lossless re-encode keeps every frame
 		assert [s["frames"] for s in models.studio_sequences(m.read_bytes())] == [31, 20, 1]
+
+
+def test_palette_collapses_in_tlut_domain():
+	# 32 palette entries that differ only in bits RGB565 drops: 4 colours on the GameCube.
+	pal = np.zeros((256, 3), np.uint8)
+	for k in range(32):
+		pal[k] = (np.array([0, 64, 128, 192])[k % 4] + k // 4) % 256
+	index = (np.arange(64 * 64) % 32).reshape(64, 64).astype(np.uint8)
+	ch = gxtex.choose_indexed(index, pal, False, allow_cmpr=False)
+	assert ch.tex.fmt == "CI4" and ch.psnr == float("inf")
+
+
+def test_kmeans_ci4_only_within_floor():
+	rng = np.random.default_rng(3)
+	pal = rng.integers(0, 256, (256, 3)).astype(np.uint8)
+	# Six well-separated hues with small jitter: 60 colours that 16 entries hold nearly exactly.
+	base = rng.integers(0, 256, (6, 3))
+	pal[:60] = np.clip(base[np.arange(60) % 6] + rng.integers(-3, 4, (60, 3)), 0, 255)
+	index = rng.integers(0, 60, (64, 64)).astype(np.uint8)
+	ch = gxtex.choose_indexed(index, pal, False, min_db=35, allow_cmpr=False)
+	assert ch.tex.fmt == "CI4" and 35 <= ch.psnr < float("inf")
+	strict = gxtex.choose_indexed(index, pal, False, min_db=float("inf"), allow_cmpr=False)
+	assert strict.tex.fmt == "CI8" and strict.psnr == float("inf")
+	# Noise over 200 colours cannot hide in 16.
+	noisy = rng.integers(0, 200, (64, 64)).astype(np.uint8)
+	assert gxtex.choose_indexed(noisy, pal, False, min_db=35, allow_cmpr=False).tex.fmt == "CI8"
+
+
+def test_skin_pack_shares_identical_blobs():
+	pal = np.zeros((256, 3), np.uint8)
+	pal[:4] = [(0, 0, 0), (255, 0, 0), (0, 255, 0), (0, 0, 255)]
+	a = (np.arange(32 * 32) % 4).reshape(32, 32).astype(np.uint8)
+	b = a.T.copy()
+	skins = [squeeze.SkinChoice(n, 32, 32, gxtex.choose_indexed(i, pal, False)) for n, i in (("a", a), ("b", b), ("c", a))]
+	blob = squeeze.write_skin_pack(skins)
+	single = len(squeeze.write_skin_pack(skins[:1]))
+	back = squeeze.read_skin_pack(blob)
+	assert [t.data for t in back] == [s.choice.tex.data for s in skins]
+	assert all(t.tlut == back[0].tlut for t in back)
+	# Three entries, but two texel blocks and one TLUT.
+	rows = [squeeze.GCSK_ENTRY.unpack_from(blob, 16 + k * squeeze.GCSK_ENTRY.size) for k in range(3)]
+	assert len({r[7] for r in rows}) == 2 and len({r[9] for r in rows}) == 1
+	assert rows[0][7] == rows[2][7] and len(blob) < 3 * single
+
+
+def test_dedup_finds_exact_and_near_copies(tmp_path):
+	from gxbake.core import dedup
+
+	rng = np.random.default_rng(5)
+	base = rng.integers(0, 256, (32, 32, 4)).astype(np.uint8)
+	base[..., 3] = 255
+	soft = np.clip(base.astype(int) + 1, 0, 255).astype(np.uint8)	# one level brighter everywhere
+	other = rng.integers(0, 256, (32, 32, 4)).astype(np.uint8)
+	mk = lambda f, n, rgba, d: dedup.TexItem(f, n, 32, 32, 512, d, rgba)
+	items = [mk("a.gct", "rock", base, "x"), mk("b.gct", "rock", base, "x"), mk("b.gct", "rock2", soft, "y"),
+		mk("c.gct", "sky", other, "z")]
+	rep = dedup.find_duplicates(items, min_db=40)
+	assert len(rep.exact) == 1 and len(rep.exact[0].items) == 2 and rep.exact[0].wasted == 512
+	assert len(rep.near) == 1 and {i.name for i in rep.near[0].items} == {"rock", "rock2"} and rep.near[0].psnr > 40
+	assert "exact duplicate groups" in dedup.format_dedup(rep)
+	assert dedup.dhash(base) == dedup.dhash(soft) and dedup.dhash(base) != dedup.dhash(other)
+
+
+def test_squeeze_reports_duplicate_textures(tmp_path, capsys):
+	root = tmp_path / "stage"
+	(root / "media").mkdir(parents=True)
+	pack = flat_and_busy_pack()
+	(root / "media/wt_a.gct").write_bytes(pack)
+	(root / "media/wt_b.gct").write_bytes(pack)
+	assert cli.main(["squeeze", str(root), "--only", "dedup"]) == 0
+	assert "duplicate textures" in capsys.readouterr().out
+
+
+def test_cmpr_refine_same_size_closer_and_keeps_cutouts():
+	from gxbake.core import cmpr
+
+	rng = np.random.default_rng(9)
+	y, x = np.mgrid[0:32, 0:32]
+	rgb = np.stack((x * 8, y * 8, (x + y) * 4), -1).astype(np.float64) + rng.normal(0, 6, (32, 32, 3))
+	rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+	op = np.ones((32, 32), bool)
+	op[:8, :8] = (x[:8, :8] + y[:8, :8]) % 3 > 0	# some three-colour (cut-out) blocks
+	base = cmpr.gx_cmpr_encode_blocks(rgb, op)
+	ref = cmpr.cmpr_refine(rgb, op, base)
+	assert len(ref) == len(base)
+	a, b = cmpr.cmpr_decode(base, 32, 32), cmpr.cmpr_decode(ref, 32, 32)
+	assert ((a[..., 3] > 0) == (b[..., 3] > 0)).all() and ((b[..., 3] > 0) == op).all()
+	assert gxtex.psnr(b[..., :3], rgb, op) > gxtex.psnr(a[..., :3], rgb, op)
+	# the block helpers round-trip the tiled layout
+	c0, c1, idx = cmpr._blocks_of(base, 8, 8)
+	assert cmpr._tile_blocks(c0, c1, idx) == base

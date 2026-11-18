@@ -39,16 +39,16 @@ Convert files or folders.
 
 ```
 gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mipmaps] [--alpha
-    {auto,on,off}] [--no-pack] [--pack-name PACK_NAME] [--raw-cmp] [--mdl-max-edge MDL_MAX_EDGE]
-    [--mdl-anim-step MDL_ANIM_STEP] [--spr-scale SPR_SCALE] [--model-scale MODEL_SCALE] [--model-up
-    {y,z}] [--model-skin-max-edge MODEL_SKIN_MAX_EDGE] [--no-model-full] [--model-static]
-    [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale ROSE_SCALE]
-    [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--panda-scale PANDA_SCALE] [--panda-yaw
-    PANDA_YAW] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW] [--rs-entry KIND:ID] [--ffxi-scale
-    FFXI_SCALE] [--ffxi-yaw FFXI_YAW] [--ffxi-skeleton DAT] [--ffxi-music-wav] [--ff7-scale
-    FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale FF7_BATTLE_SCALE] [--video-width VIDEO_WIDTH]
-    [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL]
-    [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
+    {auto,on,off}] [--cmpr-refine] [--no-pack] [--pack-name PACK_NAME] [--raw-cmp] [--mdl-max-edge
+    MDL_MAX_EDGE] [--mdl-anim-step MDL_ANIM_STEP] [--spr-scale SPR_SCALE] [--model-scale
+    MODEL_SCALE] [--model-up {y,z}] [--model-skin-max-edge MODEL_SKIN_MAX_EDGE] [--no-model-full]
+    [--model-static] [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale
+    ROSE_SCALE] [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--panda-scale PANDA_SCALE]
+    [--panda-yaw PANDA_YAW] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW] [--rs-entry KIND:ID]
+    [--ffxi-scale FFXI_SCALE] [--ffxi-yaw FFXI_YAW] [--ffxi-skeleton DAT] [--ffxi-music-wav]
+    [--ff7-scale FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale FF7_BATTLE_SCALE] [--video-width
+    VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool
+    WT_POOL] [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
     [--map-disp-power {0,1,2,3,4}] [--no-map-hulls] [--no-map-shadows] [--no-map-props] [--cache
     CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
 ```
@@ -60,6 +60,7 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--max-edge MAX_EDGE` | `256` | largest texture side for loose images (power of two) |
 | `--no-mipmaps` |  | write level 0 only |
 | `--alpha {auto,on,off}` | `auto` | CMPR 1-bit alpha: auto uses it when the image has transparency |
+| `--cmpr-refine` |  | least-squares CMPR endpoints for every texture: same size, closer colours, bytes differ from the disc builder |
 | `--no-pack` |  | one .gct per loose image |
 | `--pack-name PACK_NAME` | `textures` | loose images go to media/<name>.gct |
 | `--raw-cmp` |  | also write media/<name>.cmp (level 0) per loose image |
@@ -314,7 +315,7 @@ gxbake squeeze path [--output OUTPUT] [--emit] [--preset {balanced,lossless,max}
 | `--anim-fit DEG` |  | resample studio animation to the fewest keys within DEG degrees (0 = off; balanced: 0.5) |
 | `--skin-db SKIN_DB` |  | lossy skin formats must stay within this PSNR of RGB565 (balanced: 40) |
 | `--no-yaz0` |  | skip the (slow) Yaz0 estimate (same as --skip yaz0) |
-| `--only LIST` |  | only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0 (repeatable) |
+| `--only LIST` |  | only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0, dedup (repeatable) |
 | `--skip LIST` |  | leave these techniques out (same names as --only) (repeatable) |
 | `--match GLOB` |  | only these relative paths (repeatable) |
 | `--json` |  | print every row as JSON |
@@ -414,7 +415,7 @@ Encode images into a new pack.
 
 ```
 gxbake pack build images [images ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mipmaps] [--alpha
-    {auto,on,off}]
+    {auto,on,off}] [--cmpr-refine]
 ```
 
 | Argument | Default | Description |
@@ -424,6 +425,7 @@ gxbake pack build images [images ...] --output OUTPUT [--max-edge MAX_EDGE] [--n
 | `--max-edge MAX_EDGE` | `256` | largest texture side (power of two) |
 | `--no-mipmaps` |  | write level 0 only |
 | `--alpha {auto,on,off}` | `auto` | CMPR 1-bit alpha: auto uses it when the image has transparency |
+| `--cmpr-refine` |  | least-squares CMPR endpoints: same size, closer colours (+0.3 dB median, up to +2.4 dB) |
 
 ### `gxbake pack add`
 
@@ -431,7 +433,7 @@ Add images to a pack, replacing entries with the same name.
 
 ```
 gxbake pack add pack images [images ...] [--output OUTPUT] [--max-edge MAX_EDGE] [--no-mipmaps]
-    [--alpha {auto,on,off}]
+    [--alpha {auto,on,off}] [--cmpr-refine]
 ```
 
 | Argument | Default | Description |
@@ -442,6 +444,7 @@ gxbake pack add pack images [images ...] [--output OUTPUT] [--max-edge MAX_EDGE]
 | `--max-edge MAX_EDGE` | `256` | largest texture side (power of two) |
 | `--no-mipmaps` |  | write level 0 only |
 | `--alpha {auto,on,off}` | `auto` | CMPR 1-bit alpha: auto uses it when the image has transparency |
+| `--cmpr-refine` |  | least-squares CMPR endpoints: same size, closer colours (+0.3 dB median, up to +2.4 dB) |
 
 ### `gxbake pack remove`
 

@@ -73,6 +73,7 @@ TECHNIQUES = {
 	"verts": "s16 vertices (estimate)",
 	"lightmaps": "CMPR lightmaps (estimate)",
 	"yaz0": "Yaz0 (.yaz0)",
+	"dedup": "duplicate textures across files (exact and perceptual hash)",
 }
 
 
@@ -221,22 +222,32 @@ def write_skin_pack(skins: list[SkinChoice]) -> bytes:
 		"GCSK" u32 count u32 version (1) u32 0
 		count × { u16 skin; u8 GXTexFmt; u8 GXTlutFmt; u16 w, h; u16 tlut entries;
 		          u16 flags (1 = 1-bit alpha); u32 tex off, tex bytes, tlut off, tlut bytes; 8 × 0 }
-		then texels and TLUTs, each 32-byte aligned (GX_InitTexObj, GX_LoadTlut)
+		then texels and TLUTs, each 32-byte aligned (GX_InitTexObj, GX_LoadTlut);
+		identical texels or TLUTs are stored once and several entries point at them
 	"""
 	head = GCSK_MAGIC + struct.pack(">III", len(skins), 1, 0)
 	table_end = len(head) + len(skins) * GCSK_ENTRY.size
 	pos = table_end + (-table_end & 31)
 	rows, blobs = [], []
+	placed: dict[bytes, int] = {}	# identical texels or TLUTs are stored once and shared
+
+	def place(b: bytes) -> int:
+		nonlocal pos
+		if not b:
+			return 0
+		if b not in placed:
+			placed[b] = pos
+			blobs.append(b + bytes(-len(b) & 31))
+			pos += len(blobs[-1])
+		return placed[b]
+
 	for i, s in enumerate(skins):
 		t = s.choice.tex
-		tex_off = pos
-		pos += len(t.data) + (-len(t.data) & 31)
-		tlut_off = pos if t.tlut else 0
-		pos += len(t.tlut) + (-len(t.tlut) & 31)
+		tex_off = place(t.data)
+		tlut_off = place(t.tlut)
 		alpha = t.fmt in ("RGB5A3", "IA4", "IA8", "CMPR") or t.tlut_fmt == gxtex.GX_TL_RGB5A3 and bool(t.tlut)
 		rows.append(GCSK_ENTRY.pack(i, gxtex.FORMATS[t.fmt][0], t.tlut_fmt, t.width, t.height, len(t.tlut) // 2,
 			int(alpha), tex_off, len(t.data), tlut_off, len(t.tlut)))
-		blobs += [t.data + bytes(-len(t.data) & 31), t.tlut + bytes(-len(t.tlut) & 31)]
 	body = head + b"".join(rows)
 	return body + bytes(-len(body) & 31) + b"".join(blobs)
 
@@ -401,6 +412,7 @@ def staged_files(root: Path) -> list[tuple[Path, str]]:
 @dataclass
 class Report:
 	rows: list[Saving] = field(default_factory=list)
+	dedup: object = None	# dedup.DedupReport when that technique ran
 
 	def by_technique(self) -> dict[str, list[Saving]]:
 		out: dict[str, list[Saving]] = {}
@@ -415,10 +427,20 @@ class Report:
 def squeeze(root: Path, opt: SqueezeOptions | None = None, match: list[str] | None = None) -> Report:
 	opt = opt or SqueezeOptions()
 	rep = Report()
-	for path, rel in staged_files(root):
-		if not _matches(rel, match):
-			continue
+	files = [(p, r) for p, r in staged_files(root) if _matches(r, match)]
+	for path, rel in files:
 		rep.rows += analyse_file(path, rel, opt)
+	if opt.on("dedup"):
+		from .dedup import scan
+
+		d = scan(root, files, opt.min_db if opt.min_db != float("inf") else 99.0)
+		rep.dedup = d
+		for g in d.exact + d.near:
+			total = sum(i.size for i in g.items)
+			where = "MEM1 (same file)" if g.same_file else "disc (one per map/model)"
+			rep.rows.append(Saving("duplicate textures", False, where, g.items[0].label, total, total - g.wasted,
+				"identical" if g.exact else f"≥{g.psnr:.0f} dB", ", ".join(i.label for i in g.items[1:4]),
+				None if g.exact else g.psnr))
 	return rep
 
 

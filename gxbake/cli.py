@@ -43,6 +43,7 @@ def _convert(args) -> int:
 	s.image.max_edge = args.max_edge
 	s.image.mipmaps = not args.no_mipmaps
 	s.image.alpha = args.alpha
+	s.image.cmpr_refine = args.cmpr_refine
 	s.pack_images = not args.no_pack
 	s.pack_name = args.pack_name
 	s.raw_cmp = args.raw_cmp
@@ -514,7 +515,8 @@ def _yaz0(args) -> int:
 def _image_opts(args):
 	from .core.images import ImageOptions
 
-	return ImageOptions(max_edge=args.max_edge, mipmaps=not args.no_mipmaps, alpha=args.alpha)
+	return ImageOptions(max_edge=args.max_edge, mipmaps=not args.no_mipmaps, alpha=args.alpha,
+		cmpr_refine=args.cmpr_refine)
 
 
 def _pack_report(rep) -> None:
@@ -623,6 +625,8 @@ def _add_image_opts(p) -> None:
 	p.add_argument("--no-mipmaps", action="store_true", help="write level 0 only")
 	p.add_argument("--alpha", choices=("auto", "on", "off"), default="auto",
 		help="CMPR 1-bit alpha: auto uses it when the image has transparency")
+	p.add_argument("--cmpr-refine", action="store_true",
+		help="least-squares CMPR endpoints: same size, closer colours (+0.3 dB median, up to +2.4 dB)")
 
 
 def _add_pack_parser(sub) -> None:
@@ -684,6 +688,8 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--max-edge", type=int, default=256, help="largest texture side for loose images (power of two)")
 	c.add_argument("--no-mipmaps", action="store_true", help="write level 0 only")
 	c.add_argument("--alpha", choices=("auto", "on", "off"), default="auto", help="CMPR 1-bit alpha: auto uses it when the image has transparency")
+	c.add_argument("--cmpr-refine", action="store_true",
+		help="least-squares CMPR endpoints for every texture: same size, closer colours, bytes differ from the disc builder")
 	c.add_argument("--no-pack", action="store_true", help="one .gct per loose image")
 	c.add_argument("--pack-name", default="textures", help="loose images go to media/<name>.gct")
 	c.add_argument("--raw-cmp", action="store_true", help="also write media/<name>.cmp (level 0) per loose image")
@@ -859,7 +865,7 @@ def build_parser() -> argparse.ArgumentParser:
 	sq.add_argument("--skin-db", type=float, help="lossy skin formats must stay within this PSNR of RGB565 (balanced: 40)")
 	sq.add_argument("--no-yaz0", action="store_true", help="skip the (slow) Yaz0 estimate (same as --skip yaz0)")
 	sq.add_argument("--only", action="append", metavar="LIST",
-		help="only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0")
+		help="only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0, dedup")
 	sq.add_argument("--skip", action="append", metavar="LIST", help="leave these techniques out (same names as --only)")
 	sq.add_argument("--match", action="append", metavar="GLOB", help="only these relative paths (repeatable)")
 	sq.add_argument("--json", action="store_true", help="print every row as JSON")
