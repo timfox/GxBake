@@ -49,8 +49,9 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale FF7_BATTLE_SCALE] [--video-width VIDEO_WIDTH]
     [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL]
     [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
-    [--map-disp-power {0,1,2,3,4}] [--no-map-hulls] [--no-map-shadows] [--no-map-props] [--cache
-    CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
+    [--map-disp-power {0,1,2,3,4}] [--map-vis-merge LEAVES] [--no-map-hulls] [--no-map-shadows]
+    [--no-map-props] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV]
+    [--sky-exposure SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |
@@ -98,6 +99,7 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--game-dir DIR_OR_VPK` |  | Source maps: game folder or _dir.vpk to find materials in (repeatable; the map's own pakfile and the folder above maps/ are searched first) |
 | `--map-texture-max MAP_TEXTURE_MAX` | `256` | Source maps: largest embedded texture side |
 | `--map-disp-power {0,1,2,3,4}` | `2` | Source maps: displacement detail kept (2 = 5x5 vertices per displacement) |
+| `--map-vis-merge LEAVES` | `8` | Source maps: PVS rows that differ by at most this many leaves are stored once as their union (only adds visible leaves; 0 keeps the exact PVS) |
 | `--no-map-hulls` |  | Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0) |
 | `--no-map-shadows` |  | Source 2 maps: light without tracing shadows (faster) |
 | `--no-map-props` |  | Source maps: don't turn prop_static into cycler_sprite entities |

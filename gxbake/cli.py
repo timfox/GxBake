@@ -39,6 +39,7 @@ def _convert(args) -> int:
 	s.map_props = not args.no_map_props
 	s.map_texture_max = args.map_texture_max
 	s.map_disp_power = args.map_disp_power
+	s.map_vis_merge = args.map_vis_merge
 	s.map_shadows = not args.no_map_shadows
 	s.image.max_edge = args.max_edge
 	s.image.mipmaps = not args.no_mipmaps
@@ -730,6 +731,9 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--map-texture-max", type=int, default=256, help="Source maps: largest embedded texture side")
 	c.add_argument("--map-disp-power", type=int, default=2, choices=range(0, 5),
 		help="Source maps: displacement detail kept (2 = 5x5 vertices per displacement)")
+	c.add_argument("--map-vis-merge", type=int, default=8, metavar="LEAVES",
+		help="Source maps: PVS rows that differ by at most this many leaves are stored once as their union "
+		"(only adds visible leaves; 0 keeps the exact PVS)")
 	c.add_argument("--no-map-hulls", action="store_true",
 		help="Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0)")
 	c.add_argument("--no-map-shadows", action="store_true",
