@@ -96,6 +96,69 @@ def wad_miptex(path: Path) -> dict:
 	return found
 
 
+@dataclass
+class WadPicture:
+	"""A WAD3 qpic (0x42) or font (0x46) lump, indexed with its own palette; index 255 is transparent."""
+	name: str
+	kind: int
+	width: int
+	height: int
+	pixels: bytes
+	palette: bytes
+	row_count: int = 0	# fonts: rows of glyphs
+	row_height: int = 0
+	glyphs: list[tuple[int, int]] | None = None	# fonts: (offset into pixels, width) per character
+
+	@property
+	def transparent(self) -> bool:
+		return 255 in self.pixels
+
+	def rgba(self) -> np.ndarray:
+		return miptex_rgba(self.width, self.height, self.pixels, self.palette, True)
+
+
+def read_wad_picture(name: str, kind: int, lump: bytes) -> WadPicture | None:
+	try:
+		if kind == 0x42:
+			w, h = struct.unpack_from("<ii", lump, 0)
+			p = 8
+			glyphs, rows, rh = None, 0, 0
+		elif kind == 0x46:
+			w, h, rows, rh = struct.unpack_from("<iiii", lump, 0)
+			glyphs = [struct.unpack_from("<hh", lump, 16 + 4 * i) for i in range(256)]
+			p = 16 + 1024
+			w = 256 if w <= 0 else w	# fonts are 256 wide
+		else:
+			return None
+		if not 0 < w <= 4096 or not 0 < h <= 4096 or p + w * h + 2 + 768 > len(lump):
+			return None
+		pixels = lump[p:p + w * h]
+		count = struct.unpack_from("<H", lump, p + w * h)[0]
+		if count != 256:
+			return None
+		pal = lump[p + w * h + 2:p + w * h + 2 + 768]
+		return WadPicture(name, kind, w, h, pixels, pal, rows, rh, [(int(a), int(b)) for a, b in glyphs] if glyphs else None)
+	except struct.error:
+		return None
+
+
+def wad_pictures(path: Path) -> dict[str, WadPicture]:
+	"""name -> picture for every qpic and font lump in a WAD3 (gfx.wad, fonts.wad, cached.wad)."""
+	out: dict[str, WadPicture] = {}
+	try:
+		data = Path(path).read_bytes()
+	except OSError:
+		return out
+	if data[:4] != b"WAD3":
+		return out
+	for e in wad_entries(data):
+		if e.kind in (0x42, 0x46) and not e.compressed and e.name not in out:
+			pic = read_wad_picture(e.name, e.kind, data[e.offset:e.offset + e.disk_size])
+			if pic is not None:
+				out[e.name] = pic
+	return out
+
+
 def read_miptex(data: bytes, offset: int, fallback_palette: "bytes | None" = None):
 	"""wt_read_miptex, falling back to a palette-less (Quake) miptex read with `fallback_palette`."""
 	mip = wt_read_miptex(data, offset)

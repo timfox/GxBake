@@ -371,7 +371,7 @@ class Project:
 		"""Sub-items shown under an asset in the tree (textures, frames...)."""
 		try:
 			if asset.kind == Kind.WAD:
-				return sorted(goldsrc.wad_miptex(asset.path))
+				return sorted(set(goldsrc.wad_miptex(asset.path)) | set(goldsrc.wad_pictures(asset.path)))
 			if asset.kind == Kind.BSP:
 				data = self._bsp_bytes(asset)
 				return list(dict.fromkeys(n for n, _ in goldsrc.bsp_miptex_offsets(data) if goldsrc.is_world_diffuse(n)))
@@ -464,6 +464,9 @@ class Project:
 				d.update(media.read_gcpcm_header(asset.path.read_bytes()[:16]))
 			elif asset.kind == Kind.WAD:
 				d["Textures"] = len(goldsrc.wad_miptex(asset.path))
+				pics = goldsrc.wad_pictures(asset.path)
+				if pics:
+					d["Pictures and fonts"] = len(pics)
 		except Exception as exc:	# noqa: BLE001
 			d["Error"] = str(exc)
 		return d
@@ -505,8 +508,8 @@ class Project:
 			mip = self._find_miptex(asset, name)
 			if mip is None:
 				return Preview(name, info={"Status": "missing: not embedded and not found in any WAD search dir"})
-			_, w, h, pixels, palette = mip
-			alpha = name.startswith("{")
+			_, w, h, pixels, palette = mip[:5]
+			alpha = name.startswith("{") or (k == Kind.WAD and len(mip) > 5 and mip[5])
 			src = goldsrc.miptex_rgba(w, h, pixels, palette, alpha)
 			key, tw, th, levels, body = gct.wt_encode_cached(w, h, pixels, palette, alpha, s.cache())
 			entry = gct.GctEntry(name, tw, th, levels, gct.GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body)
@@ -653,7 +656,10 @@ class Project:
 		pal = self._quake_palette(asset) if self._needs_quake_palette(asset) else None
 		if asset.kind == Kind.WAD:
 			found = goldsrc.wad_miptex(asset.path)
-			return goldsrc.read_miptex(*found[name], pal) if name in found else None
+			if name in found:
+				return goldsrc.read_miptex(*found[name], pal)
+			pic = goldsrc.wad_pictures(asset.path).get(name)
+			return (name, pic.width, pic.height, pic.pixels, pic.palette, pic.transparent) if pic else None
 		data = self._bsp_bytes(asset)
 		for n, off in goldsrc.bsp_miptex_offsets(data):
 			if n == name:

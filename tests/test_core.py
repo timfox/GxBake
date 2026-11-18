@@ -122,6 +122,29 @@ def test_world_texture_pack_resolves_wads(tmp_path):
 	assert len(gct.read_gct(data)) == 2
 
 
+def test_wad_pictures_and_fonts(tmp_path):
+	wad = tmp_path / "gfx.wad"
+	wad.write_bytes(fx.wad3({"wall": fx.miptex("wall", 32, 32, 1), "loading": fx.qpic(40, 24), "conchars": fx.font()},
+		{"loading": 0x42, "conchars": 0x46}))
+	pics = goldsrc.wad_pictures(wad)
+	assert set(pics) == {"loading", "conchars"} and pics["loading"].transparent
+	font = pics["conchars"]
+	assert (font.width, font.height, font.row_height) == (256, 128, 8) and font.glyphs[17] == (8 * 256 + 16, 16)
+	rgba = pics["loading"].rgba()
+	assert rgba.shape == (24, 40, 4) and rgba[0, 0, 3] == 0 and rgba[5, 5, 3] == 255
+	_, entries = gct.build_wad_texture_pack(wad)
+	by = {e.name: e for e in entries}
+	assert set(by) == {"wall", "loading", "conchars"} and by["loading"].flags & gct.GC_WT_FLAG_ALPHA
+	assert not by["wall"].flags & gct.GC_WT_FLAG_ALPHA
+	_, only = gct.build_wad_texture_pack(wad, include={"wall"})
+	assert [e.name for e in only] == ["wall"]
+	proj = Project(Settings())
+	proj.add_path(wad)
+	assert proj.children(proj.assets[0]) == ["conchars", "loading", "wall"]
+	assert proj.info(proj.assets[0])["Pictures and fonts"] == 2
+	assert proj.preview(proj.assets[0], "loading").result is not None
+
+
 def test_studio_lean_and_companion(tmp_path):
 	p = tmp_path / "gun.mdl"
 	p.write_bytes(fx.studio([("skin.bmp", 0x40, 256, 128), ("b.bmp", 0, 64, 64)], mesh_bytes=1000))

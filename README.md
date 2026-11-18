@@ -11,7 +11,7 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | PNG / TGA / BMP / JPG / DDS / TIFF / PSD / PCX / QOI, Source `.vtf`, Quake II `.wal`, Blizzard `.blp` | `media/<pack>.gct`: CMPR, power-of-two, mip chain, 1-bit alpha | `gx_cmpr_encode_blocks`, `wt_encode` mip loop |
 | Skybox (`<name>rt/bk/lf/ft/up/dn`) | `media/sky_<name><side>.cmp`: 128² CMPR, 8 KiB per side | `gx_cmpr_encode`, `build_sky_cmpr_overlays` |
 | Panoramas (equirectangular, Radiance `.hdr`), cubemap crosses and strips, six named faces, flat photos, Source 2 cubemap `.vtex_c` | the same six `media/sky_<name><side>.cmp`, rendered in the engine's orientation | `skybox.build` |
-| WAD3, Quake WAD2 | `media/<wad>.gct` | `wt_read_miptex`, `wt_encode` |
+| WAD3 (miptex, plus the qpic pictures and console fonts of gfx.wad and fonts.wad, index 255 see-through), Quake WAD2 | `media/<wad>.gct` | `wt_read_miptex`, `wt_encode` |
 | BSP v30, Quake BSP v29 | `media/wt_<map>.gct` (world textures resolved through the map's WADs, or embedded with the Quake palette) and its sky | `build_world_texture_packs`, `wt_read_wads` |
 | Source BSP v19–21 and 25 (`VBSP`) | `maps/<map>.bsp` rebuilt as BSP30, plus its `media/wt_<map>.gct` and `media/sky_<sky>*.cmp` | `source_map.convert` |
 | Source 2 map (`<map>.vmap_c` or `maps/<map>/world.vwrld_c`) | the same `maps/<map>.bsp`, world pack and sky | `s2map.convert` |
