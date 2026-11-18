@@ -19,6 +19,8 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | Sprite `.spr` (Half-Life, Quake), Quake II `.sp2` | `sprites/<name>.spr`: a Half-Life sprite, downsampled, keeping thin alpha-test strokes | `quake.hl_sprite_bytes`, `lean_hl_spr_bytes` |
 | ROSE Online `.zms` meshes, `.zsc` object lists, `.chr` character lists (with `.zmd` skeletons, `.zmo` motions, `.dds` textures) | the same `models/` + `gc_studio/` studio models, one per object or character | `rose.import_rose`, then as above |
 | RuneScape caches: OSRS / RS2 JS5 (`main_file_cache.dat2` + `.idx*`) and 2004-era (`main_file_cache.dat`) | the same `models/` + `gc_studio/` studio models, one per NPC (or model), with face colours baked into a palette skin and label-group animations as bones | `runescape.import_runescape`, then as above |
+| Final Fantasy XI (PC): ROM `.DAT` models (NPCs, monsters, equipment, weapons), `.ffximdl` manifests, `.spw` / `.bgw` sounds | studio models with skeleton and motions; sound effects as fitted `sound/ffxi/<name>.wav`, music as `media/<name>.gcpcm` | `ffxi.import_ffxi`, `ffxi.sound_to_wav` |
+| Final Fantasy VII (PC): field models (`.hrc` + `.rsd` + `.p` + `.tex`, `.a` animations), `.ff7mdl` manifests, lone `.p` models; `.lgp` archives through `gxbake extract` | studio models, one per skeleton | `ff7.import_ff7` |
 | Sprite `.spr` | `sprites/<name>.spr`, downsampled, keeping thin alpha-test strokes | `lean_hl_spr_bytes` |
 | Video (AVI, MP4…) | `media/<name>.gcvid` (RGB565 delta) and `.gcpcm` | `build_gcvid_companion`, `build_gcpcm_companion` |
 | Audio (WAV, MP3, OGG, FLAC, AIFF, VOC, Opus…) | `media/<name>.gcpcm` (48 kHz stereo, s16 big-endian); PCM WAV needs no ffmpeg | `build_gcpcm_companion` |
@@ -144,6 +146,14 @@ All four model encodings are read (the original one and the 0xFFFF, 0xFFFE and 0
 
 Animations move groups of vertices, not bones, so every vertex group gets a studio bone and each frame's rotate and translate steps become bone poses. Settings: **Units per model unit** (0.35 makes a ~200-unit player about 70 units tall; 128 units are one tile) and **Turn**. Not converted yet: items, objects (locs) and maps, skeletal ("animaya") animations of newer OSRS models, translucent faces (drawn opaque) and texture animation. See [docs/runescape.md](docs/runescape.md).
 
+## Final Fantasy XI and VII
+
+Both read the PC releases. Nothing from either game is in the repository; the tests build their own files. See [docs/final-fantasy.md](docs/final-fantasy.md) for the formats and what is still guessed.
+
+**FFXI.** Point GxBake at a `ROM*/<dir>/<file>.DAT` (or a whole ROM folder: only DATs with a mesh chunk are listed). NPC and monster DATs carry their own skeleton, textures and motions and convert on their own. Player equipment, faces and hair are drawn on the race skeleton from another DAT: pass it with `--ffxi-skeleton`, or write a `.ffximdl` manifest naming the skeleton, the parts and the motion DATs (paths, or `id:<file id>` with `"root"` set to the FINAL FANTASY XI folder). Textures (DXT1/DXT3 and 256-colour) become skins, mirrored meshes get their second half on the mirror bones, two-bone vertices follow the heavier bone, and motion chunks with the same name prefix (upper and lower body) are joined into one sequence. Output names are `ffxi_<rom>_<dir>_<file>`, so the many `1.DAT`s don't collide. `.spw` effects decode to WAV and go through the same fitting as `gxbake sfx`; `.bgw` music becomes `media/<name>.gcpcm` (`--ffxi-music-wav` writes WAVs instead). `gxbake ffxi <DAT>` lists a DAT's chunks, textures, meshes and motions (`--textures DIR` writes the textures as PNG); `gxbake ffxi "<FINAL FANTASY XI>" --id 1234` resolves a file id through VTABLE/FTABLE. Settings: **Units per FFXI unit** (39.37, taking a unit as a metre) and **Turn**. Not converted: zones (MZB/MMB), cloth physics, particle effects, and the ATRAC3 sounds of the PS2/360 releases.
+
+**FFVII.** Unpack `char.lgp` with `gxbake extract char.lgp -o char`, then convert a skeleton. An `.hrc` names its bones and the `.rsd` resources on each; an `.rsd` names the `.p` polygon model and its `.tex` textures. The game picks animations in its field scripts, so name them in a `.ff7mdl` manifest (`{"skeleton": "aaaa.hrc", "animations": ["acfe.a"]}`); the first one also sets the rest pose. `gxbake ff7 aaaa.hrc --anims` lists the `.a` files beside it with the right bone count. Untextured groups keep their vertex colours in a palette skin, and triangles are turned to agree with their normals, since FF7 winds them both ways. Adding the extracted folder lists the skeletons and manifests and leaves out the `.p` parts. Settings: **Units per FF7 unit** (2.5) and **Turn**. Not converted: battle models and their animation packs, world map and battle scenes.
+
 ## The app
 
 - Drag files or a whole gamedir onto the window, or use **Add Files…** / **Add Folder…**.
@@ -182,7 +192,7 @@ The executable opens the app when run with no arguments or with file paths. With
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`, `ffxi`, `ff7`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
-- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, RuneScape caches in `rs_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
+- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, RuneScape caches in `rs_fixtures.py`, Final Fantasy files in `ffxi_fixtures.py` and `ff7_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
