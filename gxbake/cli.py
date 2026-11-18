@@ -6,7 +6,10 @@
 	gxbake budget <staged gamedir> [--map NAME] [--json]
 	gxbake fit <pack.gct> [-o OUT] [--pool 448K]
 	gxbake disc <staged gamedir> [--json]
-	gxbake slim <model.mdl> [-o OUT] [--step 2] [--stub 'death*']
+	gxbake slim <model.mdl> [-o OUT] [--step 2] [--stub 'death*'] [--anim-tol 2]
+	gxbake squeeze <staged gamedir> [-o OUT] [--emit] [--json]
+	gxbake adpcm <wav|gcpcm...> -o OUT
+	gxbake yaz0 <files...> [-d] [-o OUT]
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
 	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
@@ -348,7 +351,7 @@ def _slim(args) -> int:
 	raw = src.read_bytes()
 	try:
 		before = studio_slim.studio_breakdown(raw)
-		res = studio_slim.slim_studio(raw, args.step, args.stub, args.keep)
+		res = studio_slim.slim_studio(raw, args.step, args.stub, args.keep, tolerance=args.anim_tol)
 	except ValueError as exc:
 		print(f"{src}: {exc}", file=sys.stderr)
 		return 1
@@ -367,8 +370,8 @@ def _slim(args) -> int:
 	if args.output:
 		Path(args.output).write_bytes(res.data)
 		print(f"wrote {args.output} ({hb(len(res.data))}, saved {hb(len(raw) - len(res.data))})")
-	elif res.changed:
-		print("dry run; pass -o to write")
+	elif res.changed or res.after < len(raw):
+		print(f"dry run ({hb(len(raw))} -> {hb(res.after)}); pass -o to write")
 	return 0
 
 
@@ -420,6 +423,87 @@ def _sky(args) -> int:
 	for n in sky.notes:
 		print(f"  note: {n}", file=sys.stderr)
 	print(f'  maps use it with worldspawn "skyname" "{sky.name}"')
+	return 0
+
+
+def _squeeze_opts(args):
+	from .core import squeeze
+
+	keys = set(squeeze.TECHNIQUES)
+	for spec, keep in ((args.only, True), (args.skip, False)):
+		for item in spec or []:
+			for k in filter(None, (x.strip().lower() for x in item.split(","))):
+				if k not in squeeze.TECHNIQUES:
+					raise SystemExit(f"unknown technique '{k}'; known: {', '.join(squeeze.TECHNIQUES)}")
+	if args.only:
+		keys = {k.strip().lower() for item in args.only for k in item.split(",") if k.strip()}
+	for item in args.skip or []:
+		keys -= {k.strip().lower() for k in item.split(",")}
+	return squeeze.SqueezeOptions(min_db=args.min_db, anim_tol=args.anim_tol, skin_db=args.skin_db,
+		yaz0=not args.no_yaz0, techniques=keys)
+
+
+def _squeeze(args) -> int:
+	from .core import squeeze
+
+	root = Path(args.path)
+	opt = _squeeze_opts(args)
+	rep = squeeze.squeeze(root, opt, args.match)
+	if args.json:
+		print(json.dumps(rep.to_json(), indent=2))
+	else:
+		print(squeeze.format_report(rep, args.verbose))
+	if args.output:
+		written = squeeze.apply(root, Path(args.output), opt, args.emit, args.match)
+		print(f"wrote {len(written)} files to {args.output}")
+	return 0
+
+
+def _adpcm(args) -> int:
+	from .core import dspadpcm, squeeze
+
+	out = Path(args.output)
+	out.mkdir(parents=True, exist_ok=True)
+	rc = 0
+	for p in map(Path, args.paths):
+		data = p.read_bytes()
+		if data[:4] == b"GCPA":
+			rate, pcm = squeeze.read_gcpcm(data)
+			loop = (None, None)
+		else:
+			try:
+				snd = sfx.read_wav(data)
+			except ValueError as exc:
+				print(f"{p.name}: {exc}", file=sys.stderr)
+				rc = 1
+				continue
+			rate, pcm = snd.rate, squeeze._pcm16(snd)
+			loop = (snd.loop_start, None if snd.loop_end is None else snd.loop_end - 1)
+		ch = pcm.shape[1]
+		for c in range(ch):
+			st = dspadpcm.encode(pcm[:, c], rate, *loop)
+			name = p.stem + (f".{'LR'[c]}" if ch == 2 else f".{c}" if ch > 2 else "") + ".dsp"
+			(out / name).write_bytes(st.to_dsp())
+			db = dspadpcm.snr_db(pcm[:, c], st.decode())
+			print(f"{name}: {audit.human_bytes(pcm.shape[0] * 2)} PCM -> {audit.human_bytes(len(st.data) + 96)}, "
+				f"{rate} Hz, SNR {db:.1f} dB{', loops' if loop[0] is not None else ''}")
+	return rc
+
+
+def _yaz0(args) -> int:
+	from .core import yaz0
+
+	for p in map(Path, args.paths):
+		data = p.read_bytes()
+		if args.decompress:
+			blob = yaz0.decompress(data)
+			dest = Path(args.output) / p.name.removesuffix(".yaz0") if args.output else p.with_name(p.name.removesuffix(".yaz0"))
+		else:
+			blob = yaz0.compress(data)
+			dest = (Path(args.output) / p.name if args.output else p).with_name(p.name + ".yaz0")
+		dest.parent.mkdir(parents=True, exist_ok=True)
+		dest.write_bytes(blob)
+		print(f"{dest}: {audit.human_bytes(len(data))} -> {audit.human_bytes(len(blob))}")
 	return 0
 
 
@@ -745,7 +829,38 @@ def build_parser() -> argparse.ArgumentParser:
 	sl.add_argument("--step", type=int, default=1, help="keep every Nth animation frame (fps adjusted, same duration)")
 	sl.add_argument("--stub", action="append", metavar="PATTERN", help="reduce matching sequences to one frame")
 	sl.add_argument("--keep", action="append", metavar="PATTERN", help="never touch matching sequences")
+	sl.add_argument("--anim-tol", type=int, default=0, metavar="UNITS",
+		help="hold animation values within ±UNITS so runs get longer (lossy, bounded; 0 = lossless re-encode only)")
 	sl.set_defaults(fn=_slim)
+
+	sq = sub.add_parser("squeeze", help="measure smarter packing on a staged tree, and write what the port reads today")
+	sq.add_argument("path", help="staged gamedir (or one file)")
+	sq.add_argument("-o", "--output", help="write the results here, same relative paths (otherwise a report only)")
+	sq.add_argument("--emit", action="store_true",
+		help="with -o, also write the formats that need port support: .gsk skins, .dsp sound, .yaz0")
+	sq.add_argument("--min-db", type=float, default=40.0,
+		help="drop a world texture's top mip when the next level magnified is within this PSNR")
+	sq.add_argument("--anim-tol", type=int, default=0, metavar="UNITS", help="studio animation deadband (0 = lossless)")
+	sq.add_argument("--skin-db", type=float, default=40.0, help="lossy skin formats must stay within this PSNR of RGB565")
+	sq.add_argument("--no-yaz0", action="store_true", help="skip the (slow) Yaz0 estimate (same as --skip yaz0)")
+	sq.add_argument("--only", action="append", metavar="LIST",
+		help="only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0")
+	sq.add_argument("--skip", action="append", metavar="LIST", help="leave these techniques out (same names as --only)")
+	sq.add_argument("--match", action="append", metavar="GLOB", help="only these relative paths (repeatable)")
+	sq.add_argument("--json", action="store_true", help="print every row as JSON")
+	sq.add_argument("-v", "--verbose", action="store_true", help="list every file")
+	sq.set_defaults(fn=_squeeze)
+
+	ad = sub.add_parser("adpcm", help="encode WAV or .gcpcm audio as GameCube DSP ADPCM (.dsp, one per channel)")
+	ad.add_argument("paths", nargs="+", help=".wav or .gcpcm files")
+	ad.add_argument("-o", "--output", required=True, help="folder for the .dsp files")
+	ad.set_defaults(fn=_adpcm)
+
+	yz = sub.add_parser("yaz0", help="Yaz0-compress files (Nintendo LZ), or decompress with -d")
+	yz.add_argument("paths", nargs="+", help="files")
+	yz.add_argument("-d", "--decompress", action="store_true", help="decompress .yaz0 files")
+	yz.add_argument("-o", "--output", help="folder to write into (default: next to the input)")
+	yz.set_defaults(fn=_yaz0)
 
 	sk = sub.add_parser("sky", help="turn a panorama, cubemap cross/strip, photo or six faces into the port's sky sides")
 	sk.add_argument("inputs", nargs="+",

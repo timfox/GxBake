@@ -177,10 +177,33 @@ class SlimResult:
 	skipped: list[str] = field(default_factory=list)
 
 
+def deadband(q: list[int], tol: int) -> list[int]:
+	"""Hold each value until the curve moves more than `tol` away from it.
+
+	Studio animation is stored as runs (mstudioanimvalue_t: a count of
+	distinct values and a count of frames, the last value repeating), so a
+	bone that jitters by a unit or two between frames costs two bytes a frame
+	while a held value costs nothing. Holding within ±tol makes those runs
+	long; no frame is ever further than tol from the original, and the engine
+	reads the result like any other stream.
+	"""
+	if tol <= 0 or not q:
+		return q
+	out, held = [], q[0]
+	for v in q:
+		if abs(v - held) > tol:
+			held = v
+		out.append(held)
+	if all(abs(v) <= tol for v in q):	# a stream that never leaves zero is dropped
+		return [0] * len(q)
+	return out
+
+
 def slim_studio(raw: bytes, step: int = 1, stub: list[str] | None = None, keep: list[str] | None = None,
-		min_frames: int = 2) -> SlimResult:
+		min_frames: int = 2, tolerance: int = 0) -> SlimResult:
 	"""Decimate (every `step`th frame) or stub (patterns → 1 frame) the
-	animation of seqgroup-0 sequences. `keep` patterns are left alone."""
+	animation of seqgroup-0 sequences, and hold values within `tolerance`
+	(raw animation units, see deadband). `keep` patterns are left alone."""
 	if not _is_studio(raw):
 		raise ValueError("not a GoldSrc studio model (IDST v10)")
 	stub, keep = stub or [], keep or []
@@ -210,6 +233,7 @@ def slim_studio(raw: bytes, step: int = 1, stub: list[str] | None = None, keep: 
 	blocks: list[tuple[SeqInfo, bytes, int, float]] = []	# seq, new block, new frames, new fps
 	for s in sorted(inline, key=lambda s: s.anim_off):
 		n = s.frames
+		tol = 0 if match(s.name, keep) else tolerance
 		if match(s.name, keep) or n <= min_frames:
 			picks = list(range(n))
 		elif match(s.name, stub):
@@ -231,7 +255,7 @@ def slim_studio(raw: bytes, step: int = 1, stub: list[str] | None = None, keep: 
 					if not o:
 						continue
 					full = _expand(raw, src + o, n)
-					q = [full[k] for k in picks]
+					q = deadband([full[k] for k in picks], tol)
 					if not any(q):
 						continue
 					rel = len(head) + len(data) - hpos
@@ -250,8 +274,8 @@ def slim_studio(raw: bytes, step: int = 1, stub: list[str] | None = None, keep: 
 		if new_n != n:
 			res.changed.append((s.name, n, new_n))
 
-	if not res.changed:
-		return res
+	if not res.changed and sum(len(b[1]) for b in blocks) >= end - start:
+		return res	# nothing decimated and re-encoding (optimal runs, deadband) saved nothing
 
 	anim = bytearray()
 	new_off: dict[int, int] = {}

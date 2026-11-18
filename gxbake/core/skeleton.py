@@ -156,19 +156,45 @@ def decompose(m: "np.ndarray") -> tuple["np.ndarray", "np.ndarray", "np.ndarray"
 
 
 def rle_encode(q: list[int]) -> list[int]:
-	"""mstudioanimvalue_t stream: (valid, total) headers, trailing repeats dropped."""
+	"""mstudioanimvalue_t stream: (valid, total) headers, each chunk's
+	trailing repeats dropped.
+
+	The chunks are chosen to minimise the stream (dynamic programming over
+	run boundaries), not cut greedily every 255 frames: a chunk only saves
+	its trailing run, so [1 1 1 1 5 5 5 5] is cheaper as two chunks
+	(1×4, 5×4: four shorts) than as one (six shorts). The engine walks
+	chunks one after another, so any partition decodes the same.
+	"""
+	n = len(q)
+	if not n:
+		return []
+	INF = 1 << 30
+	best = [INF] * (n + 1)
+	cut = [0] * (n + 1)
+	best[n] = 0
+	# A chunk only needs to end where a run ends (or at the 255-frame cap):
+	# ending inside a run never saves anything.
+	end_set = {k for k in range(1, n) if q[k] != q[k - 1]} | {n}
+	run_start = [0] * n
+	for k in range(1, n):
+		run_start[k] = run_start[k - 1] if q[k] == q[k - 1] else k
+	for i in range(n - 1, -1, -1):
+		lim = min(n, i + 255)
+		for j in range(i + 1, lim + 1):
+			if j not in end_set and j != lim:
+				continue
+			valid = max(run_start[j - 1], i) - i + 1
+			c = 1 + valid + best[j]
+			if c < best[i]:
+				best[i], cut[i] = c, j
 	out: list[int] = []
-	k = 0
-	while k < len(q):
-		total = min(255, len(q) - k)
-		chunk = q[k:k + total]
-		valid = total
-		while valid > 1 and chunk[valid - 1] == chunk[valid - 2]:
-			valid -= 1
-		header = struct.unpack("<h", bytes((valid, total)))[0]
-		out.append(header)
-		out += chunk[:valid]
-		k += total
+	i = 0
+	while i < n:
+		j = cut[i]
+		valid = max(run_start[j - 1], i) - i + 1
+		out.append(struct.unpack("<h", bytes((valid, j - i)))[0])
+		out += q[i:i + valid]
+		i = j
 	return out
 
 

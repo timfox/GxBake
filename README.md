@@ -75,6 +75,10 @@ It also lists sprites, the sky and the BSP size, anything referenced but not sta
 
 `gxbake pack` edits `.gct` packs directly, without going back to the source assets: `list` (with sizes, `--sort size`), `extract` to PNG exactly as the GameCube samples it (`--all-levels` for every mip), `build` a pack from images, `add` images (an entry of the same name is replaced in place), `remove` entries by name or glob, and `merge` packs (a later pack wins on a name clash). Names are the image file names, lowercased and cut to the engine's 15 characters, and GxBake warns past the engine's 512 entries.
 
+### Smarter packing
+
+`gxbake squeeze <staged gamedir>` measures optional packing techniques on the real files: detail-aware mip trimming, optimal and deadband animation runs, indexed (CI4/CI8 + TLUT) skins, DSP ADPCM sound, s16 vertices, CMPR lightmaps and Yaz0. It prints bytes before and after per memory window. `-o OUT` writes the ones the port reads today, `--emit` also writes the formats that need port support, and `--only`/`--skip` pick techniques. See [docs/packing.md](docs/packing.md) for the numbers on sample assets, the ranking and what the port must add.
+
 ### Disc usage
 
 `gxbake disc <staged gamedir>` shows what the tree costs on a disc: every file rounded up to 2 KiB ISO9660 sectors (the disc builder exposes game data through ISO9660), the share of the 1.36 GiB disc, and a breakdown by directory. It also lists byte-identical files, textures stored in more than one `.gct` (same CMPR bytes; each map loads its own pack, so this only costs disc), and files under `models/`, `gc_studio/` and `sound/` that no map names. The game DLL may still precache those, so treat that list as a place to look, and pass `--include` for models you know are needed. `--json` gives the same data.
