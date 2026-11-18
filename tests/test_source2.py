@@ -220,3 +220,55 @@ def test_lone_vmesh(tmp_path):
 	vm.write_bytes(s2.resource([("DATA", s2.kv3(mesh))]))
 	m = vmdl.import_vmdl(vm)
 	assert len(m.bones) == 1 and m.num_triangles == 4
+
+
+# -- ETC2, EAC, BC6H and cubemap skies -------------------------------------------------
+
+
+def test_etc2_individual_and_differential_blocks():
+	from gxbake.core import etc
+
+	# individual: left half (15, 0, 0), right half (0, 15, 0) in 4 bits; all indices 0 → +2
+	got = etc.etc2_rgb_block(bytes([0xF0, 0x0F, 0x00, 0x00, 0, 0, 0, 0]))
+	assert got[0, 0].tolist() == [255, 2, 2] and got[3, 3].tolist() == [2, 255, 2]
+	# differential: base (10, 20, 5) + delta (+1, 0, -1); texel (0, 0) has index 2 → -2
+	blk = bytes([(10 << 3) | 1, 20 << 3, (5 << 3) | 7, 0x02, 0x00, 0x01, 0x00, 0x00])
+	got = etc.etc2_rgb_block(blk)
+	assert got[0, 0].tolist() == [80, 163, 39] and got[0, 3].tolist() == [92, 167, 35]
+
+
+def test_eac_alpha_and_r11():
+	from gxbake.core import etc
+
+	blk = bytes([128, (1 << 4) | 13]) + (2 ** 48 - 1).to_bytes(6, "big")	# every index 7: +9
+	assert (etc.eac_block(blk) == 137).all()
+	assert (etc.eac_block(blk, eleven=True) == round((128 * 8 + 4 + 72) * 255 / 2047)).all()
+	img = etc.decode(blk + bytes([0xF0, 0x0F, 0, 0, 0, 0, 0, 0]), 4, 4, "etc2_eac")
+	assert img.shape == (4, 4, 4) and (img[..., 3] == 137).all() and img[0, 0, 0] == 255
+
+
+def test_bc6h_vtex_decodes():
+	data = struct.pack("<HH4f", 1, 0, 0.5, 0.5, 0.5, 0.5) + struct.pack("<HHHBBI", 8, 8, 1, 19, 1, 0) + struct.pack("<II", 8, 0)
+	raw = s2.resource([("DATA", data)], version=1, stream=bytes(16 * 4))
+	tex = vtex.parse(vres.parse(raw))
+	assert tex.format_name == "BC6H" and tex.rgba().shape == (8, 8, 4) and (tex.rgba()[..., :3] == 0).all()
+
+
+def test_cubemap_vtex_becomes_sky(tmp_path):
+	from gxbake.core import skybox
+
+	from . import s2map_fixtures as f
+
+	p = tmp_path / "materials" / "skybox" / "sky_day.vtex_c"
+	p.parent.mkdir(parents=True)
+	p.write_bytes(f.vtex_cube([np.full((16, 16, 4), (40 * i, 100, 200, 255), np.uint8) for i in range(6)]))
+	assert skybox.looks_like_panorama(p)
+	src = skybox.open_source([p])
+	assert src.layout == "cubemap" and src.name == "sky_day"
+	side = {s: int(skybox.render_side(src, s, 16)[8, 8, 0]) for s in skybox.SIDES}
+	assert side == {"rt": 0, "lf": 40, "bk": 80, "ft": 120, "up": 160, "dn": 200}
+	proj = Project(Settings())
+	proj.add_path(p)
+	assert proj.assets[0].kind == Kind.SKYBOX
+	out = {o.rel for o in proj.convert(proj.assets, tmp_path / "out", log=lambda _m: None)}
+	assert {f"media/sky_sky_day{s}.cmp" for s in skybox.SIDES} <= out

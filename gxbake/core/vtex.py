@@ -193,7 +193,7 @@ def load_vtex(path: Path, face: int = 0) -> "np.ndarray":
 # -- pixel decoders ------------------------------------------------------------
 
 
-def _bcn(raw: bytes, w: int, h: int, n: int, mode: str) -> "np.ndarray":
+def _bcn(raw: bytes, w: int, h: int, n, mode: str) -> "np.ndarray":
 	from PIL import Image
 
 	bw, bh = max(4, (w + 3) // 4 * 4), max(4, (h + 3) // 4 * 4)
@@ -219,6 +219,14 @@ def decode(fmt: int, raw: bytes, w: int, h: int) -> "np.ndarray":
 		return _bcn(raw, w, h, 3, "RGBA")
 	if fmt == 20:
 		return _bcn(raw, w, h, 7, "RGBA")
+	if fmt == 19:	# BC6H: Pillow decodes it clamped to [0, 1] linear; show it in sRGB like the other formats
+		lin = _bcn(raw, w, h, (6, "BC6H"), "RGB").astype(np.float32) / 255.0
+		srgb = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * np.power(lin, 1 / 2.4) - 0.055)
+		return _expand(np.clip(srgb * 255 + 0.5, 0, 255).astype(np.uint8))
+	if fmt in (23, 24, 25, 26):
+		from . import etc
+
+		return etc.decode(raw, w, h, {23: "etc2", 24: "etc2_eac", 25: "r11", 26: "rg11"}[fmt])
 	if fmt == 27:
 		g = _bcn(raw, w, h, 4, "L")
 		return np.dstack([g, g, g, np.full_like(g, 255)])
