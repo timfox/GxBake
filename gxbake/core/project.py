@@ -582,7 +582,7 @@ class Project:
 			_, w, h, pixels, palette = mip[:5]
 			alpha = name.startswith("{") or (k == Kind.WAD and len(mip) > 5 and mip[5])
 			src = goldsrc.miptex_rgba(w, h, pixels, palette, alpha)
-			key, tw, th, levels, body = gct.wt_encode_cached(w, h, pixels, palette, alpha, s.cache())
+			key, tw, th, levels, body = gct.wt_encode_cached(w, h, pixels, palette, alpha, s.cache(), s.image.cmpr_refine)
 			entry = gct.GctEntry(name, tw, th, levels, gct.GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body)
 			return _texture_preview(name, src, entry)
 		if k == Kind.GCT:
@@ -859,7 +859,8 @@ class Project:
 						emit(asset, f"media/sky_{name}{sfx}.cmp", images.sky_side_cmpr(src, s.sky_size))
 				elif asset.kind == Kind.WAD:
 					pal = self._quake_palette(asset) if self._needs_quake_palette(asset) else None
-					data, entries = gct.build_wad_texture_pack(asset.path, cache=s.cache(), palette=pal)
+					data, entries = gct.build_wad_texture_pack(asset.path, cache=s.cache(), palette=pal,
+						refine=s.image.cmpr_refine)
 					if data:
 						emit(asset, f"media/{stem}.gct", data)
 				elif asset.kind == Kind.BSP:
@@ -880,7 +881,7 @@ class Project:
 							log(f"  {len(conv.props)} prop models referenced (convert them to models/<name>.mdl): "
 								+ ", ".join(Path(p).stem for p in conv.props[:8]) + (" …" if len(conv.props) > 8 else ""))
 					data, report, _entries = gct.build_world_texture_pack(
-						bsp_path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache())
+						bsp_path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache(), refine=s.image.cmpr_refine)
 					log(f"  {len(report.wads)} WADs searched, {report.entries} textures packed")
 					for note in report.notes:
 						asset.warnings.append(note)
