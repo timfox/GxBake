@@ -17,7 +17,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import audit, budget, gct, goldsrc, images, media, models, quake, rose, runescape, skybox, sprite, studio, studio_slim
+from . import audit, budget, gct, goldsrc, images, media, models, particles, quake, rose, runescape, skybox, sprite, studio, studio_slim
 from .cmpr import cmpr_decode
 
 Log = Callable[[str], None]
@@ -70,6 +70,8 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.MDL
 	if ext == ".sp2":
 		return Kind.SPR
+	if ext in particles.PARTICLE_EXTENSIONS or path.name.lower().endswith(".vpcf_c"):
+		return Kind.SPR if particles.is_particles(path) else Kind.UNKNOWN
 	if path.name.lower().endswith((".vmap_c", ".vwrld_c")):
 		return Kind.BSP	# a compiled Source 2 map, rebuilt as BSP30
 	if ext in images.IMAGE_EXTENSIONS:
@@ -79,6 +81,8 @@ def detect_kind(path: Path) -> Kind:
 	if ext in media.AUDIO_EXTENSIONS:
 		return Kind.AUDIO
 	if ext in models.MODEL_EXTENSIONS or ext in models.SOURCE2_MODEL_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
+		return Kind.MODEL
+	if ext == ".dmx" and models.native_format(path) == "dmx":
 		return Kind.MODEL
 	return {
 		".wad": Kind.WAD,
@@ -377,6 +381,8 @@ class Project:
 				return list(dict.fromkeys(n for n, _ in goldsrc.bsp_miptex_offsets(data) if goldsrc.is_world_diffuse(n)))
 			if asset.kind == Kind.GCT:
 				return [e.name for e in gct.read_gct(asset.path.read_bytes())]
+			if asset.kind == Kind.SPR and particles.is_particles(asset.path):
+				return list(self._particle_sprites(asset))
 			if asset.kind == Kind.MDL:
 				return [n for n, _f, _r in studio.studio_textures(asset.path.read_bytes())]
 			if asset.kind == Kind.MODEL:
@@ -408,6 +414,11 @@ class Project:
 					d.update(vmdl.vmdl_info(asset.path))
 				elif native == "quake":
 					d["Source format"] = "Quake alias model (IDPO v6)"
+				elif native == "dmx":
+					from . import dmx
+
+					enc, ver, fmt, fver = dmx.header(_head(asset.path, 200))
+					d["Source format"] = f"DMX {fmt} {fver} ({enc} {ver})"
 				model, mdl = self.imported_model(asset)
 				lo, hi = model.bounds()
 				d["Meshes"] = len(model.meshes)
@@ -422,6 +433,9 @@ class Project:
 					d["Source"] = "ROSE Online" + (f", entry {asset.entry}" if asset.entry is not None else "")
 				elif asset.is_runescape:
 					d["Source"] = "RuneScape cache" + (f", {asset.entry}" if asset.entry is not None else "")
+			elif asset.kind == Kind.SPR and particles.is_particles(asset.path):
+				d.update(particles.info(asset.path))
+				d["Sprites"] = len(self._particle_sprites(asset))
 			elif asset.kind == Kind.SPR:
 				raw = asset.path.read_bytes()
 				if raw[:4] == b"IDS2" or (raw[:4] == b"IDSP" and struct.unpack_from("<i", raw, 4)[0] == 1):
@@ -546,7 +560,14 @@ class Project:
 		if k == Kind.MODEL:
 			return self._model_preview(asset, child)
 		if k == Kind.SPR:
-			raw = quake.hl_sprite_bytes(asset.path, asset.warnings)
+			if particles.is_particles(asset.path):
+				sprites = self._particle_sprites(asset)
+				name = child if child in sprites else next(iter(sprites), None)
+				if name is None:
+					return Preview(asset.name, info={"Note": "no system renders a texture that was found"})
+				raw = sprites[name]
+			else:
+				raw = quake.hl_sprite_bytes(asset.path, asset.warnings)
 			frames = sprite.spr_frames(raw)
 			src = frames[0] if frames else None
 			lean = sprite.lean_hl_spr_bytes_from(raw, s.spr_scale)
@@ -647,6 +668,13 @@ class Project:
 				asset.warnings.append(msg)
 			pal = quake.GREY_PALETTE
 		return pal
+
+	def _particle_sprites(self, asset: Asset) -> dict[str, bytes]:
+		"""Particle system name → Half-Life sprite, built once per asset."""
+		if "particle_sprites" not in asset.extra:
+			asset.extra["particle_sprites"] = particles.convert(asset.path, [Path(p) for p in self.settings.source_dirs],
+				warnings=asset.warnings)
+		return asset.extra["particle_sprites"]
 
 	def _needs_quake_palette(self, asset: Asset) -> bool:
 		head = _head(asset.path, 4)
@@ -812,6 +840,13 @@ class Project:
 						comp = studio.lean_studio_tex_companion_bytes_from(mdl, s.mdl_max_edge)
 						if comp:
 							emit(asset, f"gc_studio/{stem}t.mdl", comp)
+				elif asset.kind == Kind.SPR and particles.is_particles(asset.path):
+					sprites = self._particle_sprites(asset)
+					if not sprites:
+						log("  no particle system renders a texture that was found")
+					for name, raw in sprites.items():
+						emit(asset, f"sprites/{name.lower().replace(' ', '_')}.spr",
+							sprite.lean_hl_spr_bytes_from(raw, s.spr_scale) or raw)
 				elif asset.kind == Kind.SPR:
 					raw = quake.hl_sprite_bytes(asset.path, asset.warnings)
 					if raw[:8] != asset.path.read_bytes()[:8]:

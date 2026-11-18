@@ -37,6 +37,8 @@ MODEL_EXTENSIONS = {
 # Animation-only files, used as <model>@<clip>.<ext> clips.
 # Source 2 compiled models, read natively (vmdl.py)
 SOURCE2_MODEL_EXTENSIONS = {".vmdl_c", ".vmesh_c"}
+# Valve Datamodel model sources (Blender Source Tools, SFM), read natively (dmx_model.py)
+DMX_MODEL_EXTENSIONS = {".dmx"}
 CLIP_EXTENSIONS = MODEL_EXTENSIONS | {".bvh", ".md5anim"}
 
 # GoldSrc / Xash studio limits (studio.h).
@@ -260,9 +262,13 @@ def clip_files(path: Path) -> list[Path]:
 
 
 def native_format(path: Path) -> str | None:
-	"""'source', 'source2' or 'quake' when GxBake reads the file itself instead of Assimp."""
+	"""'source', 'source2', 'dmx' or 'quake' when GxBake reads the file itself instead of Assimp."""
 	if Path(path).suffix.lower() in SOURCE2_MODEL_EXTENSIONS:
 		return "source2"
+	if Path(path).suffix.lower() == ".dmx":
+		from .dmx_model import is_dmx_model
+
+		return "dmx" if is_dmx_model(path) else None
 	try:
 		with Path(path).open("rb") as f:
 			head = f.read(8)
@@ -281,8 +287,8 @@ def native_format(path: Path) -> str | None:
 def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
 	"""Read a model into triangulated submeshes, bones and sequences.
 
-	Source (.mdl v44-49), Source 2 (.vmdl_c, .vmesh_c) and Quake (.mdl IDPO)
-	models are parsed natively;
+	Source (.mdl v44-49), Source 2 (.vmdl_c, .vmesh_c), DMX model sources and
+	Quake (.mdl IDPO) models are parsed natively;
 	everything else goes through Assimp.
 	"""
 	opts = opts or ModelOptions()
@@ -296,6 +302,10 @@ def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
 		from .vmdl import import_vmdl
 
 		return import_vmdl(path, opts)
+	if native == "dmx":
+		from .dmx_model import import_dmx
+
+		return import_dmx(path, opts)
 	if native == "quake":
 		from .quake import import_alias
 
