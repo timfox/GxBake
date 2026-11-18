@@ -353,3 +353,11 @@ def test_cmpr_refine_same_size_closer_and_keeps_cutouts():
 	# the block helpers round-trip the tiled layout
 	c0, c1, idx = cmpr._blocks_of(base, 8, 8)
 	assert cmpr._tile_blocks(c0, c1, idx) == base
+
+
+def test_split_cmpr_roundtrip_and_helps_lz():
+	pack = flat_and_busy_pack()
+	sp = squeeze.split_cmpr(pack)
+	assert len(sp) == len(pack) and sp != pack
+	assert squeeze.split_cmpr(sp, inverse=True) == pack
+	assert gct.read_gct(squeeze.split_cmpr(sp, inverse=True))[0].data == gct.read_gct(pack)[0].data

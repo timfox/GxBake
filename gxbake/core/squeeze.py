@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import fnmatch
 import struct
+import zlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -42,7 +43,7 @@ import numpy as np
 
 from . import audit, dspadpcm, gxtex, yaz0
 from .budget import Budgets, _entries_fit, drop_top_mip
-from .gct import GctEntry, read_gct, write_gct
+from .gct import GC_WT_ENTRY, GctEntry, read_gct, write_gct
 
 KiB = 1024
 
@@ -89,7 +90,7 @@ PRESETS = {
 class SqueezeOptions:
 	min_db: float = 40.0	# detail trim: drop a top mip whose detail is under this
 	anim_tol: int = 0	# deadband in raw animation units; 0 = lossless only
-	anim_fit: float = 0.0	# resample animation to the fewest keys within this many degrees (0 = off)
+	anim_fit: float = 0.5	# resample animation to the fewest keys within this many degrees (0 = off)
 	skin_db: float = 40.0	# lossy skin formats must stay this close to today's RGB565
 	adpcm_preview_s: float = 20.0	# seconds of long streams to encode for the SNR figure
 	yaz0_sample: int = 512 * KiB	# compress this much of a big file and extrapolate
@@ -400,7 +401,35 @@ def analyse_file(path: Path, rel: str, opt: SqueezeOptions) -> list[Saving]:
 	if opt.on("yaz0") and ext in (".gct", ".mdl", ".bsp", ".spr", ".cmp") and len(data) > 4 * KiB:
 		out.append(Saving("Yaz0 on disc", False, "disc + ARAM cache", rel, len(data), _yaz0_estimate(data, opt.yaz0_sample),
 			"lossless"))
+		if ext == ".gct" and data[:4] == b"GCWT":
+			out.append(Saving("Yaz0 + CMPR split", False, "disc + ARAM cache", rel, len(data),
+				_yaz0_estimate(split_cmpr(data), opt.yaz0_sample), "lossless", "colour words, then index words"))
+		out.append(Saving("deflate on disc", False, "disc + ARAM cache", rel, len(data),
+			len(zlib.compress(data, 9)) - 6, "lossless", "LZ + Huffman; needs an inflater in the port"))
 	return out
+
+
+def split_cmpr(data: bytes, inverse: bool = False) -> bytes:
+	"""Reorder a GCWT pack's CMPR blob so every block's two colour words come
+	first and the index words after (or undo that). Endpoints of neighbouring
+	blocks repeat far more than they repeat next to index bits, so LZ finds
+	longer matches: same bytes, sorted by what they mean. The header and
+	table are untouched; the loader undoes it after decompressing."""
+	if data[:4] != b"GCWT":
+		raise ValueError("not a GCWT pack")
+	count = struct.unpack_from(">I", data, 4)[0]
+	first = 12 + count * GC_WT_ENTRY.size
+	start = first + (-first & 31)
+	body = np.frombuffer(data, np.uint8, (len(data) - start) // 8 * 8, start)
+	n = len(body) // 8
+	if inverse:
+		out = np.empty((n, 8), np.uint8)
+		out[:, :4] = body[:n * 4].reshape(n, 4)
+		out[:, 4:] = body[n * 4:].reshape(n, 4)
+	else:
+		b = body.reshape(n, 8)
+		out = np.concatenate((b[:, :4].reshape(-1), b[:, 4:].reshape(-1)))
+	return data[:start] + out.tobytes() + data[start + n * 8:]
 
 
 def staged_files(root: Path) -> list[tuple[Path, str]]:

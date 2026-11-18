@@ -377,7 +377,9 @@ def choose_indexed(index: "np.ndarray", palette_rgb: "np.ndarray", masked: bool,
 			db = min(db, psnr(d[..., 3] > 127, ref[..., 3] > 127))
 		tried[t.fmt] = (t.size, db)
 		lossless = t.fmt in ("CI4", "CI8") and db == float("inf")
-		if (lossless or db >= min_db) and (best is None or t.size < best[0]):
+		ok = lossless or db >= min_db
+		# Smaller wins; within 64 bytes (a TLUT's worth) the closer picture wins.
+		if ok and (best is None or t.size < best[0] - 64 or (abs(t.size - best[0]) <= 64 and db > best[2])):
 			best = (t.size, t, db)
 	assert best is not None
 	return Choice(best[1], best[2], baseline, tried)
