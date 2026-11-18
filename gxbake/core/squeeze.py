@@ -67,7 +67,7 @@ class Saving:
 # Technique keys for SqueezeOptions.techniques / --only / --skip.
 TECHNIQUES = {
 	"trim": "detail mip trim (world textures)",
-	"anim": "optimal anim runs and deadband (studio animation)",
+	"anim": "optimal anim runs, deadband and keyframe fit (studio animation)",
 	"skins": "indexed skins (.gsk)",
 	"adpcm": "DSP ADPCM sound and music (.dsp)",
 	"verts": "s16 vertices (estimate)",
@@ -76,10 +76,19 @@ TECHNIQUES = {
 }
 
 
+# Named starting points for SqueezeOptions; explicit options override them.
+PRESETS = {
+	"lossless": dict(min_db=float("inf"), skin_db=float("inf"), anim_tol=0, anim_fit=0.0),
+	"balanced": dict(min_db=40.0, skin_db=40.0, anim_tol=0, anim_fit=0.5),
+	"max": dict(min_db=34.0, skin_db=34.0, anim_tol=2, anim_fit=2.0),
+}
+
+
 @dataclass
 class SqueezeOptions:
 	min_db: float = 40.0	# detail trim: drop a top mip whose detail is under this
 	anim_tol: int = 0	# deadband in raw animation units; 0 = lossless only
+	anim_fit: float = 0.0	# resample animation to the fewest keys within this many degrees (0 = off)
 	skin_db: float = 40.0	# lossy skin formats must stay this close to today's RGB565
 	adpcm_preview_s: float = 20.0	# seconds of long streams to encode for the SNR figure
 	yaz0_sample: int = 512 * KiB	# compress this much of a big file and extrapolate
@@ -326,10 +335,19 @@ def analyse_file(path: Path, rel: str, opt: SqueezeOptions) -> list[Saving]:
 				anim = studio_breakdown(data).get("animation", 0)
 				out.append(Saving("optimal anim runs", True, "MEM1 studio arena", rel, len(data), lossless.after,
 					"lossless", f"animation {audit.human_bytes(anim)}"))
+				base = lossless
 				if opt.anim_tol > 0:
 					tol = slim_studio(data, tolerance=opt.anim_tol)
-					out.append(Saving("anim deadband", True, "MEM1 studio arena", rel, lossless.after, tol.after,
+					out.append(Saving("anim deadband", True, "MEM1 studio arena", rel, base.after, tol.after,
 						f"±{opt.anim_tol} units"))
+					base = tol
+				if opt.anim_fit > 0:
+					fit = slim_studio(data, tolerance=opt.anim_tol, fit_deg=opt.anim_fit)
+					keys = ", ".join(f"{name} {a}→{b}" for name, a, b in fit.changed[:4])
+					more = f" +{len(fit.changed) - 4} more" if len(fit.changed) > 4 else ""
+					out.append(Saving("anim keyframe fit", True, "MEM1 studio arena", rel, base.after,
+						min(base.after, fit.after), f"≤{opt.anim_fit:g}°, ≤{opt.anim_fit / 10:g} units",
+						(keys + more) if fit.changed else "no sequence fits fewer keys"))
 			except (ValueError, struct.error) as exc:
 				out.append(Saving("optimal anim runs", True, "MEM1 studio arena", rel, len(data), len(data), "", str(exc)))
 			nv, nn = studio_vertex_counts(data) if not is_tex and opt.on("verts") else (0, 0)
@@ -452,7 +470,7 @@ def apply(root: Path, out: Path, opt: SqueezeOptions | None = None, emit: bool =
 			from .studio_slim import slim_studio
 
 			try:
-				r = slim_studio(data, tolerance=opt.anim_tol)
+				r = slim_studio(data, tolerance=opt.anim_tol, fit_deg=opt.anim_fit)
 				new = r.data if r.after < len(data) else None
 			except ValueError:
 				new = None

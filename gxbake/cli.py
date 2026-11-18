@@ -6,8 +6,8 @@
 	gxbake budget <staged gamedir> [--map NAME] [--json]
 	gxbake fit <pack.gct> [-o OUT] [--pool 448K]
 	gxbake disc <staged gamedir> [--json]
-	gxbake slim <model.mdl> [-o OUT] [--step 2] [--stub 'death*'] [--anim-tol 2]
-	gxbake squeeze <staged gamedir> [-o OUT] [--emit] [--json]
+	gxbake slim <model.mdl> [-o OUT] [--step 2 | --fit-deg 1] [--stub 'death*'] [--anim-tol 2]
+	gxbake squeeze <staged gamedir> [-o OUT] [--emit] [--preset lossless|balanced|max] [--json]
 	gxbake adpcm <wav|gcpcm...> -o OUT
 	gxbake yaz0 <files...> [-d] [-o OUT]
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
@@ -351,7 +351,8 @@ def _slim(args) -> int:
 	raw = src.read_bytes()
 	try:
 		before = studio_slim.studio_breakdown(raw)
-		res = studio_slim.slim_studio(raw, args.step, args.stub, args.keep, tolerance=args.anim_tol)
+		res = studio_slim.slim_studio(raw, args.step, args.stub, args.keep, tolerance=args.anim_tol,
+			fit_deg=args.fit_deg, fit_units=args.fit_units, max_step=args.max_step)
 	except ValueError as exc:
 		print(f"{src}: {exc}", file=sys.stderr)
 		return 1
@@ -439,8 +440,11 @@ def _squeeze_opts(args):
 		keys = {k.strip().lower() for item in args.only for k in item.split(",") if k.strip()}
 	for item in args.skip or []:
 		keys -= {k.strip().lower() for k in item.split(",")}
-	return squeeze.SqueezeOptions(min_db=args.min_db, anim_tol=args.anim_tol, skin_db=args.skin_db,
-		yaz0=not args.no_yaz0, techniques=keys)
+	vals = dict(squeeze.PRESETS[args.preset])
+	for k in ("min_db", "skin_db", "anim_tol", "anim_fit"):
+		if getattr(args, k) is not None:
+			vals[k] = getattr(args, k)
+	return squeeze.SqueezeOptions(**vals, yaz0=not args.no_yaz0, techniques=keys)
 
 
 def _squeeze(args) -> int:
@@ -668,6 +672,8 @@ def _add_pack_parser(sub) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
 	"""Every subcommand and option. docs/cli.md is generated from this (python -m gxbake.clidoc)."""
+	from .core import squeeze
+
 	parser = argparse.ArgumentParser(prog="gxbake", description="Convert and optimise assets for the GameCube GX renderer.")
 	parser.add_argument("--version", action="version", version=f"GxBake {__version__}")
 	sub = parser.add_subparsers(dest="cmd", metavar="command")
@@ -831,6 +837,10 @@ def build_parser() -> argparse.ArgumentParser:
 	sl.add_argument("--keep", action="append", metavar="PATTERN", help="never touch matching sequences")
 	sl.add_argument("--anim-tol", type=int, default=0, metavar="UNITS",
 		help="hold animation values within ±UNITS so runs get longer (lossy, bounded; 0 = lossless re-encode only)")
+	sl.add_argument("--fit-deg", type=float, default=0, metavar="DEG",
+		help="resample each sequence to the fewest evenly spaced keys that stay within DEG degrees of every bone")
+	sl.add_argument("--fit-units", type=float, metavar="UNITS", help="position tolerance for --fit-deg (default DEG / 10)")
+	sl.add_argument("--max-step", type=float, default=8, help="--fit-deg keeps keys at most this many frames apart")
 	sl.set_defaults(fn=_slim)
 
 	sq = sub.add_parser("squeeze", help="measure smarter packing on a staged tree, and write what the port reads today")
@@ -838,10 +848,15 @@ def build_parser() -> argparse.ArgumentParser:
 	sq.add_argument("-o", "--output", help="write the results here, same relative paths (otherwise a report only)")
 	sq.add_argument("--emit", action="store_true",
 		help="with -o, also write the formats that need port support: .gsk skins, .dsp sound, .yaz0")
-	sq.add_argument("--min-db", type=float, default=40.0,
-		help="drop a world texture's top mip when the next level magnified is within this PSNR")
-	sq.add_argument("--anim-tol", type=int, default=0, metavar="UNITS", help="studio animation deadband (0 = lossless)")
-	sq.add_argument("--skin-db", type=float, default=40.0, help="lossy skin formats must stay within this PSNR of RGB565")
+	sq.add_argument("--preset", choices=sorted(squeeze.PRESETS), default="balanced",
+		help="starting quality: lossless (bit-exact only), balanced (default: ≥40 dB, ≤0.5° animation) or max "
+		"(≥34 dB, ≤2°); the options below override it")
+	sq.add_argument("--min-db", type=float,
+		help="drop a world texture's top mip when the next level magnified is within this PSNR (balanced: 40)")
+	sq.add_argument("--anim-tol", type=int, metavar="UNITS", help="studio animation deadband (0 = lossless)")
+	sq.add_argument("--anim-fit", type=float, metavar="DEG",
+		help="resample studio animation to the fewest keys within DEG degrees (0 = off; balanced: 0.5)")
+	sq.add_argument("--skin-db", type=float, help="lossy skin formats must stay within this PSNR of RGB565 (balanced: 40)")
 	sq.add_argument("--no-yaz0", action="store_true", help="skip the (slow) Yaz0 estimate (same as --skip yaz0)")
 	sq.add_argument("--only", action="append", metavar="LIST",
 		help="only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0")

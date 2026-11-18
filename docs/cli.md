@@ -278,7 +278,7 @@ Show where a studio model's bytes go and thin its animation.
 
 ```
 gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTERN] [--anim-tol
-    UNITS]
+    UNITS] [--fit-deg DEG] [--fit-units UNITS] [--max-step MAX_STEP]
 ```
 
 | Argument | Default | Description |
@@ -289,14 +289,18 @@ gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTER
 | `--stub PATTERN` |  | reduce matching sequences to one frame (repeatable) |
 | `--keep PATTERN` |  | never touch matching sequences (repeatable) |
 | `--anim-tol UNITS` |  | hold animation values within ±UNITS so runs get longer (lossy, bounded; 0 = lossless re-encode only) |
+| `--fit-deg DEG` |  | resample each sequence to the fewest evenly spaced keys that stay within DEG degrees of every bone |
+| `--fit-units UNITS` |  | position tolerance for --fit-deg (default DEG / 10) |
+| `--max-step MAX_STEP` | `8` | --fit-deg keeps keys at most this many frames apart |
 
 ## `gxbake squeeze`
 
 Measure smarter packing on a staged tree, and write what the port reads today.
 
 ```
-gxbake squeeze path [--output OUTPUT] [--emit] [--min-db MIN_DB] [--anim-tol UNITS] [--skin-db
-    SKIN_DB] [--no-yaz0] [--only LIST] [--skip LIST] [--match GLOB] [--json] [--verbose]
+gxbake squeeze path [--output OUTPUT] [--emit] [--preset {balanced,lossless,max}] [--min-db MIN_DB]
+    [--anim-tol UNITS] [--anim-fit DEG] [--skin-db SKIN_DB] [--no-yaz0] [--only LIST] [--skip LIST]
+    [--match GLOB] [--json] [--verbose]
 ```
 
 | Argument | Default | Description |
@@ -304,9 +308,11 @@ gxbake squeeze path [--output OUTPUT] [--emit] [--min-db MIN_DB] [--anim-tol UNI
 | `path` |  | staged gamedir (or one file) |
 | `-o OUTPUT`, `--output OUTPUT` |  | write the results here, same relative paths (otherwise a report only) |
 | `--emit` |  | with -o, also write the formats that need port support: .gsk skins, .dsp sound, .yaz0 |
-| `--min-db MIN_DB` | `40.0` | drop a world texture's top mip when the next level magnified is within this PSNR |
+| `--preset {balanced,lossless,max}` | `balanced` | starting quality: lossless (bit-exact only), balanced (default: ≥40 dB, ≤0.5° animation) or max (≥34 dB, ≤2°); the options below override it |
+| `--min-db MIN_DB` |  | drop a world texture's top mip when the next level magnified is within this PSNR (balanced: 40) |
 | `--anim-tol UNITS` |  | studio animation deadband (0 = lossless) |
-| `--skin-db SKIN_DB` | `40.0` | lossy skin formats must stay within this PSNR of RGB565 |
+| `--anim-fit DEG` |  | resample studio animation to the fewest keys within DEG degrees (0 = off; balanced: 0.5) |
+| `--skin-db SKIN_DB` |  | lossy skin formats must stay within this PSNR of RGB565 (balanced: 40) |
 | `--no-yaz0` |  | skip the (slow) Yaz0 estimate (same as --skip yaz0) |
 | `--only LIST` |  | only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0 (repeatable) |
 | `--skip LIST` |  | leave these techniques out (same names as --only) (repeatable) |

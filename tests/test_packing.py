@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from gxbake import cli
-from gxbake.core import dspadpcm, gct, gxtex, sfx, skeleton, squeeze, studio, studio_slim, yaz0
+from gxbake.core import dspadpcm, gct, gxtex, models, sfx, skeleton, squeeze, studio, studio_slim, yaz0
 from tests import fixtures
 from tests.test_slim import animated_model
 
@@ -239,3 +239,26 @@ def test_squeeze_techniques_are_optional(tmp_path, capsys):
 	assert not list(out.rglob("*.yaz0"))
 	with pytest.raises(SystemExit):
 		cli.main(["squeeze", str(root), "--only", "bogus"])
+
+
+def test_squeeze_presets(tmp_path, capsys):
+	root = tmp_path / "stage"
+	(root / "media").mkdir(parents=True)
+	(root / "gc_studio").mkdir()
+	(root / "media/wt_test.gct").write_bytes(flat_and_busy_pack())
+	(root / "gc_studio/guy.mdl").write_bytes(animated_model())
+	args = cli.build_parser().parse_args(["squeeze", str(root), "--preset", "max", "--anim-fit", "1"])
+	opt = cli._squeeze_opts(args)
+	assert (opt.min_db, opt.skin_db, opt.anim_tol, opt.anim_fit) == (34.0, 34.0, 2, 1.0)
+	assert cli.main(["squeeze", str(root), "--no-yaz0"]) == 0	# balanced: keyframe fit at 0.5°
+	assert "anim keyframe fit" in capsys.readouterr().out
+	out = tmp_path / "lossless"
+	assert cli.main(["squeeze", str(root), "-o", str(out), "--preset", "lossless", "--no-yaz0"]) == 0
+	text = capsys.readouterr().out
+	assert "anim keyframe fit" not in text and "anim deadband" not in text
+	# Only bit-exact trims survive (the flat texture's top mip is exactly its next level magnified).
+	trimmed = squeeze.trim_flat_mips(gct.read_gct((root / "media/wt_test.gct").read_bytes()), float("inf"))
+	assert all(t[4] == float("inf") for t in trimmed.trimmed.values())
+	m = out / "gc_studio/guy.mdl"
+	if m.exists():	# lossless re-encode keeps every frame
+		assert [s["frames"] for s in models.studio_sequences(m.read_bytes())] == [31, 20, 1]
