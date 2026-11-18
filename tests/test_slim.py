@@ -77,3 +77,41 @@ def test_slim_cli(tmp_path, capsys):
 	out = tmp_path / "out.mdl"
 	assert cli.main(["slim", str(src), "--step", "2", "-o", str(out)]) == 0
 	assert out.stat().st_size < src.stat().st_size
+
+
+def _local_poses(raw, seq, frame):
+	from gxbake.core import skeleton
+
+	bones = models.studio_bones(raw)
+	sq = models.studio_sequences(raw)[seq]
+	return skeleton.decode_anim_frame(raw, sq["animindex"], len(bones), frame,
+		np.array([b["value"] for b in bones]), np.array([b["scale"] for b in bones]))
+
+
+@pytest.mark.parametrize("deg", [0.5, 1, 3])
+def test_fit_deg_resamples_within_tolerance(deg):
+	raw = animated_model()
+	res = studio_slim.slim_studio(raw, fit_deg=deg)
+	changed = {name: (n, m) for name, n, m in res.changed}
+	assert changed["death1"] == (20, 4)	# linear motion: as few keys as max_step allows
+	assert "walk" in changed and res.after < res.before
+	for seq, name in ((0, "walk"), (1, "death1")):
+		n, m = changed[name]
+		for f in range(n):
+			p = f * (m - 1) / (n - 1)
+			i = min(int(p), m - 2)
+			a, b = _local_poses(res.data, seq, i), _local_poses(res.data, seq, i + 1)
+			got = a + (b - a) * (p - i)
+			want = _local_poses(raw, seq, f)
+			assert np.abs(got[:, :3] - want[:, :3]).max() <= deg / 10 + 0.01
+			assert np.degrees(np.abs(got[:, 3:] - want[:, 3:]).max()) <= deg + 0.05
+
+
+def test_fit_frames_and_auto_step_pick_fewest_keys():
+	line = [float(k) for k in range(20)]
+	assert studio_slim.fit_frames([(line, 0.01, None)], max_step=8) == 4
+	assert studio_slim.auto_step([(line, 0.01, None)], max_step=8) == 1	# 19 frames: no step divides evenly
+	assert studio_slim.auto_step([(line[:17], 0.01, None)], max_step=8) == 8
+	# Angles wrap: a steady spin through ±π is still a straight line.
+	spin = [((k * 0.5 + np.pi) % (2 * np.pi)) - np.pi for k in range(17)]
+	assert studio_slim.fit_frames([(spin, 1e-6, 2 * np.pi)], max_step=2) == 9

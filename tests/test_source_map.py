@@ -167,3 +167,18 @@ def test_project_converts_source_map(tmp_path):
 	assert {"maps/slab.bsp", "media/wt_slab.gct"} <= out
 	assert sum(1 for o in out if o.startswith("media/sky_testsky")) == 6
 	assert struct.unpack_from("<i", (tmp_path / "out" / "maps" / "slab.bsp").read_bytes())[0] == 30
+
+
+def test_merge_vis_rows_only_adds_visibility():
+	from gxbake.core import bsp30
+
+	a = bytes([0b0000_1111, 0])
+	b = bytes([0b0001_1111, 0])	# one leaf more than a
+	c = bytes([0, 0b1111_0000])	# far from both
+	merged = bsp30.merge_vis_rows([a, None, b, c], 2)
+	assert merged[1] is None
+	assert merged[0] == merged[2] == bytes([0b0001_1111, 0])
+	assert merged[3] == c
+	for src, out in zip([a, b, c], [merged[0], merged[2], merged[3]]):
+		assert all(s & ~o == 0 for s, o in zip(src, out))	# a superset of the source row
+	assert bsp30.merge_vis_rows([a, b], 0) == [a, b]

@@ -162,6 +162,7 @@ class Settings:
 	map_texture_max: int = 256	# Source maps: largest embedded texture
 	map_disp_power: int = 2	# Source maps: displacement detail kept (0-4)
 	map_shadows: bool = True	# Source 2 maps: trace shadows when relighting
+	map_vis_merge: int = 8	# Source maps: PVS rows within this many leaves share their union
 
 	def sky_options(self, layout: str = "auto") -> skybox.SkyOptions:
 		return skybox.SkyOptions(layout=layout, yaw=self.sky_yaw, fov=self.sky_fov, exposure=self.sky_exposure, size=self.sky_size)
@@ -181,7 +182,7 @@ class Settings:
 		from .source_map import MapOptions
 
 		return MapOptions(max_texture=self.map_texture_max, disp_power=self.map_disp_power, props=self.map_props,
-			hulls=self.map_hulls, shadows=self.map_shadows, search=[Path(p) for p in self.source_dirs])
+			hulls=self.map_hulls, shadows=self.map_shadows, vis_merge=self.map_vis_merge, search=[Path(p) for p in self.source_dirs])
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -645,7 +646,7 @@ class Project:
 			_, w, h, pixels, palette = mip[:5]
 			alpha = name.startswith("{") or (k == Kind.WAD and len(mip) > 5 and mip[5])
 			src = goldsrc.miptex_rgba(w, h, pixels, palette, alpha)
-			key, tw, th, levels, body = gct.wt_encode_cached(w, h, pixels, palette, alpha, s.cache())
+			key, tw, th, levels, body = gct.wt_encode_cached(w, h, pixels, palette, alpha, s.cache(), s.image.cmpr_refine)
 			entry = gct.GctEntry(name, tw, th, levels, gct.GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body)
 			return _texture_preview(name, src, entry)
 		if k == Kind.GCT:
@@ -922,7 +923,8 @@ class Project:
 						emit(asset, f"media/sky_{name}{sfx}.cmp", images.sky_side_cmpr(src, s.sky_size))
 				elif asset.kind == Kind.WAD:
 					pal = self._quake_palette(asset) if self._needs_quake_palette(asset) else None
-					data, entries = gct.build_wad_texture_pack(asset.path, cache=s.cache(), palette=pal)
+					data, entries = gct.build_wad_texture_pack(asset.path, cache=s.cache(), palette=pal,
+						refine=s.image.cmpr_refine)
 					if data:
 						emit(asset, f"media/{stem}.gct", data)
 				elif asset.kind == Kind.BSP:
@@ -943,7 +945,7 @@ class Project:
 							log(f"  {len(conv.props)} prop models referenced (convert them to models/<name>.mdl): "
 								+ ", ".join(Path(p).stem for p in conv.props[:8]) + (" …" if len(conv.props) > 8 else ""))
 					data, report, _entries = gct.build_world_texture_pack(
-						bsp_path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache())
+						bsp_path, wad_dirs=[Path(p) for p in s.wad_dirs], cache=s.cache(), refine=s.image.cmpr_refine)
 					log(f"  {len(report.wads)} WADs searched, {report.entries} textures packed")
 					for note in report.notes:
 						asset.warnings.append(note)

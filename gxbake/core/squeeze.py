@@ -26,6 +26,9 @@ DSP ADPCM sound         port   sound effects and .gcpcm music as DSP ADPCM,
                                the GameCube's hardware sound format (3.5x)
 s16 vertices            port   studio positions as s16 and normals as s8,
                                dequantised for free by Gekko's psq_l loads
+u8 texture coords       port   strip/fan commands whose S/T all fit 0..255
+                               sent as u8 in a second GX vertex format
+                               (lossless: same step; from Lost Coast props)
 CMPR lightmaps          port   static lightmap pages as CMPR, not RGB565 (4x)
 Yaz0 on disc            port   LZ the files the port reads whole
 =====================  =====  ================================================
@@ -35,6 +38,7 @@ from __future__ import annotations
 
 import fnmatch
 import struct
+import zlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -42,7 +46,7 @@ import numpy as np
 
 from . import audit, dspadpcm, gxtex, yaz0
 from .budget import Budgets, _entries_fit, drop_top_mip
-from .gct import GctEntry, read_gct, write_gct
+from .gct import GC_WT_ENTRY, GctEntry, read_gct, write_gct
 
 KiB = 1024
 
@@ -67,12 +71,21 @@ class Saving:
 # Technique keys for SqueezeOptions.techniques / --only / --skip.
 TECHNIQUES = {
 	"trim": "detail mip trim (world textures)",
-	"anim": "optimal anim runs and deadband (studio animation)",
+	"anim": "optimal anim runs, deadband and keyframe fit (studio animation)",
 	"skins": "indexed skins (.gsk)",
 	"adpcm": "DSP ADPCM sound and music (.dsp)",
 	"verts": "s16 vertices (estimate)",
 	"lightmaps": "CMPR lightmaps (estimate)",
 	"yaz0": "Yaz0 (.yaz0)",
+	"dedup": "duplicate textures across files (exact and perceptual hash)",
+}
+
+
+# Named starting points for SqueezeOptions; explicit options override them.
+PRESETS = {
+	"lossless": dict(min_db=float("inf"), skin_db=float("inf"), anim_tol=0, anim_fit=0.0),
+	"balanced": dict(min_db=40.0, skin_db=40.0, anim_tol=0, anim_fit=0.5),
+	"max": dict(min_db=34.0, skin_db=34.0, anim_tol=2, anim_fit=2.0),
 }
 
 
@@ -80,6 +93,7 @@ TECHNIQUES = {
 class SqueezeOptions:
 	min_db: float = 40.0	# detail trim: drop a top mip whose detail is under this
 	anim_tol: int = 0	# deadband in raw animation units; 0 = lossless only
+	anim_fit: float = 0.5	# resample animation to the fewest keys within this many degrees (0 = off)
 	skin_db: float = 40.0	# lossy skin formats must stay this close to today's RGB565
 	adpcm_preview_s: float = 20.0	# seconds of long streams to encode for the SNR figure
 	yaz0_sample: int = 512 * KiB	# compress this much of a big file and extrapolate
@@ -212,22 +226,32 @@ def write_skin_pack(skins: list[SkinChoice]) -> bytes:
 		"GCSK" u32 count u32 version (1) u32 0
 		count × { u16 skin; u8 GXTexFmt; u8 GXTlutFmt; u16 w, h; u16 tlut entries;
 		          u16 flags (1 = 1-bit alpha); u32 tex off, tex bytes, tlut off, tlut bytes; 8 × 0 }
-		then texels and TLUTs, each 32-byte aligned (GX_InitTexObj, GX_LoadTlut)
+		then texels and TLUTs, each 32-byte aligned (GX_InitTexObj, GX_LoadTlut);
+		identical texels or TLUTs are stored once and several entries point at them
 	"""
 	head = GCSK_MAGIC + struct.pack(">III", len(skins), 1, 0)
 	table_end = len(head) + len(skins) * GCSK_ENTRY.size
 	pos = table_end + (-table_end & 31)
 	rows, blobs = [], []
+	placed: dict[bytes, int] = {}	# identical texels or TLUTs are stored once and shared
+
+	def place(b: bytes) -> int:
+		nonlocal pos
+		if not b:
+			return 0
+		if b not in placed:
+			placed[b] = pos
+			blobs.append(b + bytes(-len(b) & 31))
+			pos += len(blobs[-1])
+		return placed[b]
+
 	for i, s in enumerate(skins):
 		t = s.choice.tex
-		tex_off = pos
-		pos += len(t.data) + (-len(t.data) & 31)
-		tlut_off = pos if t.tlut else 0
-		pos += len(t.tlut) + (-len(t.tlut) & 31)
+		tex_off = place(t.data)
+		tlut_off = place(t.tlut)
 		alpha = t.fmt in ("RGB5A3", "IA4", "IA8", "CMPR") or t.tlut_fmt == gxtex.GX_TL_RGB5A3 and bool(t.tlut)
 		rows.append(GCSK_ENTRY.pack(i, gxtex.FORMATS[t.fmt][0], t.tlut_fmt, t.width, t.height, len(t.tlut) // 2,
 			int(alpha), tex_off, len(t.data), tlut_off, len(t.tlut)))
-		blobs += [t.data + bytes(-len(t.data) & 31), t.tlut + bytes(-len(t.tlut) & 31)]
 	body = head + b"".join(rows)
 	return body + bytes(-len(body) & 31) + b"".join(blobs)
 
@@ -256,6 +280,34 @@ def studio_vertex_counts(raw: bytes) -> tuple[int, int]:
 			nv += struct.unpack_from("<i", raw, mb + 80)[0]
 			nn += struct.unpack_from("<i", raw, mb + 92)[0]
 	return nv, nn
+
+
+def studio_texcoord_counts(raw: bytes) -> tuple[int, int]:
+	"""(vertices in the triangle commands, vertices of commands whose S and T
+	all fit 0..255). GoldSrc stores S/T as whole texels in s16, so a command
+	that stays inside 0..255 can go to the GPU as u8 in a second GX vertex
+	format with no loss, 2 bytes a vertex less; Lost Coast's props took 15%
+	off their display lists this way."""
+	total = fit = 0
+	nbody, body = struct.unpack_from("<ii", raw, 204)
+	for bp in range(max(0, nbody)):
+		nmodels, model_off = struct.unpack_from("<i", raw, body + bp * 76 + 64)[0], struct.unpack_from("<i", raw, body + bp * 76 + 72)[0]
+		for m in range(max(0, nmodels)):
+			mb = model_off + m * 112
+			nmesh, mesh_off = struct.unpack_from("<ii", raw, mb + 72)
+			for k in range(max(0, nmesh)):
+				_ntris, tri = struct.unpack_from("<ii", raw, mesh_off + k * 20)
+				while 0 <= tri < len(raw) - 2:
+					n = abs(struct.unpack_from("<h", raw, tri)[0])
+					tri += 2
+					if not n:
+						break
+					st = struct.unpack_from("<%dh" % (4 * n), raw, tri)
+					tri += 8 * n
+					total += n
+					if all(0 <= v <= 255 for i, v in enumerate(st) if i % 4 >= 2):
+						fit += n
+	return total, fit
 
 
 # --- sound -------------------------------------------------------------------
@@ -326,16 +378,32 @@ def analyse_file(path: Path, rel: str, opt: SqueezeOptions) -> list[Saving]:
 				anim = studio_breakdown(data).get("animation", 0)
 				out.append(Saving("optimal anim runs", True, "MEM1 studio arena", rel, len(data), lossless.after,
 					"lossless", f"animation {audit.human_bytes(anim)}"))
+				base = lossless
 				if opt.anim_tol > 0:
 					tol = slim_studio(data, tolerance=opt.anim_tol)
-					out.append(Saving("anim deadband", True, "MEM1 studio arena", rel, lossless.after, tol.after,
+					out.append(Saving("anim deadband", True, "MEM1 studio arena", rel, base.after, tol.after,
 						f"±{opt.anim_tol} units"))
+					base = tol
+				if opt.anim_fit > 0:
+					fit = slim_studio(data, tolerance=opt.anim_tol, fit_deg=opt.anim_fit)
+					keys = ", ".join(f"{name} {a}→{b}" for name, a, b in fit.changed[:4])
+					more = f" +{len(fit.changed) - 4} more" if len(fit.changed) > 4 else ""
+					out.append(Saving("anim keyframe fit", True, "MEM1 studio arena", rel, base.after,
+						min(base.after, fit.after), f"≤{opt.anim_fit:g}°, ≤{opt.anim_fit / 10:g} units",
+						(keys + more) if fit.changed else "no sequence fits fewer keys"))
 			except (ValueError, struct.error) as exc:
 				out.append(Saving("optimal anim runs", True, "MEM1 studio arena", rel, len(data), len(data), "", str(exc)))
-			nv, nn = studio_vertex_counts(data) if not is_tex and opt.on("verts") else (0, 0)
-			if nv:
-				out.append(Saving("s16 vertices", False, "MEM1 studio arena", rel, nv * 12 + nn * 12, nv * 6 + nn * 3,
-					"≤1/65536 of the model's extent", f"{nv} positions, {nn} normals"))
+		nv, nn = studio_vertex_counts(data) if not is_tex and opt.on("verts") else (0, 0)
+		if nv:
+			out.append(Saving("s16 vertices", False, "MEM1 studio arena", rel, nv * 12 + nn * 12, nv * 6 + nn * 3,
+				"≤1/65536 of the model's extent", f"{nv} positions, {nn} normals"))
+			try:
+				tv, fit = studio_texcoord_counts(data)
+			except struct.error:
+				tv = fit = 0
+			if tv:
+				out.append(Saving("u8 texture coords", False, "MEM1 studio arena", rel, tv * 4, tv * 4 - fit * 2,
+					"lossless", f"{fit} of {tv} strip vertices fit u8"))
 		skins = studio_skins(data, min_db=opt.skin_db, viewmodel=Path(rel).name.lower().startswith("v_")) \
 			if opt.on("skins") else []
 		if skins:
@@ -368,10 +436,49 @@ def analyse_file(path: Path, rel: str, opt: SqueezeOptions) -> list[Saving]:
 			rgb565 = ln * 2 // 3	# 24-bit samples → 16-bit atlas texels
 			out.append(Saving("CMPR lightmaps", False, "MEM1 lightmap atlas", rel, rgb565, rgb565 // 4,
 				"lossy (DXT1 on smooth gradients)", "estimate from the lighting lump; styled pages stay RGB565"))
+			from .rectpack import lightmap_plan
+
+			try:
+				lp = lightmap_plan(data, min_db=opt.min_db if opt.min_db != float("inf") else 99.0)
+			except (ValueError, struct.error):
+				lp = None
+			if lp and lp.faces:
+				out.append(Saving("lightmap size by error", False, "MEM1 lightmap atlas", rel, lp.luxels * 2,
+					lp.luxels_after * 2, f"flat ±2, half-res ≥{opt.min_db:.0f} dB" if lp.half else "flat ±2",
+					f"{lp.flat}/{lp.faces} faces flat → 1×1, {lp.half} at half resolution; "
+					f"128² pages {lp.pages_before} → {lp.pages_after}", lp.worst_db if lp.half else None))
 	if opt.on("yaz0") and ext in (".gct", ".mdl", ".bsp", ".spr", ".cmp") and len(data) > 4 * KiB:
 		out.append(Saving("Yaz0 on disc", False, "disc + ARAM cache", rel, len(data), _yaz0_estimate(data, opt.yaz0_sample),
 			"lossless"))
+		if ext == ".gct" and data[:4] == b"GCWT":
+			out.append(Saving("Yaz0 + CMPR split", False, "disc + ARAM cache", rel, len(data),
+				_yaz0_estimate(split_cmpr(data), opt.yaz0_sample), "lossless", "colour words, then index words"))
+		out.append(Saving("deflate on disc", False, "disc + ARAM cache", rel, len(data),
+			len(zlib.compress(data, 9)) - 6, "lossless", "LZ + Huffman; needs an inflater in the port"))
 	return out
+
+
+def split_cmpr(data: bytes, inverse: bool = False) -> bytes:
+	"""Reorder a GCWT pack's CMPR blob so every block's two colour words come
+	first and the index words after (or undo that). Endpoints of neighbouring
+	blocks repeat far more than they repeat next to index bits, so LZ finds
+	longer matches: same bytes, sorted by what they mean. The header and
+	table are untouched; the loader undoes it after decompressing."""
+	if data[:4] != b"GCWT":
+		raise ValueError("not a GCWT pack")
+	count = struct.unpack_from(">I", data, 4)[0]
+	first = 12 + count * GC_WT_ENTRY.size
+	start = first + (-first & 31)
+	body = np.frombuffer(data, np.uint8, (len(data) - start) // 8 * 8, start)
+	n = len(body) // 8
+	if inverse:
+		out = np.empty((n, 8), np.uint8)
+		out[:, :4] = body[:n * 4].reshape(n, 4)
+		out[:, 4:] = body[n * 4:].reshape(n, 4)
+	else:
+		b = body.reshape(n, 8)
+		out = np.concatenate((b[:, :4].reshape(-1), b[:, 4:].reshape(-1)))
+	return data[:start] + out.tobytes() + data[start + n * 8:]
 
 
 def staged_files(root: Path) -> list[tuple[Path, str]]:
@@ -383,6 +490,7 @@ def staged_files(root: Path) -> list[tuple[Path, str]]:
 @dataclass
 class Report:
 	rows: list[Saving] = field(default_factory=list)
+	dedup: object = None	# dedup.DedupReport when that technique ran
 
 	def by_technique(self) -> dict[str, list[Saving]]:
 		out: dict[str, list[Saving]] = {}
@@ -397,10 +505,20 @@ class Report:
 def squeeze(root: Path, opt: SqueezeOptions | None = None, match: list[str] | None = None) -> Report:
 	opt = opt or SqueezeOptions()
 	rep = Report()
-	for path, rel in staged_files(root):
-		if not _matches(rel, match):
-			continue
+	files = [(p, r) for p, r in staged_files(root) if _matches(r, match)]
+	for path, rel in files:
 		rep.rows += analyse_file(path, rel, opt)
+	if opt.on("dedup"):
+		from .dedup import scan
+
+		d = scan(root, files, opt.min_db if opt.min_db != float("inf") else 99.0)
+		rep.dedup = d
+		for g in d.exact + d.near:
+			total = sum(i.size for i in g.items)
+			where = "MEM1 (same file)" if g.same_file else "disc (one per map/model)"
+			rep.rows.append(Saving("duplicate textures", False, where, g.items[0].label, total, total - g.wasted,
+				"identical" if g.exact else f"≥{g.psnr:.0f} dB", ", ".join(i.label for i in g.items[1:4]),
+				None if g.exact else g.psnr))
 	return rep
 
 
@@ -452,7 +570,7 @@ def apply(root: Path, out: Path, opt: SqueezeOptions | None = None, emit: bool =
 			from .studio_slim import slim_studio
 
 			try:
-				r = slim_studio(data, tolerance=opt.anim_tol)
+				r = slim_studio(data, tolerance=opt.anim_tol, fit_deg=opt.anim_fit)
 				new = r.data if r.after < len(data) else None
 			except ValueError:
 				new = None

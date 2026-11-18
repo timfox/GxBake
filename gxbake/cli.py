@@ -6,8 +6,8 @@
 	gxbake budget <staged gamedir> [--map NAME] [--json]
 	gxbake fit <pack.gct> [-o OUT] [--pool 448K]
 	gxbake disc <staged gamedir> [--json]
-	gxbake slim <model.mdl> [-o OUT] [--step 2] [--stub 'death*'] [--anim-tol 2]
-	gxbake squeeze <staged gamedir> [-o OUT] [--emit] [--json]
+	gxbake slim <model.mdl> [-o OUT] [--step 2 | --fit-deg 1] [--stub 'death*'] [--anim-tol 2]
+	gxbake squeeze <staged gamedir> [-o OUT] [--emit] [--preset lossless|balanced|max] [--json]
 	gxbake adpcm <wav|gcpcm...> -o OUT
 	gxbake yaz0 <files...> [-d] [-o OUT]
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
@@ -40,10 +40,12 @@ def _convert(args) -> int:
 	s.map_props = not args.no_map_props
 	s.map_texture_max = args.map_texture_max
 	s.map_disp_power = args.map_disp_power
+	s.map_vis_merge = args.map_vis_merge
 	s.map_shadows = not args.no_map_shadows
 	s.image.max_edge = args.max_edge
 	s.image.mipmaps = not args.no_mipmaps
 	s.image.alpha = args.alpha
+	s.image.cmpr_refine = args.cmpr_refine
 	s.pack_images = not args.no_pack
 	s.pack_name = args.pack_name
 	s.raw_cmp = args.raw_cmp
@@ -90,6 +92,51 @@ def _convert(args) -> int:
 	print(f"wrote {len(written)} files, {audit.human_bytes(total)} "
 		f"({total / audit.MAIN_RAM:.1%} of GameCube main RAM) to {args.output}")
 	return 1 if any(a.status == "Failed" for a in todo) else 0
+
+
+def _formats(args) -> int:
+	from .core import imageformats
+
+	rows = imageformats.report()
+	if args.json:
+		print(json.dumps(rows, indent=1))
+		return 0
+	group = None
+	for r in rows:
+		if r["group"] != group:
+			group = r["group"]
+			print(f"\n{group}")
+		status = "ok" if r["available"] else (f"pip install {r['install']}" if r["install"] else "unavailable")
+		note = f"  ({r['note']})" if r["note"] else ""
+		print(f"  {r['name']:<44} {' '.join(r['extensions']):<40} {status}{note}")
+	missing = sorted({r["install"] for r in rows if r["install"]})
+	if missing:
+		print(f"\nmissing optional packages: {', '.join(missing)} (pip install gxbake[images])")
+	return 0
+
+
+def _decode(args) -> int:
+	from PIL import Image
+
+	from .core.images import load_rgba
+
+	out = Path(args.output)
+	out.mkdir(parents=True, exist_ok=True)
+	failed = 0
+	for p in _image_files(args.images):
+		warnings: list[str] = []
+		try:
+			rgba = load_rgba(p, warnings)
+		except Exception as e:	# noqa: BLE001 - report every file and carry on
+			print(f"{p}: {e}", file=sys.stderr)
+			failed += 1
+			continue
+		dest = out / (p.name + ".png")
+		Image.fromarray(rgba, "RGBA").save(dest)
+		print(f"{p} -> {dest} ({rgba.shape[1]}x{rgba.shape[0]})")
+		for w in warnings:
+			print(f"  warning: {w}")
+	return 1 if failed else 0
 
 
 def _inspect(args) -> int:
@@ -388,7 +435,8 @@ def _slim(args) -> int:
 	raw = src.read_bytes()
 	try:
 		before = studio_slim.studio_breakdown(raw)
-		res = studio_slim.slim_studio(raw, args.step, args.stub, args.keep, tolerance=args.anim_tol)
+		res = studio_slim.slim_studio(raw, args.step, args.stub, args.keep, tolerance=args.anim_tol,
+			fit_deg=args.fit_deg, fit_units=args.fit_units, max_step=args.max_step)
 	except ValueError as exc:
 		print(f"{src}: {exc}", file=sys.stderr)
 		return 1
@@ -476,8 +524,11 @@ def _squeeze_opts(args):
 		keys = {k.strip().lower() for item in args.only for k in item.split(",") if k.strip()}
 	for item in args.skip or []:
 		keys -= {k.strip().lower() for k in item.split(",")}
-	return squeeze.SqueezeOptions(min_db=args.min_db, anim_tol=args.anim_tol, skin_db=args.skin_db,
-		yaz0=not args.no_yaz0, techniques=keys)
+	vals = dict(squeeze.PRESETS[args.preset])
+	for k in ("min_db", "skin_db", "anim_tol", "anim_fit"):
+		if getattr(args, k) is not None:
+			vals[k] = getattr(args, k)
+	return squeeze.SqueezeOptions(**vals, yaz0=not args.no_yaz0, techniques=keys)
 
 
 def _squeeze(args) -> int:
@@ -547,7 +598,8 @@ def _yaz0(args) -> int:
 def _image_opts(args):
 	from .core.images import ImageOptions
 
-	return ImageOptions(max_edge=args.max_edge, mipmaps=not args.no_mipmaps, alpha=args.alpha)
+	return ImageOptions(max_edge=args.max_edge, mipmaps=not args.no_mipmaps, alpha=args.alpha,
+		cmpr_refine=args.cmpr_refine)
 
 
 def _pack_report(rep) -> None:
@@ -656,6 +708,8 @@ def _add_image_opts(p) -> None:
 	p.add_argument("--no-mipmaps", action="store_true", help="write level 0 only")
 	p.add_argument("--alpha", choices=("auto", "on", "off"), default="auto",
 		help="CMPR 1-bit alpha: auto uses it when the image has transparency")
+	p.add_argument("--cmpr-refine", action="store_true",
+		help="least-squares CMPR endpoints: same size, closer colours (+0.3 dB median, up to +2.4 dB)")
 
 
 def _add_pack_parser(sub) -> None:
@@ -705,6 +759,8 @@ def _add_pack_parser(sub) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
 	"""Every subcommand and option. docs/cli.md is generated from this (python -m gxbake.clidoc)."""
+	from .core import squeeze
+
 	parser = argparse.ArgumentParser(prog="gxbake", description="Convert and optimise assets for the GameCube GX renderer.")
 	parser.add_argument("--version", action="version", version=f"GxBake {__version__}")
 	sub = parser.add_subparsers(dest="cmd", metavar="command")
@@ -715,6 +771,8 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--max-edge", type=int, default=256, help="largest texture side for loose images (power of two)")
 	c.add_argument("--no-mipmaps", action="store_true", help="write level 0 only")
 	c.add_argument("--alpha", choices=("auto", "on", "off"), default="auto", help="CMPR 1-bit alpha: auto uses it when the image has transparency")
+	c.add_argument("--cmpr-refine", action="store_true",
+		help="least-squares CMPR endpoints for every texture: same size, closer colours, bytes differ from the disc builder")
 	c.add_argument("--no-pack", action="store_true", help="one .gct per loose image")
 	c.add_argument("--pack-name", default="textures", help="loose images go to media/<name>.gct")
 	c.add_argument("--raw-cmp", action="store_true", help="also write media/<name>.cmp (level 0) per loose image")
@@ -767,6 +825,9 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--map-texture-max", type=int, default=256, help="Source maps: largest embedded texture side")
 	c.add_argument("--map-disp-power", type=int, default=2, choices=range(0, 5),
 		help="Source maps: displacement detail kept (2 = 5x5 vertices per displacement)")
+	c.add_argument("--map-vis-merge", type=int, default=8, metavar="LEAVES",
+		help="Source maps: PVS rows that differ by at most this many leaves are stored once as their union "
+		"(only adds visible leaves; 0 keeps the exact PVS)")
 	c.add_argument("--no-map-hulls", action="store_true",
 		help="Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0)")
 	c.add_argument("--no-map-shadows", action="store_true",
@@ -780,6 +841,15 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--sky-fov", type=float, default=180.0, help="flat photos as skies: horizontal degrees the photo covers")
 	c.add_argument("--sky-exposure", type=float, default=0.0, help=".hdr panoramas: stops brighter (+) or darker (-) than auto")
 	c.set_defaults(fn=_convert)
+
+	fm = sub.add_parser("formats", help="list every image format GxBake reads and which optional packages are missing")
+	fm.add_argument("--json", action="store_true", help="print the table as JSON")
+	fm.set_defaults(fn=_formats)
+
+	dc = sub.add_parser("decode", help="decode images of any supported format to PNG (to check how they are read)")
+	dc.add_argument("images", nargs="+", help="image files or folders")
+	dc.add_argument("-o", "--output", default=".", help="folder for the PNGs (default: here)")
+	dc.set_defaults(fn=_decode)
 
 	i = sub.add_parser("inspect", help="print what GxBake sees in a file or folder")
 	i.add_argument("path", help="file or folder")
@@ -885,6 +955,10 @@ def build_parser() -> argparse.ArgumentParser:
 	sl.add_argument("--keep", action="append", metavar="PATTERN", help="never touch matching sequences")
 	sl.add_argument("--anim-tol", type=int, default=0, metavar="UNITS",
 		help="hold animation values within ±UNITS so runs get longer (lossy, bounded; 0 = lossless re-encode only)")
+	sl.add_argument("--fit-deg", type=float, default=0, metavar="DEG",
+		help="resample each sequence to the fewest evenly spaced keys that stay within DEG degrees of every bone")
+	sl.add_argument("--fit-units", type=float, metavar="UNITS", help="position tolerance for --fit-deg (default DEG / 10)")
+	sl.add_argument("--max-step", type=float, default=8, help="--fit-deg keeps keys at most this many frames apart")
 	sl.set_defaults(fn=_slim)
 
 	sq = sub.add_parser("squeeze", help="measure smarter packing on a staged tree, and write what the port reads today")
@@ -892,13 +966,18 @@ def build_parser() -> argparse.ArgumentParser:
 	sq.add_argument("-o", "--output", help="write the results here, same relative paths (otherwise a report only)")
 	sq.add_argument("--emit", action="store_true",
 		help="with -o, also write the formats that need port support: .gsk skins, .dsp sound, .yaz0")
-	sq.add_argument("--min-db", type=float, default=40.0,
-		help="drop a world texture's top mip when the next level magnified is within this PSNR")
-	sq.add_argument("--anim-tol", type=int, default=0, metavar="UNITS", help="studio animation deadband (0 = lossless)")
-	sq.add_argument("--skin-db", type=float, default=40.0, help="lossy skin formats must stay within this PSNR of RGB565")
+	sq.add_argument("--preset", choices=sorted(squeeze.PRESETS), default="balanced",
+		help="starting quality: lossless (bit-exact only), balanced (default: ≥40 dB, ≤0.5° animation) or max "
+		"(≥34 dB, ≤2°); the options below override it")
+	sq.add_argument("--min-db", type=float,
+		help="drop a world texture's top mip when the next level magnified is within this PSNR (balanced: 40)")
+	sq.add_argument("--anim-tol", type=int, metavar="UNITS", help="studio animation deadband (0 = lossless)")
+	sq.add_argument("--anim-fit", type=float, metavar="DEG",
+		help="resample studio animation to the fewest keys within DEG degrees (0 = off; balanced: 0.5)")
+	sq.add_argument("--skin-db", type=float, help="lossy skin formats must stay within this PSNR of RGB565 (balanced: 40)")
 	sq.add_argument("--no-yaz0", action="store_true", help="skip the (slow) Yaz0 estimate (same as --skip yaz0)")
 	sq.add_argument("--only", action="append", metavar="LIST",
-		help="only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0")
+		help="only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0, dedup")
 	sq.add_argument("--skip", action="append", metavar="LIST", help="leave these techniques out (same names as --only)")
 	sq.add_argument("--match", action="append", metavar="GLOB", help="only these relative paths (repeatable)")
 	sq.add_argument("--json", action="store_true", help="print every row as JSON")

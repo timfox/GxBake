@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..core import audit, images, media, models, panda, rose
+from ..core import audit, imageformats, images, media, models, panda, rose
 from ..core.project import CONVERTIBLE, Asset, Kind, Project, Settings
 from .widgets import ImagePane, Task
 
@@ -50,10 +50,15 @@ _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
 _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
 _ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
 _PANDA_GLOBS = "*.egg *.bam *.pz *.pandactor"
+# one filter per image group (common, HDR/vector/pro, GPU, console, PC game, retro)
+_IMAGE_GROUP_FILTERS = "".join(
+	f"{group} ({' '.join('*' + e for e in exts)});;" for group, exts in imageformats.groups().items() if exts)
 _USD_GLOBS = " ".join(f"*{e}" for e in sorted(models.USD_EXTENSIONS))
 FILE_FILTER = (
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.vmap_c *.vwrld_c *.mdl *.spr *.sp2 *.pcf *.vpcf_c *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
 	f"{_MODEL_GLOBS} {_USD_GLOBS} {_ROSE_GLOBS} {_PANDA_GLOBS} main_file_cache.dat2 main_file_cache.dat *.dat *.ffximdl *.spw *.bgw *.hrc *.p *.ff7mdl);;"
+	f"All images ({_IMAGE_GLOBS});;"
+	f"{_IMAGE_GROUP_FILTERS}"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	f"USD scenes via FreeUSD ({_USD_GLOBS});;"
 	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal *.pcf);;"

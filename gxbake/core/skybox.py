@@ -106,10 +106,14 @@ class SkySource:
 
 
 def load_rgb(path: Path, exposure: float = 0.0) -> "np.ndarray":
-	"""Any image GxBake reads, or a Radiance .hdr tone-mapped, as uint8 RGB."""
+	"""Any image GxBake reads, or an HDR one (.hdr, .exr, .pfm) tone-mapped, as uint8 RGB."""
 	path = Path(path)
-	if path.suffix.lower() == ".hdr":
-		return tonemap(read_hdr(path), exposure)
+	if path.suffix.lower() in (".hdr", ".pic", ".exr", ".pfm"):
+		from .imageformats import read_float
+
+		hdr = read_float(path)
+		if hdr is not None:
+			return tonemap(np.ascontiguousarray(hdr[..., :3]), exposure)
 	from .images import load_rgba
 
 	return load_rgba(path)[..., :3]
@@ -234,11 +238,16 @@ def looks_like_panorama(path: Path) -> bool:
 		except (OSError, ValueError):
 			return False
 	try:
-		from PIL import Image
+		if path.suffix.lower() in (".exr", ".pfm"):
+			from .imageformats import read_float
 
-		with Image.open(path) as img:
-			w, h = img.size
-	except Exception:	# noqa: BLE001 - VTF/WAL and broken files are not panoramas
+			h, w = read_float(path).shape[:2]
+		else:
+			from PIL import Image
+
+			with Image.open(path) as img:
+				w, h = img.size
+	except Exception:	# noqa: BLE001 - VTF/WAL, game formats and broken files are not panoramas
 		return False
 	if w == 2 * h and w >= 1024:
 		return True
@@ -258,7 +267,7 @@ def find_faces(path: Path) -> tuple[str, str, dict[str, Path]] | None:
 
 	path = Path(path)
 	folder = path if path.is_dir() else path.parent
-	files = [p for p in sorted(folder.iterdir()) if p.is_file() and (p.suffix.lower() in IMAGE_EXTENSIONS or p.suffix.lower() == ".hdr")]
+	files = [p for p in sorted(folder.iterdir()) if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS]
 	stems = [path.stem.lower()] if path.is_file() else [p.stem.lower() for p in files]
 	for stem in stems:
 		# Descriptive names first: "skyleft" also ends in "ft".

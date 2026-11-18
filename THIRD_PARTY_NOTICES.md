@@ -57,3 +57,17 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Optional image decoders
+
+These are not part of GxBake's code. They are imported only when installed (`gxbake[images]`, `gxbake[jxl]`) and the executable bundles the ones in `gxbake[images]`:
+
+| Package | Used for | Licence |
+| --- | --- | --- |
+| [pillow-heif](https://github.com/bigcat88/pillow_heif) | HEIC / HEIF | BSD-3-Clause (bundles libheif, LGPL-3.0, as a shared library) |
+| [OpenEXR](https://github.com/AcademySoftwareFoundation/openexr) | `.exr` | BSD-3-Clause |
+| [resvg-py](https://github.com/baseplate-admin/resvg-py) | SVG | MIT (resvg itself: Apache-2.0 / MIT) |
+| [psd-tools](https://github.com/psd-tools/psd-tools) | Photoshop layers | MIT |
+| [rawpy](https://github.com/letmaik/rawpy) | camera RAW | MIT (bundles LibRaw, LGPL-2.1 / CDDL-1.0) |
+| [texture2ddecoder](https://github.com/K0lb3/texture2ddecoder) | ASTC, PVRTC, ATC, ETC | MIT |
+| [pillow-jxl-plugin](https://github.com/Isotr0py/pillow-jxl-plugin) | JPEG XL | GPL-3.0-or-later; not bundled, install separately |

@@ -15,6 +15,8 @@ build or CI job.
 | Command | What it does |
 | --- | --- |
 | [`convert`](#gxbake-convert) | convert files or folders |
+| [`formats`](#gxbake-formats) | list every image format GxBake reads and which optional packages are missing |
+| [`decode`](#gxbake-decode) | decode images of any supported format to PNG (to check how they are read) |
 | [`inspect`](#gxbake-inspect) | print what GxBake sees in a file or folder |
 | [`rs`](#gxbake-rs) | list the NPCs and models in a RuneScape cache |
 | [`ff7`](#gxbake-ff7) | look inside Final Fantasy VII field and battle models (.hrc, .p, .a, .tex, <base>aa) |
@@ -50,6 +52,19 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale FF7_BATTLE_SCALE] [--video-width VIDEO_WIDTH]
     [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL]
     [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
+    [--map-disp-power {0,1,2,3,4}] [--map-vis-merge LEAVES] [--no-map-hulls] [--no-map-shadows]
+    [--no-map-props] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV]
+    [--sky-exposure SKY_EXPOSURE]
+    {auto,on,off}] [--cmpr-refine] [--no-pack] [--pack-name PACK_NAME] [--raw-cmp] [--mdl-max-edge
+    MDL_MAX_EDGE] [--mdl-anim-step MDL_ANIM_STEP] [--spr-scale SPR_SCALE] [--model-scale
+    MODEL_SCALE] [--model-up {y,z}] [--model-skin-max-edge MODEL_SKIN_MAX_EDGE] [--no-model-full]
+    [--model-static] [--model-fps MODEL_FPS] [--no-model-clips] [--no-blend-bones] [--rose-scale
+    ROSE_SCALE] [--rose-yaw ROSE_YAW] [--rose-entry ROSE_ENTRY] [--panda-scale PANDA_SCALE]
+    [--panda-yaw PANDA_YAW] [--rs-scale RS_SCALE] [--rs-yaw RS_YAW] [--rs-entry KIND:ID]
+    [--ffxi-scale FFXI_SCALE] [--ffxi-yaw FFXI_YAW] [--ffxi-skeleton DAT] [--ffxi-music-wav]
+    [--ff7-scale FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale FF7_BATTLE_SCALE] [--video-width
+    VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool
+    WT_POOL] [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
     [--map-disp-power {0,1,2,3,4}] [--no-map-hulls] [--no-map-shadows] [--no-map-props] [--cache
     CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
 ```
@@ -61,6 +76,7 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--max-edge MAX_EDGE` | `256` | largest texture side for loose images (power of two) |
 | `--no-mipmaps` |  | write level 0 only |
 | `--alpha {auto,on,off}` | `auto` | CMPR 1-bit alpha: auto uses it when the image has transparency |
+| `--cmpr-refine` |  | least-squares CMPR endpoints for every texture: same size, closer colours, bytes differ from the disc builder |
 | `--no-pack` |  | one .gct per loose image |
 | `--pack-name PACK_NAME` | `textures` | loose images go to media/<name>.gct |
 | `--raw-cmp` |  | also write media/<name>.cmp (level 0) per loose image |
@@ -99,6 +115,7 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--game-dir DIR_OR_VPK` |  | Source maps: game folder or _dir.vpk to find materials in (repeatable; the map's own pakfile and the folder above maps/ are searched first) |
 | `--map-texture-max MAP_TEXTURE_MAX` | `256` | Source maps: largest embedded texture side |
 | `--map-disp-power {0,1,2,3,4}` | `2` | Source maps: displacement detail kept (2 = 5x5 vertices per displacement) |
+| `--map-vis-merge LEAVES` | `8` | Source maps: PVS rows that differ by at most this many leaves are stored once as their union (only adds visible leaves; 0 keeps the exact PVS) |
 | `--no-map-hulls` |  | Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0) |
 | `--no-map-shadows` |  | Source 2 maps: light without tracing shadows (faster) |
 | `--no-map-props` |  | Source maps: don't turn prop_static into cycler_sprite entities |
@@ -107,6 +124,31 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--sky-yaw SKY_YAW` | `270.0` | panorama skies: engine yaw the image centre faces (0 rt, 90 bk, 180 lf, 270 ft) |
 | `--sky-fov SKY_FOV` | `180.0` | flat photos as skies: horizontal degrees the photo covers |
 | `--sky-exposure SKY_EXPOSURE` |  | .hdr panoramas: stops brighter (+) or darker (-) than auto |
+
+## `gxbake formats`
+
+List every image format GxBake reads and which optional packages are missing.
+
+```
+gxbake formats [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--json` |  | print the table as JSON |
+
+## `gxbake decode`
+
+Decode images of any supported format to PNG (to check how they are read).
+
+```
+gxbake decode images [images ...] [--output OUTPUT]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `images` … |  | image files or folders |
+| `-o OUTPUT`, `--output OUTPUT` | `.` | folder for the PNGs (default: here) |
 
 ## `gxbake inspect`
 
@@ -298,7 +340,7 @@ Show where a studio model's bytes go and thin its animation.
 
 ```
 gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTERN] [--anim-tol
-    UNITS]
+    UNITS] [--fit-deg DEG] [--fit-units UNITS] [--max-step MAX_STEP]
 ```
 
 | Argument | Default | Description |
@@ -309,14 +351,18 @@ gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTER
 | `--stub PATTERN` |  | reduce matching sequences to one frame (repeatable) |
 | `--keep PATTERN` |  | never touch matching sequences (repeatable) |
 | `--anim-tol UNITS` |  | hold animation values within ±UNITS so runs get longer (lossy, bounded; 0 = lossless re-encode only) |
+| `--fit-deg DEG` |  | resample each sequence to the fewest evenly spaced keys that stay within DEG degrees of every bone |
+| `--fit-units UNITS` |  | position tolerance for --fit-deg (default DEG / 10) |
+| `--max-step MAX_STEP` | `8` | --fit-deg keeps keys at most this many frames apart |
 
 ## `gxbake squeeze`
 
 Measure smarter packing on a staged tree, and write what the port reads today.
 
 ```
-gxbake squeeze path [--output OUTPUT] [--emit] [--min-db MIN_DB] [--anim-tol UNITS] [--skin-db
-    SKIN_DB] [--no-yaz0] [--only LIST] [--skip LIST] [--match GLOB] [--json] [--verbose]
+gxbake squeeze path [--output OUTPUT] [--emit] [--preset {balanced,lossless,max}] [--min-db MIN_DB]
+    [--anim-tol UNITS] [--anim-fit DEG] [--skin-db SKIN_DB] [--no-yaz0] [--only LIST] [--skip LIST]
+    [--match GLOB] [--json] [--verbose]
 ```
 
 | Argument | Default | Description |
@@ -324,11 +370,13 @@ gxbake squeeze path [--output OUTPUT] [--emit] [--min-db MIN_DB] [--anim-tol UNI
 | `path` |  | staged gamedir (or one file) |
 | `-o OUTPUT`, `--output OUTPUT` |  | write the results here, same relative paths (otherwise a report only) |
 | `--emit` |  | with -o, also write the formats that need port support: .gsk skins, .dsp sound, .yaz0 |
-| `--min-db MIN_DB` | `40.0` | drop a world texture's top mip when the next level magnified is within this PSNR |
+| `--preset {balanced,lossless,max}` | `balanced` | starting quality: lossless (bit-exact only), balanced (default: ≥40 dB, ≤0.5° animation) or max (≥34 dB, ≤2°); the options below override it |
+| `--min-db MIN_DB` |  | drop a world texture's top mip when the next level magnified is within this PSNR (balanced: 40) |
 | `--anim-tol UNITS` |  | studio animation deadband (0 = lossless) |
-| `--skin-db SKIN_DB` | `40.0` | lossy skin formats must stay within this PSNR of RGB565 |
+| `--anim-fit DEG` |  | resample studio animation to the fewest keys within DEG degrees (0 = off; balanced: 0.5) |
+| `--skin-db SKIN_DB` |  | lossy skin formats must stay within this PSNR of RGB565 (balanced: 40) |
 | `--no-yaz0` |  | skip the (slow) Yaz0 estimate (same as --skip yaz0) |
-| `--only LIST` |  | only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0 (repeatable) |
+| `--only LIST` |  | only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0, dedup (repeatable) |
 | `--skip LIST` |  | leave these techniques out (same names as --only) (repeatable) |
 | `--match GLOB` |  | only these relative paths (repeatable) |
 | `--json` |  | print every row as JSON |
@@ -428,7 +476,7 @@ Encode images into a new pack.
 
 ```
 gxbake pack build images [images ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mipmaps] [--alpha
-    {auto,on,off}]
+    {auto,on,off}] [--cmpr-refine]
 ```
 
 | Argument | Default | Description |
@@ -438,6 +486,7 @@ gxbake pack build images [images ...] --output OUTPUT [--max-edge MAX_EDGE] [--n
 | `--max-edge MAX_EDGE` | `256` | largest texture side (power of two) |
 | `--no-mipmaps` |  | write level 0 only |
 | `--alpha {auto,on,off}` | `auto` | CMPR 1-bit alpha: auto uses it when the image has transparency |
+| `--cmpr-refine` |  | least-squares CMPR endpoints: same size, closer colours (+0.3 dB median, up to +2.4 dB) |
 
 ### `gxbake pack add`
 
@@ -445,7 +494,7 @@ Add images to a pack, replacing entries with the same name.
 
 ```
 gxbake pack add pack images [images ...] [--output OUTPUT] [--max-edge MAX_EDGE] [--no-mipmaps]
-    [--alpha {auto,on,off}]
+    [--alpha {auto,on,off}] [--cmpr-refine]
 ```
 
 | Argument | Default | Description |
@@ -456,6 +505,7 @@ gxbake pack add pack images [images ...] [--output OUTPUT] [--max-edge MAX_EDGE]
 | `--max-edge MAX_EDGE` | `256` | largest texture side (power of two) |
 | `--no-mipmaps` |  | write level 0 only |
 | `--alpha {auto,on,off}` | `auto` | CMPR 1-bit alpha: auto uses it when the image has transparency |
+| `--cmpr-refine` |  | least-squares CMPR endpoints: same size, closer colours (+0.3 dB median, up to +2.4 dB) |
 
 ### `gxbake pack remove`
 
