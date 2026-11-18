@@ -2,6 +2,7 @@
  *   test_gc_pack yaz0 IN OUT     decompress
  *   test_gc_pack dsp IN OUT      decode to raw s16 little-endian
  *   test_gc_pack gsk IN          print one line per skin: skin fmt tlutfmt w h entries flags texbytes tlutbytes
+ *   test_gc_pack gsv IN OUT      dequantise every model: header line per model, floats (little-endian f32) to OUT
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +70,28 @@ int main( int argc, char **argv )
 			printf( "%u %u %u %u %u %u %u %u %u %lu\n", e.skin, e.fmt, e.tlut_fmt, e.width, e.height, e.tlut_entries,
 				e.flags, e.texel_bytes, e.tlut_bytes, (unsigned long)(e.texels - in) );
 		}
+		return 0;
+	}
+	if( !strcmp( argv[1], "gsv" ) && argc == 4 )
+	{
+		int n = gc_gsv_parse( in, len ), i;
+		FILE *f;
+		if( n < 0 ) return 1;
+		f = fopen( argv[3], "wb" );
+		for( i = 0; i < n; i++ )
+		{
+			gc_gsv_entry_t e;
+			float *p, *q;
+			if( gc_gsv_entry( in, len, i, &e )) { fclose( f ); return 1; }
+			p = (float *)malloc( e.nverts * 12 + 4 );
+			q = (float *)malloc( e.nnorms * 12 + 4 );
+			gc_gsv_dequant( &e, p, q );
+			fwrite( p, 4, e.nverts * 3, f );
+			fwrite( q, 4, e.nnorms * 3, f );
+			free( p ); free( q );
+			printf( "%u %u %u %u %u %u\n", e.bodypart, e.model, e.nverts, e.nnorms, e.pos_frac, e.nrm_frac );
+		}
+		fclose( f );
 		return 0;
 	}
 	return 2;

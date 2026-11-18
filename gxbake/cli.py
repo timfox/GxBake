@@ -8,6 +8,7 @@
 	gxbake disc <staged gamedir> [--json]
 	gxbake slim <model.mdl> [-o OUT] [--step 2 | --fit-deg 1] [--stub 'death*'] [--anim-tol 2]
 	gxbake squeeze <staged gamedir> [-o OUT] [--emit] [--preset lossless|balanced|max] [--json]
+	gxbake lightmaps <map.bsp> [--page 128] [--packer skyline] [--min-db 40] [--plan OUT.json]
 	gxbake adpcm <wav|gcpcm...> -o OUT
 	gxbake yaz0 <files...> [-d] [-o OUT]
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
@@ -342,6 +343,31 @@ def _disc(args) -> int:
 	else:
 		print(disc.format_disc(rep, args.limit))
 	return 1 if rep.on_disc > rep.capacity else 0
+
+
+def _lightmaps(args) -> int:
+	from .core import rectpack
+
+	data = Path(args.path).read_bytes()
+	try:
+		plan = rectpack.lightmap_plan(data, page=args.page, min_db=args.min_db, flat_tol=args.flat_tol,
+			method=args.packer, pad=args.pad, resize=not args.no_resize)
+	except (ValueError, struct.error) as exc:
+		print(f"{args.path}: {exc}", file=sys.stderr)
+		return 1
+	bound = rectpack.lower_bound([(w + args.pad, h + args.pad) for w, h in plan.sizes_after], args.page, args.page)
+	print(f"{plan.faces} lit faces, {plan.luxels} luxels → {plan.luxels_after} "
+		f"({100 * (1 - plan.luxels_after / max(1, plan.luxels)):.0f} % fewer)")
+	print(f"  {plan.flat} flat (1×1, within ±{args.flat_tol}), {plan.half} at half resolution"
+		+ (f" (worst {plan.worst_db:.1f} dB)" if plan.half else ""))
+	print(f"  {args.page}² pages: {plan.pages_before} (Quake order, full size) → {plan.pages_after} ({args.packer}); "
+		f"lower bound {bound}; RGB565 {plan.pages_after * args.page * args.page * 2 // 1024} KiB")
+	if args.plan:
+		import json
+
+		Path(args.plan).write_text(json.dumps(plan.to_json(), indent=1))
+		print(f"wrote {args.plan}")
+	return 0
 
 
 def _slim(args) -> int:
@@ -848,6 +874,18 @@ def build_parser() -> argparse.ArgumentParser:
 	sl.add_argument("--fit-units", type=float, metavar="UNITS", help="position tolerance for --fit-deg (default DEG / 10)")
 	sl.add_argument("--max-step", type=float, default=8, help="--fit-deg keeps keys at most this many frames apart")
 	sl.set_defaults(fn=_slim)
+
+	lm = sub.add_parser("lightmaps", help="pick each face's lightmap size by error and pack the atlas")
+	lm.add_argument("path", help="GoldSrc BSP (v30)")
+	lm.add_argument("--page", type=int, default=128, help="atlas page side in luxels")
+	lm.add_argument("--packer", choices=("quake", "shelf", "skyline"), default="skyline",
+		help="rectangle packer (quake = AllocBlock in map order)")
+	lm.add_argument("--pad", type=int, default=1, help="luxels of border right and below each face")
+	lm.add_argument("--min-db", type=float, default=40.0, help="half resolution only when it stays within this PSNR")
+	lm.add_argument("--flat-tol", type=int, default=2, help="a face within ±N of its mean becomes 1×1")
+	lm.add_argument("--no-resize", action="store_true", help="keep every face's size; only repack")
+	lm.add_argument("--plan", metavar="OUT.json", help="write per-face sizes and atlas positions for a world baker")
+	lm.set_defaults(fn=_lightmaps)
 
 	sq = sub.add_parser("squeeze", help="measure smarter packing on a staged tree, and write what the port reads today")
 	sq.add_argument("path", help="staged gamedir (or one file)")

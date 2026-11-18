@@ -26,6 +26,7 @@ build or CI job.
 | [`disc`](#gxbake-disc) | disc usage: sector cost, duplicate files and textures, files no map names |
 | [`extract`](#gxbake-extract) | unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive |
 | [`slim`](#gxbake-slim) | show where a studio model's bytes go and thin its animation |
+| [`lightmaps`](#gxbake-lightmaps) | pick each face's lightmap size by error and pack the atlas |
 | [`squeeze`](#gxbake-squeeze) | measure smarter packing on a staged tree, and write what the port reads today |
 | [`adpcm`](#gxbake-adpcm) | encode WAV or .gcpcm audio as GameCube DSP ADPCM (.dsp, one per channel) |
 | [`yaz0`](#gxbake-yaz0) | Yaz0-compress files (Nintendo LZ), or decompress with -d |
@@ -293,6 +294,26 @@ gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTER
 | `--fit-deg DEG` |  | resample each sequence to the fewest evenly spaced keys that stay within DEG degrees of every bone |
 | `--fit-units UNITS` |  | position tolerance for --fit-deg (default DEG / 10) |
 | `--max-step MAX_STEP` | `8` | --fit-deg keeps keys at most this many frames apart |
+
+## `gxbake lightmaps`
+
+Pick each face's lightmap size by error and pack the atlas.
+
+```
+gxbake lightmaps path [--page PAGE] [--packer {quake,shelf,skyline}] [--pad PAD] [--min-db MIN_DB]
+    [--flat-tol FLAT_TOL] [--no-resize] [--plan OUT.json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `path` |  | GoldSrc BSP (v30) |
+| `--page PAGE` | `128` | atlas page side in luxels |
+| `--packer {quake,shelf,skyline}` | `skyline` | rectangle packer (quake = AllocBlock in map order) |
+| `--pad PAD` | `1` | luxels of border right and below each face |
+| `--min-db MIN_DB` | `40.0` | half resolution only when it stays within this PSNR |
+| `--flat-tol FLAT_TOL` | `2` | a face within ±N of its mean becomes 1×1 |
+| `--no-resize` |  | keep every face's size; only repack |
+| `--plan OUT.json` |  | write per-face sizes and atlas positions for a world baker |
 
 ## `gxbake squeeze`
 

@@ -58,7 +58,7 @@ So against Tim's target of about half the memory with no visible or audible diff
 
 ## Port-side code
 
-[`port/gc_pack.c`](../port/gc_pack.c) holds drop-in C readers for `.gsk`, `.dsp` and Yaz0. They are host-tested bit-exact against GxBake's encoders. [`port/README.md`](../port/README.md) shows where each one hooks into the port.
+[`port/gc_pack.c`](../port/gc_pack.c) holds drop-in C readers for `.gsk`, `.dsp`, `.gsv` and Yaz0. They are host-tested bit-exact against GxBake's encoders. [`port/README.md`](../port/README.md) shows where each one hooks into the port.
 
 ## Ranking
 
@@ -105,7 +105,9 @@ for each 8-byte frame: ps = *p++; c1 = coef[ps >> 4][0]; c2 = coef[ps >> 4][1]; 
 
 ### s16 vertices
 
-A studio vertex is a float vec3 (12 bytes) and a normal another 12. Quantised to s16 against the model's bounds, positions take 6 bytes with an error of 1/65,536 of the model's size; normals as s8 take 3. Gekko has quantised paired-single loads (`psq_l` with a GQR set to s16 and a scale), so the CPU skinning loop reads them as floats at no extra cost. GxBake measures this today; writing the format waits for the port's reader.
+A studio vertex is a float vec3 (12 bytes) and a normal another 12. Positions as s16 take 6 bytes and normals as s8 take 3. Gekko has quantised paired-single loads (`psq_l` with a GQR set to s16 and a scale), so the CPU skinning loop reads them as floats at no extra cost.
+
+`squeeze --emit` writes `gc_studio/<model>.gsv` (`vertpack.py`). Each model gets one power-of-two scale: the most fractional bits that keep every coordinate inside s16, which is exactly what a GQR dequantise scale holds. The error is therefore at most half a step, under 1/32,767 of the model's largest coordinate. Normals are s8 with 6 fractional bits, GX's own s8 normal format, so they are within about 1°. `port/gc_pack.c` has `gc_gsv_parse`, `gc_gsv_entry` and a portable `gc_gsv_dequant`, which is host-tested to produce the same floats as the Python reader. On the console, set GQR scale = `pos_frac` and `psq_l` the arrays directly.
 
 ### Yaz0 (`yaz0.py`, `gxbake yaz0`)
 
@@ -136,6 +138,7 @@ Three things, in order:
 1. **Merge in the 16-bit domain (lossless).** A GoldSrc skin has 8-bit-per-channel palette entries, but the GameCube samples RGB565. Entries that differ only in the bits RGB565 drops are the same colour on the console, so they are merged before counting. A skin with 40 palette entries that land on 16 RGB565 words becomes CI4, a quarter of today's bytes, with nothing changed.
 2. **Weighted k-means CI4 (lossy, under the floor).** If more than 16 colours remain, the used colours are clustered into 16 (15 plus transparent for masked skins), each colour weighted by its pixel count, with distances weighted by luma (0.299, 0.587, 0.114) because the eye is most sensitive to green and brightness. Seeds are weighted farthest-point picks, so the result is deterministic. The candidate competes with CMPR at the same size. On the panda skin it wins (34.5 dB vs 33.0), and on the 64² companion by a lot (34.9 vs 28.6), because a palette keeps exact flat colours where CMPR has to blend within each 4×4 block. At the default 40 dB floor neither passes, so `balanced` keeps CI8; `--preset max` (34 dB) takes CI4 for 75 %.
 3. **Shared blobs.** `.gsk` stores identical texels or TLUTs once and points several entries at them. The port reader already follows offsets, so nothing changes there.
+4. **One TLUT per model (`squeeze.share_tlut`).** When a model's CI8 skins together use at most 256 distinct 16-bit colours, they are re-indexed against one shared TLUT. This is lossless: every texel keeps its exact word. The pack then stores one TLUT instead of one per skin, and the port can keep a single TLUT loaded while it draws the whole model.
 
 When two candidates are within 64 bytes of each other (one TLUT), the closer picture wins.
 
@@ -159,9 +162,11 @@ Yaz0 is LZ with no entropy coding stage, so every literal costs a full byte. Mea
 
 Packing face lightmaps into atlas pages is 2D bin packing. `rectpack` has Quake's `AllocBlock` (a per-column skyline, faces in map order), a height-sorted shelf, and a height-sorted skyline, and a lower bound of ceil(total area / page area). On GoldSrc-shaped inputs (hundreds to thousands of rectangles 2–17 luxels a side, 128² pages, 1-luxel border) all three hit the lower bound: the pieces are so small next to the page that only the last page has slack. MaxRects (Best Short Side Fit) was also tried and did worse in a strip and ran about 300× slower. So the atlas is not where lightmap memory goes; the next section is.
 
-### Lightmap resolution by error (`rectpack.lightmap_plan`, `squeeze` row "lightmap size by error")
+### Lightmap resolution by error (`gxbake lightmaps`, `squeeze` row "lightmap size by error")
 
 The same idea as detail mip trim, applied per face. A face whose luxels all sit within ±2 of their mean is one colour, so it can be 1×1. Otherwise the face is resampled to half resolution over the same span (corners kept), interpolated back, and kept at half size when the result is within the PSNR floor (40 dB by default). The port bakes lightmap UVs per vertex in its world display lists, so a face's grid size costs nothing at runtime: only the baker (`bake_worlddl_goldsrc.py` in the port tree) needs to scale those UVs. On the one lit map available here, a GxBake-lit Source 2 test map, it removes 66 % of the luxels. That light is smooth and synthetic; real Half-Life maps have hard shadows, so expect less. Run `squeeze` on a real staged `maps/` folder to measure it.
+
+`gxbake lightmaps <map.bsp>` does both steps as options. `--packer quake|shelf|skyline` picks the packer, `--page`, `--pad`, `--min-db` and `--flat-tol` tune it, and `--no-resize` only repacks. `--plan OUT.json` writes, for every lit face, its old and new grid size and its page, x and y. A world baker can take that file to place lightmaps and scale UVs.
 
 ### Vertex order by first use (`models._first_use_order`, ships today)
 
@@ -181,7 +186,7 @@ Any explicit option (`--min-db`, `--skin-db`, `--anim-tol`, `--anim-fit`) overri
 
 - **Lightmaps**: GoldSrc lightmaps are mostly low-saturation. I8 or IA4 intensity with a per-face tint in TEV would be 50–75 % smaller than RGB565 and could be close to invisible; this needs a BSP sample to measure.
 - **Detail split for world textures**: a half-resolution CMPR base times a shared, tiling I4 detail texture in TEV. That is 4× less for the base, at the cost of a second texture stage.
-- **Shared TLUTs across skins**: skins of one model, or the NPCs of one map, drawn from one 256-colour palette (median cut over the union), so TMEM holds one TLUT for all of them. Identical TLUTs are already stored once.
+- **Shared TLUTs across a map's NPCs**, by quantising the union to 256 colours when it is larger. Within one model, the lossless case is done.
 - **Vertex cache order** (Forsyth/Tipsify) for indexed display lists, if the port moves studio meshes to `GX_INDEX16` display lists. Today's software transform path gets first-use order instead (above).
 - **Bit-packed BSP/collision**: plane indices and node children in the narrowest integer that holds them, plane sharing between brushes.
 - **GX index formats**: `GX_INDEX8` vertex indices in display lists when a mesh has under 256 vertices.

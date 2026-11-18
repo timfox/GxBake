@@ -209,6 +209,18 @@ class LightmapPlan:
 	pages_after: int = 0
 	worst_db: float = float("inf")
 	sizes_after: list[tuple[int, int]] = field(default_factory=list)
+	face_ids: list[int] = field(default_factory=list)
+	sizes_before: list[tuple[int, int]] = field(default_factory=list)
+	layout: "Packing | None" = None	# placement of sizes_after with the chosen packer
+
+	def to_json(self) -> dict:
+		"""What a world baker needs: per face its new grid and where it sits."""
+		at = {p.item: p for p in self.layout.placements} if self.layout else {}
+		return {"page": self.layout.page_w if self.layout else 0, "pages": self.pages_after,
+			"packer": self.layout.method if self.layout else "", "faces": [
+			{"face": f, "w": b[0], "h": b[1], "new_w": a[0], "new_h": a[1],
+				**({"page": at[i].page, "x": at[i].x, "y": at[i].y} if i in at else {})}
+			for i, (f, b, a) in enumerate(zip(self.face_ids, self.sizes_before, self.sizes_after))]}
 
 
 def _psnr(a, b) -> float:
@@ -235,7 +247,8 @@ def _upsample(small, w: int, h: int):
 	return a * (1 - fy) + b * fy
 
 
-def lightmap_plan(data: bytes, page: int = 128, min_db: float = 40.0, flat_tol: int = 2) -> LightmapPlan:
+def lightmap_plan(data: bytes, page: int = 128, min_db: float = 40.0, flat_tol: int = 2,
+		method: str = "skyline", pad: int = 1, resize: bool = True) -> LightmapPlan:
 	"""Pick a resolution per face by error, the way detail mip trim does for
 	textures: a face whose luxels all sit within `flat_tol` of their mean is
 	stored as 1×1; a face whose half-resolution grid (same span, corners
@@ -249,7 +262,7 @@ def lightmap_plan(data: bytes, page: int = 128, min_db: float = 40.0, flat_tol: 
 	light = np.frombuffer(data, np.uint8, ln, off)
 	plan = LightmapPlan()
 	before, after = [], []
-	for _f, w, h, lo in goldsrc_lightmaps(data):
+	for face, w, h, lo in goldsrc_lightmaps(data):
 		n = w * h * 3
 		if lo + n > ln:
 			continue
@@ -257,6 +270,10 @@ def lightmap_plan(data: bytes, page: int = 128, min_db: float = 40.0, flat_tol: 
 		plan.faces += 1
 		plan.luxels += w * h
 		before.append((w, h))
+		plan.face_ids.append(face)
+		if not resize:
+			after.append((w, h))
+			continue
 		if np.abs(lm - lm.mean((0, 1))).max() <= flat_tol:
 			plan.flat += 1
 			after.append((1, 1))
@@ -273,9 +290,11 @@ def lightmap_plan(data: bytes, page: int = 128, min_db: float = 40.0, flat_tol: 
 		after.append((w, h))
 	plan.luxels_after = sum(w * h for w, h in after)
 	plan.sizes_after = after
+	plan.sizes_before = before
 	if before:
-		plan.pages_before = pack(before, page, page, "quake", pad=1).pages
-		plan.pages_after = pack(after, page, page, "skyline", pad=1).pages
+		plan.pages_before = pack(before, page, page, "quake", pad=pad).pages
+		plan.layout = pack(after, page, page, method, pad=pad)
+		plan.pages_after = plan.layout.pages
 	return plan
 
 

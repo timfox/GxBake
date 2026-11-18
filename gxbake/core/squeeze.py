@@ -71,7 +71,7 @@ TECHNIQUES = {
 	"anim": "optimal anim runs, deadband and keyframe fit (studio animation)",
 	"skins": "indexed skins (.gsk)",
 	"adpcm": "DSP ADPCM sound and music (.dsp)",
-	"verts": "s16 vertices (estimate)",
+	"verts": "s16 vertices and s8 normals (.gsv)",
 	"lightmaps": "CMPR lightmaps (estimate)",
 	"yaz0": "Yaz0 (.yaz0)",
 	"dedup": "duplicate textures across files (exact and perceptual hash)",
@@ -186,6 +186,39 @@ class SkinChoice:
 	choice: gxtex.Choice
 
 
+def share_tlut(skins: list[SkinChoice]) -> int:
+	"""Give every CI8 skin of a model one TLUT when the union of their 16-bit
+	colours fits in 256 (lossless: each texel keeps its exact TLUT word).
+	The .gsk writer then stores that TLUT once, and the port can keep one
+	TLUT loaded for the whole model. Returns the number of skins changed."""
+	groups: dict[int, list[int]] = {}
+	for i, s in enumerate(skins):
+		if s.choice.tex.fmt == "CI8":
+			groups.setdefault(s.choice.tex.tlut_fmt, []).append(i)
+	changed = 0
+	for tlut_fmt, idx in groups.items():
+		if len(idx) < 2:
+			continue
+		words = []
+		for i in idx:
+			t = skins[i].choice.tex
+			pal = np.frombuffer(t.tlut, ">u2")
+			index = gxtex.decode_indices(t)
+			words.append(pal[index])
+		union = np.unique(np.concatenate([w.reshape(-1) for w in words]))
+		if len(union) > 256:
+			continue
+		pal_rgba = gxtex.tlut_rgba(union, tlut_fmt)
+		for i, w in zip(idx, words):
+			old = skins[i].choice
+			tex = gxtex.encode_indexed(np.searchsorted(union, w).astype(np.uint8), pal_rgba, tlut_fmt, "CI8")
+			tex.tlut = union.astype(">u2").tobytes() + bytes(-len(union) % 16 * 2)
+			skins[i] = SkinChoice(skins[i].name, skins[i].width, skins[i].height,
+				gxtex.Choice(tex, old.psnr, old.baseline, old.tried))
+			changed += 1
+	return changed
+
+
 def studio_skins(raw: bytes, *, min_db: float = 40.0, viewmodel: bool = False) -> list[SkinChoice]:
 	"""Pick a GX format for every skin in a studio model (or *t.mdl companion)."""
 	out: list[SkinChoice] = []
@@ -210,6 +243,7 @@ def studio_skins(raw: bytes, *, min_db: float = 40.0, viewmodel: bool = False) -
 				index = np.where(key[index], 255, index).astype(np.uint8)
 				masked = True
 		out.append(SkinChoice(name, w, h, gxtex.choose_indexed(index, pal, masked, min_db=min_db)))
+	share_tlut(out)
 	return out
 
 
@@ -364,8 +398,15 @@ def analyse_file(path: Path, rel: str, opt: SqueezeOptions) -> list[Saving]:
 				out.append(Saving("optimal anim runs", True, "MEM1 studio arena", rel, len(data), len(data), "", str(exc)))
 			nv, nn = studio_vertex_counts(data) if not is_tex and opt.on("verts") else (0, 0)
 			if nv:
+				from .vertpack import pack_error
+
+				try:
+					ep, en = pack_error(data)
+					q = f"≤{ep:.3g} units, normals ≤{en:.1f}°"
+				except (ValueError, struct.error):
+					q = "≤1/32767 of the model's extent"
 				out.append(Saving("s16 vertices", False, "MEM1 studio arena", rel, nv * 12 + nn * 12, nv * 6 + nn * 3,
-					"≤1/65536 of the model's extent", f"{nv} positions, {nn} normals"))
+					q, f"{nv} positions, {nn} normals (.gsv)"))
 		skins = studio_skins(data, min_db=opt.skin_db, viewmodel=Path(rel).name.lower().startswith("v_")) \
 			if opt.on("skins") else []
 		if skins:
@@ -515,7 +556,7 @@ def _matches(rel: str, match: list[str] | None) -> bool:
 def apply(root: Path, out: Path, opt: SqueezeOptions | None = None, emit: bool = False,
 		match: list[str] | None = None) -> list[str]:
 	"""Write what ships today into `out` (same relative paths), and with
-	`emit` the port-side formats next to them (.dsp, .gsk, .yaz0)."""
+	`emit` the port-side formats next to them (.dsp, .gsk, .gsv, .yaz0)."""
 	opt = opt or SqueezeOptions()
 	written = []
 	for path, rel in staged_files(root):
@@ -548,6 +589,13 @@ def apply(root: Path, out: Path, opt: SqueezeOptions | None = None, emit: bool =
 			skins = studio_skins(data, min_db=opt.skin_db, viewmodel=Path(rel).name.lower().startswith("v_"))
 			if skins:
 				extra[str(Path(rel).with_suffix(".gsk"))] = write_skin_pack(skins)
+		if ext == ".mdl" and data[:4] == b"IDST" and opt.on("verts") and struct.unpack_from("<i", data, 204)[0] > 0:
+			from .vertpack import write_vertex_pack
+
+			try:
+				extra[str(Path(rel).with_suffix(".gsv"))] = write_vertex_pack(data)
+			except (ValueError, struct.error):
+				pass
 		elif ext == ".wav" and opt.on("adpcm"):
 			from . import sfx
 
