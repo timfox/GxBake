@@ -117,3 +117,23 @@ def test_panorama_sky_preview(tmp_path):
 		time.sleep(0.01)
 	assert (tmp_path / "out/media/sky_noonft.cmp").stat().st_size == 8192
 	w.close()
+
+
+def test_extract_lumps_action(tmp_path):
+	from gxbake.gui.main_window import MainWindow
+
+	from . import lump_fixtures as lf
+
+	app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+	gcd = tmp_path / "wd_demo.gcd"
+	gcd.write_bytes(lf.world_dl(pages=2))
+	w = MainWindow()
+	w.qsettings.clear()
+	w.out_edit.setText(str(tmp_path / "out"))
+	w.add_paths([str(gcd)])
+	w.tree.setCurrentItem(w.tree.topLevelItem(0))
+	app.processEvents()
+	assert w.a_lumps.isEnabled()
+	w.extract_lumps()
+	assert (tmp_path / "out/lumps/wd_demo_gcd/lightmaps/atlas.png").is_file(), w.log_view.toPlainText()
+	w.close()

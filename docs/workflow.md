@@ -157,6 +157,17 @@ gxbake validate staged/valve    # the disc builder's own checks
 `disc` lists files no map names under `models/`, `gc_studio/` and `sound/`. The
 game code may still load them, so check before deleting anything.
 
+To see what a map will pull in, or what a baked world costs, look at its lumps:
+
+```sh
+gxbake lumps staged/valve/maps/c1a0.bsp           # lump tiers, textures, models/sprites/sounds it names
+gxbake lumps staged/valve/media/wd_c1a0.gcd       # MEM1 vs ARAM, materials by bytes, lightmap pages
+gxbake lumps staged/valve/maps -o lumps --no-raw  # sorted refs.json, batches.json and .gcmeta per map
+```
+
+The `.gcmeta` it writes is the lump index the HL1 disc build puts in `media/`; a
+`.gcmeta` that no longer matches its BSP is reported as stale (exit status 1).
+
 ## Putting it in a script
 
 ```sh

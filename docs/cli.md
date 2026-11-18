@@ -27,6 +27,7 @@ build or CI job.
 | [`sfx`](#gxbake-sfx) | shrink WAVs under the port's per-file sound cap (20 KiB gameplay, 48 KiB menu) |
 | [`disc`](#gxbake-disc) | disc usage: sector cost, duplicate files and textures, files no map names |
 | [`extract`](#gxbake-extract) | unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive |
+| [`lumps`](#gxbake-lumps) | list, extract and sort the lumps of a map or of the port's baked map files (.gcd, _lf.gcd, .gcmeta) |
 | [`slim`](#gxbake-slim) | show where a studio model's bytes go and thin its animation |
 | [`squeeze`](#gxbake-squeeze) | measure smarter packing on a staged tree, and write what the port reads today |
 | [`adpcm`](#gxbake-adpcm) | encode WAV or .gcpcm audio as GameCube DSP ADPCM (.dsp, one per channel) |
@@ -313,6 +314,25 @@ gxbake extract archives [archives ...] --output OUTPUT [--match MATCH]
 | `archives` … |  | .pak, .vpk, .pk3 or .mf (e.g. Toontown's phase_3.mf) files |
 | `-o OUTPUT`, `--output OUTPUT` |  | **Required.** folder to extract into |
 | `--match MATCH` |  | only members matching this glob, e.g. `models/*` (repeatable) |
+
+## `gxbake lumps`
+
+List, extract and sort the lumps of a map or of the port's baked map files (.gcd, _lf.gcd, .gcmeta).
+
+```
+gxbake lumps paths [paths ...] [--output OUTPUT] [--textures] [--names FILE] [--no-raw] [--limit
+    LIMIT] [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `paths` … |  | GoldSrc/Quake/Source .bsp, media/wd_<map>.gcd world bakes, wd_<map>_lf.gcd light faces, <map>.gcmeta lump indexes, or folders holding them |
+| `-o OUTPUT`, `--output OUTPUT` |  | extract into this folder (one subfolder per file): raw lumps, entities, sorted refs, textures, face batches and the port's .gcmeta; for .gcd the sections, materials, chunks and lightmap pages |
+| `--textures` |  | with -o, also decode a BSP's embedded miptex to PNG |
+| `--names FILE` |  | name a .gcd's materials from this BSP, WAD, .gct pack, texture-names.json or name list (default: media/wt_<map>.gct or maps/<map>.bsp next to it) |
+| `--no-raw` |  | with -o, skip the raw lump and section .bin files |
+| `--limit LIMIT` | `20` | rows per table in the report |
+| `--json` |  | print the report as JSON |
 
 ## `gxbake slim`
 
