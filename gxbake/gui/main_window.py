@@ -44,7 +44,7 @@ from .widgets import ImagePane, Task
 
 ASSET_ROLE = Qt.ItemDataRole.UserRole
 CHILD_ROLE = Qt.ItemDataRole.UserRole + 1
-HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.MODEL, Kind.SKYBOX}
+HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.MODEL, Kind.SKYBOX, Kind.GCMAP}
 _MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS | models.SOURCE2_MODEL_EXTENSIONS | models.DMX_MODEL_EXTENSIONS))
 _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
 _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
@@ -57,6 +57,7 @@ FILE_FILTER = (
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	f"USD scenes via FreeUSD ({_USD_GLOBS});;"
 	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal *.pcf);;"
+	"Baked GameCube maps (*.gcd *.gcmeta *.bsp);;"
 	"Source 2 (*.vmdl_c *.vmesh_c *.vtex_c *.vsnd_c *.vmap_c *.vwrld_c *.vpcf_c);;"
 	f"ROSE Online models ({_ROSE_GLOBS});;"
 	"RuneScape caches (main_file_cache.dat2 main_file_cache.dat);;"
@@ -466,6 +467,9 @@ class MainWindow(QMainWindow):
 		tb.addSeparator()
 		self.a_convert_sel = act("Convert Selected", lambda: self.convert(selected_only=True), "Ctrl+B")
 		self.a_convert_all = act("Convert All", lambda: self.convert(selected_only=False), "Ctrl+Shift+B")
+		self.a_lumps = act("Extract Lumps", self.extract_lumps, None,
+			"Write the selected maps' and baked map files' lumps, entities, sorted references, "
+			".gcmeta, materials and lightmap pages to <output>/lumps/")
 		tb.addSeparator()
 		tb.addWidget(QLabel(" Output: "))
 		self.out_edit = QLineEdit(self.qsettings.value("output_dir", str(Path.home() / "gxbake-out")))
@@ -807,6 +811,23 @@ class MainWindow(QMainWindow):
 		path.mkdir(parents=True, exist_ok=True)
 		QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
+	def extract_lumps(self):
+		from ..core import lumps
+
+		assets = [a for a in self._selected_assets() if a.kind in (Kind.BSP, Kind.GCMAP) and lumps.kind_of(a.path)]
+		if not assets:
+			QMessageBox.information(self, "GxBake", "Select a .bsp map, a baked wd_<map>.gcd or a .gcmeta.")
+			return
+		out = Path(self.out_edit.text()).expanduser() / "lumps"
+		for a in assets:
+			dest = out / (a.path.stem if a.path.suffix.lower() == ".bsp" else a.path.name.replace(".", "_"))
+			try:
+				written = lumps.extract(a.path, dest, decode_textures=True)
+			except (OSError, ValueError) as exc:
+				self.log(f"Lumps of {a.name} failed: {exc}")
+				continue
+			self.log(f"Extracted {len(written)} files from {a.name} to {dest}")
+
 	def convert(self, selected_only: bool):
 		if self.busy:
 			return
@@ -881,3 +902,4 @@ class MainWindow(QMainWindow):
 		self.a_clear.setEnabled(has and not self.busy)
 		self.a_convert_sel.setEnabled(sel and not self.busy)
 		self.a_convert_all.setEnabled(has and not self.busy)
+		self.a_lumps.setEnabled(sel and not self.busy)

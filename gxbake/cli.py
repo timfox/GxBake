@@ -12,6 +12,7 @@
 	gxbake yaz0 <files...> [-d] [-o OUT]
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
+	gxbake lumps <map.bsp|wd_<map>.gcd|<map>.gcmeta|folder...> [-o OUT] [--textures] [--json]
 	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
 	gxbake rs <main_file_cache.dat2|.dat> [--find NAME] [--json]
 	gxbake ff7 <.hrc|.p|.a|.tex|<base>aa> [--anims] [--json]
@@ -242,6 +243,42 @@ def _ff7(args) -> int:
 			if k not in ("path", "type"):
 				print(f"  {k}: {v}")
 	return 0
+
+
+def _lumps(args) -> int:
+	from .core import lumps
+
+	files = lumps.find_inputs(args.paths)
+	if not files:
+		print("no maps or baked map files found", file=sys.stderr)
+		return 1
+	names = Path(args.names) if args.names else None
+	rows, failed, used = [], 0, set()
+	for f in files:
+		try:
+			info = lumps.describe(f, names)
+			if args.output:
+				sub = f.stem if len(files) == 1 else f"{f.stem}{f.suffix.replace('.', '_')}"
+				if sub in used:	# the same map baked by two ports: hl1/wd_x.gcd, dod/wd_x.gcd
+					sub = f"{f.parent.name}_{sub}"
+				used.add(sub)
+				dest = Path(args.output) / sub
+				written = lumps.extract(f, dest, decode_textures=args.textures, names=names, raw=not args.no_raw)
+				info["extracted_to"] = str(dest)
+				info["written"] = len(written)
+		except (OSError, ValueError, struct.error) as exc:
+			print(f"error: {f}: {exc}", file=sys.stderr)
+			failed += 1
+			continue
+		failed += bool(info.get("issues"))
+		rows.append(info)
+		if not args.json:
+			print(lumps.format_report(info, args.limit))
+			if args.output:
+				print(f"  wrote {info['written']} files to {info['extracted_to']}")
+	if args.json:
+		print(json.dumps(rows if len(rows) != 1 else rows[0], indent=2))
+	return 1 if failed else 0
 
 
 def _validate(args) -> int:
@@ -822,6 +859,23 @@ def build_parser() -> argparse.ArgumentParser:
 	x.add_argument("-o", "--output", required=True, help="folder to extract into")
 	x.add_argument("--match", action="append", help="only members matching this glob, e.g. 'models/*' (repeatable)")
 	x.set_defaults(fn=_extract)
+
+	lp = sub.add_parser("lumps",
+		help="list, extract and sort the lumps of a map or of the port's baked map files (.gcd, _lf.gcd, .gcmeta)")
+	lp.add_argument("paths", nargs="+",
+		help="GoldSrc/Quake/Source .bsp, media/wd_<map>.gcd world bakes, wd_<map>_lf.gcd light faces, "
+		"<map>.gcmeta lump indexes, or folders holding them")
+	lp.add_argument("-o", "--output",
+		help="extract into this folder (one subfolder per file): raw lumps, entities, sorted refs, "
+		"textures, face batches and the port's .gcmeta; for .gcd the sections, materials, chunks and lightmap pages")
+	lp.add_argument("--textures", action="store_true", help="with -o, also decode a BSP's embedded miptex to PNG")
+	lp.add_argument("--names", metavar="FILE",
+		help="name a .gcd's materials from this BSP, WAD, .gct pack, texture-names.json or name list "
+		"(default: media/wt_<map>.gct or maps/<map>.bsp next to it)")
+	lp.add_argument("--no-raw", action="store_true", help="with -o, skip the raw lump and section .bin files")
+	lp.add_argument("--limit", type=int, default=20, help="rows per table in the report")
+	lp.add_argument("--json", action="store_true", help="print the report as JSON")
+	lp.set_defaults(fn=_lumps)
 
 	sl = sub.add_parser("slim", help="show where a studio model's bytes go and thin its animation")
 	sl.add_argument("path", help="GoldSrc studio model (.mdl)")
