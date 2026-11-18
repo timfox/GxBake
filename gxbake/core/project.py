@@ -42,6 +42,7 @@ class Kind(str, Enum):
 	CMP = "GX CMPR (raw)"
 	GCVID = "GCVID video"
 	GCPCM = "GCPCM audio"
+	GCMAP = "GX map bake"	# media/wd_<map>.gcd, wd_<map>_lf.gcd, <map>.gcmeta (gxbake lumps)
 	UNKNOWN = "Unsupported"
 
 
@@ -102,6 +103,8 @@ def detect_kind(path: Path) -> Kind:
 		".cmp": Kind.CMP,
 		".gcvid": Kind.GCVID,
 		".gcpcm": Kind.GCPCM,
+		".gcd": Kind.GCMAP,
+		".gcmeta": Kind.GCMAP,
 	}.get(ext, Kind.UNKNOWN)
 
 
@@ -159,6 +162,7 @@ class Settings:
 	map_texture_max: int = 256	# Source maps: largest embedded texture
 	map_disp_power: int = 2	# Source maps: displacement detail kept (0-4)
 	map_shadows: bool = True	# Source 2 maps: trace shadows when relighting
+	map_vis_merge: int = 8	# Source maps: PVS rows within this many leaves share their union
 
 	def sky_options(self, layout: str = "auto") -> skybox.SkyOptions:
 		return skybox.SkyOptions(layout=layout, yaw=self.sky_yaw, fov=self.sky_fov, exposure=self.sky_exposure, size=self.sky_size)
@@ -178,7 +182,7 @@ class Settings:
 		from .source_map import MapOptions
 
 		return MapOptions(max_texture=self.map_texture_max, disp_power=self.map_disp_power, props=self.map_props,
-			hulls=self.map_hulls, shadows=self.map_shadows, search=[Path(p) for p in self.source_dirs])
+			hulls=self.map_hulls, shadows=self.map_shadows, vis_merge=self.map_vis_merge, search=[Path(p) for p in self.source_dirs])
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -436,6 +440,14 @@ class Project:
 				return kids
 			if asset.kind == Kind.SKYBOX:
 				return list(images.GC_SKY_SUFFIXES) + ([SKY_NET] if "source" in asset.extra else [])
+			if asset.kind == Kind.GCMAP:
+				from . import lumps
+
+				info = lumps.describe(asset.path)
+				if info["kind"] == "worlddl":
+					return [m["name"] or m["hash"] for m in info["material_table"]]
+				if info["kind"] == "gcmeta":
+					return [f"{r['index']:02d} {r['name']} ({r['tier']})" for r in info["lumps"]]
 		except (OSError, ValueError, Exception) as exc:	# noqa: BLE001 - malformed input should not crash the UI
 			asset.warnings.append(f"inspect failed: {exc}")
 		return []
@@ -524,6 +536,9 @@ class Project:
 				d["BSP version"] = quake.bsp_version(data)
 				d["Sky"] = goldsrc.map_sky_name(data) or "-"
 				d["WADs"] = ", ".join(goldsrc.wt_bsp_wad_basenames(data)) or "-"
+				d.update(self._lump_info(asset))
+			elif asset.kind == Kind.GCMAP:
+				d.update(self._lump_info(asset))
 			elif asset.kind == Kind.GCT:
 				entries = gct.read_gct(asset.path.read_bytes())
 				d["Textures"] = len(entries)
@@ -539,6 +554,40 @@ class Project:
 					d["Pictures and fonts"] = len(pics)
 		except Exception as exc:	# noqa: BLE001
 			d["Error"] = str(exc)
+		return d
+
+	@staticmethod
+	def _lump_info(asset: Asset) -> dict:
+		"""Inspector rows from gxbake lumps for a map or a baked map file."""
+		from . import lumps
+
+		i = lumps.describe(asset.path)
+		hb = audit.human_bytes
+		d: dict = {}
+		if i["kind"] == "bsp":
+			if "hot_bytes" in i:
+				d["Lumps"] = f"hot {hb(i['hot_bytes'])}, cold {hb(i['cold_bytes'])}"
+			if "batches" in i:
+				d["Face batches"] = f"{i['faces']} faces in {i['batches']}"
+			if "refs" in i:
+				r = i["refs"]
+				d["Entities"] = i["entities"]
+				d["Referenced"] = ", ".join(f"{len(r[k])} {k}" for k in ("models", "sprites", "sounds") if r[k]) or "-"
+		elif i["kind"] == "worlddl":
+			d["Bake"] = f"GCwd v{i['version']}: {i['writer']}"
+			d["World"] = f"{i['clusters']} clusters, {i['chunks']} chunks, {i['tris']} tris, {i['materials']} materials"
+			d["MEM1 resident"] = hb(i["resident_bytes"])
+			d["ARAM chunks"] = f"{hb(i['chunk_bytes'])} (largest {hb(i['max_chunk'])})"
+			d["Lightmap pages"] = i["lightmap_pages"]
+			if i["names_from"]:
+				d["Names from"] = Path(i["names_from"]).name
+		elif i["kind"] == "lightfaces":
+			d["Light faces"] = f"{i['faces']} ({i['lit_faces']} lit), lighting {hb(i['lighting_bytes'])}"
+		elif i["kind"] == "gcmeta":
+			d["Indexes"] = f"BSP v{i['bsp_version']}, {hb(i['bsp_size'])}, crc32 {i['bsp_crc32']}"
+			d["Face batches"] = f"{i['faces']} faces in {i['batches']}"
+		for issue in i.get("issues", []):
+			d.setdefault("Lump issues", issue)
 		return d
 
 	def preview(self, asset: Asset, child: str | None = None) -> Preview:
@@ -570,6 +619,22 @@ class Project:
 			data = images.sky_side_cmpr(src, s.sky_size)
 			res = cmpr_decode(data, s.sky_size, s.sky_size)
 			return Preview(f"{asset.extra['name']}{side}", src, res, _stats(src, res, len(data), "CMPR, no mips"))
+		if k == Kind.GCMAP:
+			from . import lumps
+
+			info = self._lump_info(asset)
+			if lumps.kind_of(asset.path) == "worlddl":
+				wd = lumps.read_world_dl(asset.path.read_bytes(), str(asset.path))
+				if wd.lm_pages:
+					cols = min(16, wd.lm_pages)
+					sheet = np.zeros((-(-wd.lm_pages // cols) * 32, cols * 32, 4), np.uint8)
+					sheet[..., 3] = 255
+					for n in range(wd.lm_pages):
+						r, c = divmod(n, cols)
+						sheet[r * 32:(r + 1) * 32, c * 32:(c + 1) * 32, :3] = wd.lightmap_page(n)
+					info["View"] = "lightmap pages (32² RGB565), as the port samples them"
+					return Preview(f"{asset.name} lightmaps", None, sheet, info)
+			return Preview(asset.name, info=info)
 		if k in (Kind.WAD, Kind.BSP):
 			names = self.children(asset)
 			name = child or (names[0] if names else None)

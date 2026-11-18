@@ -63,6 +63,7 @@ class MapOptions:
 	ambient: float = 0.25	# light everywhere, as a share of full bright
 	shadows: bool = True	# trace shadows from the sun and lights through the collision
 	max_collision: int = 4000	# collision pieces kept for the clip hulls (largest first)
+	vis_merge: int = 8	# PVS rows differing by at most this many leaves share their union (0 = exact)
 
 
 @dataclass
@@ -533,6 +534,19 @@ def convert(path: Path, opts: MapOptions | None = None, log=lambda _m: None) -> 
 	vis_rows: dict[bytes, int] = {}
 	row_bytes = (visleafs + 7) // 8
 	cluster_row: dict[int, int] = {}
+	# Every cluster's row in leaf bits first, so near-identical rows can be
+	# merged into their union (bsp30.merge_vis_rows) before they are
+	# compressed; identical compressed rows share one copy.
+	rows: list[bytes | None] = []
+	for c in range(nclusters):
+		row = bytearray(row_bytes)
+		bits = pvs[c]
+		for oc in range(nclusters):
+			if bits[oc >> 3] & (1 << (oc & 7)):
+				for ol in cluster_leafs.get(oc, ()):
+					row[(ol - 1) >> 3] |= 1 << ((ol - 1) & 7)
+		rows.append(bytes(row))
+	rows = bsp30.merge_vis_rows(rows, opts.vis_merge)
 	for li, lf in enumerate(leafs):
 		contents = int(lf["contents"])
 		if contents & sb.CONTENTS_SOLID:
@@ -547,13 +561,7 @@ def convert(path: Path, opts: MapOptions | None = None, log=lambda _m: None) -> 
 		c = int(lf["cluster"])
 		if nclusters and li in world_leafs and c >= 0 and c < nclusters:
 			if c not in cluster_row:
-				row = bytearray(row_bytes)
-				bits = pvs[c]
-				for oc in range(nclusters):
-					if bits[oc >> 3] & (1 << (oc & 7)):
-						for ol in cluster_leafs.get(oc, ()):
-							row[(ol - 1) >> 3] |= 1 << ((ol - 1) & 7)
-				comp = bsp30.compress_vis(bytes(row))
+				comp = bsp30.compress_vis(rows[c])
 				if comp not in vis_rows:
 					vis_rows[comp] = len(vis)
 					vis += comp

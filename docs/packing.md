@@ -186,6 +186,7 @@ Any explicit option (`--min-db`, `--skin-db`, `--anim-tol`, `--anim-fit`) overri
 
 - **Lightmaps**: GoldSrc lightmaps are mostly low-saturation. I8 or IA4 intensity with a per-face tint in TEV would be 50–75 % smaller than RGB565 and could be close to invisible; this needs a BSP sample to measure.
 - **Detail split for world textures**: a half-resolution CMPR base times a shared, tiling I4 detail texture in TEV. That is 4× less for the base, at the cost of a second texture stage.
+- **u8 texture coordinates** (`squeeze` reports it under `verts`): GoldSrc S/T are whole texels in s16, so a strip or fan whose coordinates all stay in 0..255 can go to the GPU as u8 in a second GX vertex format (`GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_TEX0, GX_TEX_ST, GX_U8, 0)` and opcode `| 1`), with no loss. Lost Coast's props use exactly this (pack v8): 87 % of their vertices qualified and the display lists shrank 15 % with a pixel-identical picture. Streamed lists must pass the command's own format bits to `GX_Begin`.
 - **Shared TLUTs across a map's NPCs**, by quantising the union to 256 colours when it is larger. Within one model, the lossless case is done.
 - **Vertex cache order** (Forsyth/Tipsify) for indexed display lists, if the port moves studio meshes to `GX_INDEX16` display lists. Today's software transform path gets first-use order instead (above).
 - **Bit-packed BSP/collision**: plane indices and node children in the narrowest integer that holds them, plane sharing between brushes.

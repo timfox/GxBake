@@ -13,6 +13,7 @@
 	gxbake yaz0 <files...> [-d] [-o OUT]
 	gxbake sfx <wavs or folders...> -o OUT [--menu] [--truncate]
 	gxbake extract <archive.pak|_dir.vpk|.pk3> -o OUT [--match GLOB]
+	gxbake lumps <map.bsp|wd_<map>.gcd|<map>.gcmeta|folder...> [-o OUT] [--textures] [--json]
 	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
 	gxbake rs <main_file_cache.dat2|.dat> [--find NAME] [--json]
 	gxbake ff7 <.hrc|.p|.a|.tex|<base>aa> [--anims] [--json]
@@ -40,6 +41,7 @@ def _convert(args) -> int:
 	s.map_props = not args.no_map_props
 	s.map_texture_max = args.map_texture_max
 	s.map_disp_power = args.map_disp_power
+	s.map_vis_merge = args.map_vis_merge
 	s.map_shadows = not args.no_map_shadows
 	s.image.max_edge = args.max_edge
 	s.image.mipmaps = not args.no_mipmaps
@@ -91,6 +93,51 @@ def _convert(args) -> int:
 	print(f"wrote {len(written)} files, {audit.human_bytes(total)} "
 		f"({total / audit.MAIN_RAM:.1%} of GameCube main RAM) to {args.output}")
 	return 1 if any(a.status == "Failed" for a in todo) else 0
+
+
+def _formats(args) -> int:
+	from .core import imageformats
+
+	rows = imageformats.report()
+	if args.json:
+		print(json.dumps(rows, indent=1))
+		return 0
+	group = None
+	for r in rows:
+		if r["group"] != group:
+			group = r["group"]
+			print(f"\n{group}")
+		status = "ok" if r["available"] else (f"pip install {r['install']}" if r["install"] else "unavailable")
+		note = f"  ({r['note']})" if r["note"] else ""
+		print(f"  {r['name']:<44} {' '.join(r['extensions']):<40} {status}{note}")
+	missing = sorted({r["install"] for r in rows if r["install"]})
+	if missing:
+		print(f"\nmissing optional packages: {', '.join(missing)} (pip install gxbake[images])")
+	return 0
+
+
+def _decode(args) -> int:
+	from PIL import Image
+
+	from .core.images import load_rgba
+
+	out = Path(args.output)
+	out.mkdir(parents=True, exist_ok=True)
+	failed = 0
+	for p in _image_files(args.images):
+		warnings: list[str] = []
+		try:
+			rgba = load_rgba(p, warnings)
+		except Exception as e:	# noqa: BLE001 - report every file and carry on
+			print(f"{p}: {e}", file=sys.stderr)
+			failed += 1
+			continue
+		dest = out / (p.name + ".png")
+		Image.fromarray(rgba, "RGBA").save(dest)
+		print(f"{p} -> {dest} ({rgba.shape[1]}x{rgba.shape[0]})")
+		for w in warnings:
+			print(f"  warning: {w}")
+	return 1 if failed else 0
 
 
 def _inspect(args) -> int:
@@ -244,6 +291,42 @@ def _ff7(args) -> int:
 			if k not in ("path", "type"):
 				print(f"  {k}: {v}")
 	return 0
+
+
+def _lumps(args) -> int:
+	from .core import lumps
+
+	files = lumps.find_inputs(args.paths)
+	if not files:
+		print("no maps or baked map files found", file=sys.stderr)
+		return 1
+	names = Path(args.names) if args.names else None
+	rows, failed, used = [], 0, set()
+	for f in files:
+		try:
+			info = lumps.describe(f, names)
+			if args.output:
+				sub = f.stem if len(files) == 1 else f"{f.stem}{f.suffix.replace('.', '_')}"
+				if sub in used:	# the same map baked by two ports: hl1/wd_x.gcd, dod/wd_x.gcd
+					sub = f"{f.parent.name}_{sub}"
+				used.add(sub)
+				dest = Path(args.output) / sub
+				written = lumps.extract(f, dest, decode_textures=args.textures, names=names, raw=not args.no_raw)
+				info["extracted_to"] = str(dest)
+				info["written"] = len(written)
+		except (OSError, ValueError, struct.error) as exc:
+			print(f"error: {f}: {exc}", file=sys.stderr)
+			failed += 1
+			continue
+		failed += bool(info.get("issues"))
+		rows.append(info)
+		if not args.json:
+			print(lumps.format_report(info, args.limit))
+			if args.output:
+				print(f"  wrote {info['written']} files to {info['extracted_to']}")
+	if args.json:
+		print(json.dumps(rows if len(rows) != 1 else rows[0], indent=2))
+	return 1 if failed else 0
 
 
 def _validate(args) -> int:
@@ -768,6 +851,9 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--map-texture-max", type=int, default=256, help="Source maps: largest embedded texture side")
 	c.add_argument("--map-disp-power", type=int, default=2, choices=range(0, 5),
 		help="Source maps: displacement detail kept (2 = 5x5 vertices per displacement)")
+	c.add_argument("--map-vis-merge", type=int, default=8, metavar="LEAVES",
+		help="Source maps: PVS rows that differ by at most this many leaves are stored once as their union "
+		"(only adds visible leaves; 0 keeps the exact PVS)")
 	c.add_argument("--no-map-hulls", action="store_true",
 		help="Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0)")
 	c.add_argument("--no-map-shadows", action="store_true",
@@ -781,6 +867,15 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--sky-fov", type=float, default=180.0, help="flat photos as skies: horizontal degrees the photo covers")
 	c.add_argument("--sky-exposure", type=float, default=0.0, help=".hdr panoramas: stops brighter (+) or darker (-) than auto")
 	c.set_defaults(fn=_convert)
+
+	fm = sub.add_parser("formats", help="list every image format GxBake reads and which optional packages are missing")
+	fm.add_argument("--json", action="store_true", help="print the table as JSON")
+	fm.set_defaults(fn=_formats)
+
+	dc = sub.add_parser("decode", help="decode images of any supported format to PNG (to check how they are read)")
+	dc.add_argument("images", nargs="+", help="image files or folders")
+	dc.add_argument("-o", "--output", default=".", help="folder for the PNGs (default: here)")
+	dc.set_defaults(fn=_decode)
 
 	i = sub.add_parser("inspect", help="print what GxBake sees in a file or folder")
 	i.add_argument("path", help="file or folder")
@@ -860,6 +955,23 @@ def build_parser() -> argparse.ArgumentParser:
 	x.add_argument("-o", "--output", required=True, help="folder to extract into")
 	x.add_argument("--match", action="append", help="only members matching this glob, e.g. 'models/*' (repeatable)")
 	x.set_defaults(fn=_extract)
+
+	lp = sub.add_parser("lumps",
+		help="list, extract and sort the lumps of a map or of the port's baked map files (.gcd, _lf.gcd, .gcmeta)")
+	lp.add_argument("paths", nargs="+",
+		help="GoldSrc/Quake/Source .bsp, media/wd_<map>.gcd world bakes, wd_<map>_lf.gcd light faces, "
+		"<map>.gcmeta lump indexes, or folders holding them")
+	lp.add_argument("-o", "--output",
+		help="extract into this folder (one subfolder per file): raw lumps, entities, sorted refs, "
+		"textures, face batches and the port's .gcmeta; for .gcd the sections, materials, chunks and lightmap pages")
+	lp.add_argument("--textures", action="store_true", help="with -o, also decode a BSP's embedded miptex to PNG")
+	lp.add_argument("--names", metavar="FILE",
+		help="name a .gcd's materials from this BSP, WAD, .gct pack, texture-names.json or name list "
+		"(default: media/wt_<map>.gct or maps/<map>.bsp next to it)")
+	lp.add_argument("--no-raw", action="store_true", help="with -o, skip the raw lump and section .bin files")
+	lp.add_argument("--limit", type=int, default=20, help="rows per table in the report")
+	lp.add_argument("--json", action="store_true", help="print the report as JSON")
+	lp.set_defaults(fn=_lumps)
 
 	sl = sub.add_parser("slim", help="show where a studio model's bytes go and thin its animation")
 	sl.add_argument("path", help="GoldSrc studio model (.mdl)")

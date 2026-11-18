@@ -386,6 +386,32 @@ def compress_vis(row: bytes) -> bytes:
 	return bytes(out)
 
 
+def merge_vis_rows(rows: list, max_bits: int) -> list:
+	"""Replace uncompressed PVS rows that differ by at most ``max_bits`` set
+	bits with their union, so more rows compress to the same bytes and share
+	one copy. A union only adds visible leaves, so nothing can disappear: the
+	cost is a few more leaves reaching the frustum test. ``None`` rows (no
+	visibility) are kept. Greedy, in row order."""
+	if max_bits <= 0:
+		return list(rows)
+	reps: list[int] = []
+	owner: dict[int, int] = {}
+	width = next((len(r) for r in rows if r is not None), 0)
+	for i, r in enumerate(rows):
+		if r is None:
+			continue
+		v = int.from_bytes(r, "little")
+		for j, u in enumerate(reps):
+			if bin(u ^ v).count("1") <= max_bits:
+				reps[j] = u | v
+				owner[i] = j
+				break
+		else:
+			owner[i] = len(reps)
+			reps.append(v)
+	return [None if r is None else reps[owner[i]].to_bytes(width, "little") for i, r in enumerate(rows)]
+
+
 # -- the file -------------------------------------------------------------------------------
 
 

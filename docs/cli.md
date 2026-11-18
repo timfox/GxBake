@@ -15,6 +15,8 @@ build or CI job.
 | Command | What it does |
 | --- | --- |
 | [`convert`](#gxbake-convert) | convert files or folders |
+| [`formats`](#gxbake-formats) | list every image format GxBake reads and which optional packages are missing |
+| [`decode`](#gxbake-decode) | decode images of any supported format to PNG (to check how they are read) |
 | [`inspect`](#gxbake-inspect) | print what GxBake sees in a file or folder |
 | [`rs`](#gxbake-rs) | list the NPCs and models in a RuneScape cache |
 | [`ff7`](#gxbake-ff7) | look inside Final Fantasy VII field and battle models (.hrc, .p, .a, .tex, <base>aa) |
@@ -25,6 +27,7 @@ build or CI job.
 | [`sfx`](#gxbake-sfx) | shrink WAVs under the port's per-file sound cap (20 KiB gameplay, 48 KiB menu) |
 | [`disc`](#gxbake-disc) | disc usage: sector cost, duplicate files and textures, files no map names |
 | [`extract`](#gxbake-extract) | unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive |
+| [`lumps`](#gxbake-lumps) | list, extract and sort the lumps of a map or of the port's baked map files (.gcd, _lf.gcd, .gcmeta) |
 | [`slim`](#gxbake-slim) | show where a studio model's bytes go and thin its animation |
 | [`lightmaps`](#gxbake-lightmaps) | pick each face's lightmap size by error and pack the atlas |
 | [`squeeze`](#gxbake-squeeze) | measure smarter packing on a staged tree, and write what the port reads today |
@@ -50,8 +53,9 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     [--ff7-scale FF7_SCALE] [--ff7-yaw FF7_YAW] [--ff7-battle-scale FF7_BATTLE_SCALE] [--video-width
     VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps VIDEO_FPS] [--fit-world] [--wt-pool
     WT_POOL] [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK] [--map-texture-max MAP_TEXTURE_MAX]
-    [--map-disp-power {0,1,2,3,4}] [--no-map-hulls] [--no-map-shadows] [--no-map-props] [--cache
-    CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
+    [--map-disp-power {0,1,2,3,4}] [--map-vis-merge LEAVES] [--no-map-hulls] [--no-map-shadows]
+    [--no-map-props] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV]
+    [--sky-exposure SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |
@@ -100,6 +104,7 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--game-dir DIR_OR_VPK` |  | Source maps: game folder or _dir.vpk to find materials in (repeatable; the map's own pakfile and the folder above maps/ are searched first) |
 | `--map-texture-max MAP_TEXTURE_MAX` | `256` | Source maps: largest embedded texture side |
 | `--map-disp-power {0,1,2,3,4}` | `2` | Source maps: displacement detail kept (2 = 5x5 vertices per displacement) |
+| `--map-vis-merge LEAVES` | `8` | Source maps: PVS rows that differ by at most this many leaves are stored once as their union (only adds visible leaves; 0 keeps the exact PVS) |
 | `--no-map-hulls` |  | Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0) |
 | `--no-map-shadows` |  | Source 2 maps: light without tracing shadows (faster) |
 | `--no-map-props` |  | Source maps: don't turn prop_static into cycler_sprite entities |
@@ -108,6 +113,31 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--sky-yaw SKY_YAW` | `270.0` | panorama skies: engine yaw the image centre faces (0 rt, 90 bk, 180 lf, 270 ft) |
 | `--sky-fov SKY_FOV` | `180.0` | flat photos as skies: horizontal degrees the photo covers |
 | `--sky-exposure SKY_EXPOSURE` |  | .hdr panoramas: stops brighter (+) or darker (-) than auto |
+
+## `gxbake formats`
+
+List every image format GxBake reads and which optional packages are missing.
+
+```
+gxbake formats [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--json` |  | print the table as JSON |
+
+## `gxbake decode`
+
+Decode images of any supported format to PNG (to check how they are read).
+
+```
+gxbake decode images [images ...] [--output OUTPUT]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `images` … |  | image files or folders |
+| `-o OUTPUT`, `--output OUTPUT` | `.` | folder for the PNGs (default: here) |
 
 ## `gxbake inspect`
 
@@ -273,6 +303,25 @@ gxbake extract archives [archives ...] --output OUTPUT [--match MATCH]
 | `archives` … |  | .pak, .vpk, .pk3 or .mf (e.g. Toontown's phase_3.mf) files |
 | `-o OUTPUT`, `--output OUTPUT` |  | **Required.** folder to extract into |
 | `--match MATCH` |  | only members matching this glob, e.g. `models/*` (repeatable) |
+
+## `gxbake lumps`
+
+List, extract and sort the lumps of a map or of the port's baked map files (.gcd, _lf.gcd, .gcmeta).
+
+```
+gxbake lumps paths [paths ...] [--output OUTPUT] [--textures] [--names FILE] [--no-raw] [--limit
+    LIMIT] [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `paths` … |  | GoldSrc/Quake/Source .bsp, media/wd_<map>.gcd world bakes, wd_<map>_lf.gcd light faces, <map>.gcmeta lump indexes, or folders holding them |
+| `-o OUTPUT`, `--output OUTPUT` |  | extract into this folder (one subfolder per file): raw lumps, entities, sorted refs, textures, face batches and the port's .gcmeta; for .gcd the sections, materials, chunks and lightmap pages |
+| `--textures` |  | with -o, also decode a BSP's embedded miptex to PNG |
+| `--names FILE` |  | name a .gcd's materials from this BSP, WAD, .gct pack, texture-names.json or name list (default: media/wt_<map>.gct or maps/<map>.bsp next to it) |
+| `--no-raw` |  | with -o, skip the raw lump and section .bin files |
+| `--limit LIMIT` | `20` | rows per table in the report |
+| `--json` |  | print the report as JSON |
 
 ## `gxbake slim`
 

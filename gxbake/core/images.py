@@ -1,4 +1,4 @@
-"""Loose images (PNG/TGA/BMP/JPG) and skyboxes to GX CMPR.
+"""Loose images (every format in imageformats) and skyboxes to GX CMPR.
 
 Skybox handling follows build_sky_cmpr_overlays in scripts/build-gamecube-disc.py:
 six sides <name>{rt,bk,lf,ft,up,dn}, each resized to 128×128 and written as a
@@ -14,44 +14,35 @@ import numpy as np
 
 from .cmpr import cmpr_decode, gx_cmpr_encode
 from .gct import GC_WT_FLAG_ALPHA, GctEntry, encode_mip_chain, wt_cache_key
+from .imageformats import EXTENSIONS
 
 GC_SKY_CMPR_SIZE = 128
 GC_SKY_SUFFIXES = ("rt", "bk", "lf", "ft", "up", "dn")
-IMAGE_EXTENSIONS = {".png", ".tga", ".bmp", ".jpg", ".jpeg", ".gif", ".webp", ".dds", ".tif", ".tiff", ".psd", ".pcx", ".qoi", ".ppm",
-	".vtf",	# Source (vtf.py)
-	".vtex_c",	# Source 2 (vtex.py)
-	".wal",	# Quake II (quake.py)
-	".blp", ".ftc", ".ftu",	# Blizzard BLP1/BLP2 and Fat textures, through Pillow
-	".rgb", ".rgba", ".sgi", ".bw",	# SGI (Panda3D / Toontown textures), through Pillow
-	".hdr"}	# Radiance HDR, tone-mapped (skybox.py)
+# every extension imageformats registers: Pillow's formats, HDR/vector/RAW, GPU containers,
+# console textures and game/retro pictures (`gxbake formats` lists them with what each needs)
+IMAGE_EXTENSIONS = set(EXTENSIONS)
+
+
+def _load_vtf(path: Path, warnings: list[str] | None = None) -> "np.ndarray":
+	from .vtf import load_vtf
+
+	return load_vtf(path)
+
+
+def _load_vtex(path: Path, warnings: list[str] | None = None) -> "np.ndarray":
+	from . import vtex
+
+	tex = vtex.load(path)
+	if tex.cube and warnings is not None:
+		warnings.append("cubemap: only the first face (+X) is packed")
+	return tex.rgba(0)
 
 
 def load_rgba(path: Path, warnings: list[str] | None = None) -> "np.ndarray":
-	from PIL import Image
+	"""Any image GxBake reads (imageformats.FORMATS) as H×W×4 uint8 RGBA."""
+	from . import imageformats
 
-	ext = Path(path).suffix.lower()
-	if ext == ".vtf":
-		from .vtf import load_vtf
-
-		return load_vtf(path)
-	if ext == ".vtex_c":
-		from . import vtex
-
-		tex = vtex.load(path)
-		if tex.cube and warnings is not None:
-			warnings.append("cubemap: only the first face (+X) is packed")
-		return tex.rgba(0)
-	if ext == ".wal":
-		from .quake import load_wal
-
-		return load_wal(path, warnings)
-	if ext == ".hdr":
-		from .skybox import read_hdr, tonemap
-
-		rgb = tonemap(read_hdr(path))
-		return np.dstack([rgb, np.full(rgb.shape[:2], 255, np.uint8)])
-	with Image.open(path) as img:
-		return np.asarray(img.convert("RGBA")).copy()
+	return imageformats.load(Path(path), warnings)
 
 
 def has_transparency(rgba: "np.ndarray", threshold: int = 128) -> bool:

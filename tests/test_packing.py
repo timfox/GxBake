@@ -242,6 +242,15 @@ def test_squeeze_techniques_are_optional(tmp_path, capsys):
 		cli.main(["squeeze", str(root), "--only", "bogus"])
 
 
+def test_squeeze_vertex_estimates_without_anim(tmp_path, capsys):
+	"""--only verts reports the vertex rows (they used to need anim on)."""
+	root = tmp_path / "stage"
+	(root / "gc_studio").mkdir(parents=True)
+	(root / "gc_studio/guy.mdl").write_bytes(animated_model())
+	assert squeeze.studio_texcoord_counts(animated_model())[0] > 0
+	assert cli.main(["squeeze", str(root), "--only", "verts"]) == 0
+	text = capsys.readouterr().out
+	assert "s16 vertices" in text and "u8 texture coords" in text and "optimal anim runs" not in text
 def test_squeeze_presets(tmp_path, capsys):
 	root = tmp_path / "stage"
 	(root / "media").mkdir(parents=True)

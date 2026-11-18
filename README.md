@@ -8,7 +8,7 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 
 | Source | Output | Pipeline function |
 | --- | --- | --- |
-| PNG / TGA / BMP / JPG / DDS / TIFF / PSD / PCX / QOI, Source `.vtf`, Quake II `.wal`, Blizzard `.blp` | `media/<pack>.gct`: CMPR, power-of-two, mip chain, 1-bit alpha | `gx_cmpr_encode_blocks`, `wt_encode` mip loop |
+| Images in 70+ formats (see [Image formats](#image-formats)): PNG, JPEG, WebP, AVIF, HEIC, JPEG XL, EXR, SVG, PSD, camera RAW, DDS, KTX/KTX2, PVR, ASTC, GameCube/Wii TPL/BTI/TEX0, DS, 3DS, PS1/PS2, Xbox and Dreamcast textures, Doom/Quake lumps, Build ART, Westwood SHP, Fallout FRM, Unreal UTX, Amiga IFF, Source `.vtf`, Quake II `.wal`, Blizzard `.blp`... | `media/<pack>.gct`: CMPR, power-of-two, mip chain, 1-bit alpha | `gx_cmpr_encode_blocks`, `wt_encode` mip loop |
 | Skybox (`<name>rt/bk/lf/ft/up/dn`) | `media/sky_<name><side>.cmp`: 128² CMPR, 8 KiB per side | `gx_cmpr_encode`, `build_sky_cmpr_overlays` |
 | Panoramas (equirectangular, Radiance `.hdr`), cubemap crosses and strips, six named faces, flat photos, Source 2 cubemap `.vtex_c` | the same six `media/sky_<name><side>.cmp`, rendered in the engine's orientation | `skybox.build` |
 | WAD3 (miptex, plus the qpic pictures and console fonts of gfx.wad and fonts.wad, index 255 see-through), Quake WAD2 | `media/<wad>.gct` | `wt_read_miptex`, `wt_encode` |
@@ -34,6 +34,21 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | Audio (WAV, MP3, OGG, FLAC, AIFF, VOC, Opus…) | `media/<name>.gcpcm` (48 kHz stereo, s16 big-endian); PCM WAV needs no ffmpeg | `build_gcpcm_companion` |
 
 It also opens the outputs (`.gct`, `.cmp`, `.gcvid`, `.gcpcm`) to inspect them. Every run writes `gxbake-manifest.json` with the settings, every output and its size, and the share of GameCube main RAM it uses.
+
+## Image formats
+
+Anything below converts like a PNG: into a `.gct` pack as CMPR, or into sky sides. `gxbake formats` prints the same table with what is installed, and `gxbake decode FILE... -o DIR` writes each as a PNG to check how GxBake reads it. Only the top mip of the first image/face/frame is used, except sprite formats with several frames (Build ART, Westwood SHP, Fallout FRM), which become one sprite sheet. Readers that had to guess say so as a warning in the log.
+
+| Group | Formats | Notes |
+| --- | --- | --- |
+| Common | PNG/APNG, JPEG, Targa, BMP, GIF, WebP, AVIF, TIFF, QOI, Netpbm, ICO/CUR, ICNS, JPEG 2000, MPO, XBM/XPM, PSD, SGI, GIMP brush, HEIC/HEIF, JPEG XL | 16-bit and float images are scaled, not clipped; animated files use the first frame |
+| HDR, vector, pro | OpenEXR, Radiance `.hdr`, PFM, SVG/SVGZ (rasterised at 1024 on the long side), PSB, Krita `.kra`, OpenRaster `.ora`, camera RAW (DNG, CR2/CR3, NEF, ARW, ORF, RW2, RAF, PEF...), Pixar, FITS | HDR is tone-mapped; `.exr` and `.pfm` panoramas make skies like `.hdr` |
+| GPU | DDS (Pillow, plus float/16-bit/ASTC DX10 formats it refuses), KTX, KTX 2 (raw, Zstandard or zlib supercompressed), PowerVR `.pvr` v2/v3, `.astc`, `.basis` | BC1-BC7 and ETC decode without extras; ASTC, PVRTC, ATC and ETC2 punch-through need `texture2ddecoder`. BasisLZ/UASTC is recognised but has no decoder yet |
+| Consoles | GameCube/Wii `.tpl`, `.bti`, BRRES `.tex0` (with a matching `.plt0`), DS `.ncgr` (with `.nclr`), 3DS `.bclim` / `.bflim`, PlayStation `.tim`, PS2 `.tm2`, Xbox `.xpr` (XPR0), Dreamcast `.pvr` (twiddled, rectangle, VQ, paletted with `.pvp`) | every GX format, CI14x2 included. Wii U `.bflim` and Xbox 360 XPR2 are refused with a message |
+| PC games | Doom/Heretic/Hexen and Quake `.lmp` (patches, flats, qpics, palettes, colormaps), Build `.art`, Westwood `.shp` (TD/RA and TS/RA2), Fallout `.frm`, Unreal 1 `.utx`, Blizzard `.blp`, Independence War 2 FTEX, plus `.vtf`, `.vtex_c`, `.wal` | palettes are found beside the file or above it: PLAYPAL (a lump or inside an IWAD), `gfx/palette.lmp`, `PALETTE.DAT`, `COLOR.PAL`, a Westwood `.pal`; greyscale with a warning otherwise |
+| Retro computers | Amiga IFF ILBM / Deluxe Paint LBM (EHB, HAM6/HAM8, masks), Atari ST Degas (`.pi1`-`.pi3`, packed `.pc1`-`.pc3`), C64 Koala, PCX/DCX, Sun raster, FLI/FLC, Kodak Photo CD, MS Paint, IM | |
+
+Optional packages: `pip install gxbake[images]` adds pillow-heif (HEIC), OpenEXR, resvg-py (SVG; CairoSVG also works), psd-tools (Photoshop layers composited; without it the saved composite is used), rawpy (camera RAW) and texture2ddecoder. JPEG XL needs `pip install gxbake[jxl]` (pillow-jxl-plugin is GPL-3.0, so it stays out of the MIT executable). A file whose package is missing fails with a message naming the package; everything else still converts.
 
 ## 3D model import (Assimp)
 
@@ -82,6 +97,11 @@ It also lists sprites, the sky and the BSP size, anything referenced but not sta
 ### Disc usage
 
 `gxbake disc <staged gamedir>` shows what the tree costs on a disc: every file rounded up to 2 KiB ISO9660 sectors (the disc builder exposes game data through ISO9660), the share of the 1.36 GiB disc, and a breakdown by directory. It also lists byte-identical files, textures stored in more than one `.gct` (same CMPR bytes; each map loads its own pack, so this only costs disc), and files under `models/`, `gc_studio/` and `sound/` that no map names. The game DLL may still precache those, so treat that list as a place to look, and pass `--include` for models you know are needed. `--json` gives the same data.
+### Map lumps
+
+`gxbake lumps` is the lump tool from the Half-Life, Lost Coast and Day of Defeat ports, in one command. Give it maps (GoldSrc BSP30, Quake BSP29, Source VBSP) or the port's baked map files (`media/wd_<map>.gcd` world display lists, `wd_<map>_lf.gcd` light faces, `<map>.gcmeta` lump indexes), or a staged folder holding them. It prints the lump table with each lump's HOT/COLD tier and 32-byte alignment, the face batches by texture, the textures by use, and everything the entity lump names, sorted into models, sprites, sounds, WADs, sky and linked maps. For a `.gcd` it shows what stays in MEM1, the ARAM chunk sizes, the materials by display-list bytes and the lightmap pages, and names the materials from `media/wt_<map>.gct` or `maps/<map>.bsp` when they sit next to it (`--names` for anything else, such as Lost Coast's `texture-names.json`).
+
+With `-o OUT` it writes one folder per file: the raw lumps, `entities.txt`/`.json`, `refs.json`, `textures.json`, `batches.json` and the `.gcmeta` the HL1 disc build ships (byte for byte what `generate-gc-bsp-meta.py` writes); for a `.gcd`, each section as a `.bin`, `materials.json`, `chunks.json` and the lightmap pages as PNG. `--textures` also decodes embedded miptex. All three world-bake layouts are read: Day of Defeat's v1 (vertex colour, no pages), the GoldSrc v2 bake shared by HL1 and Lost Coast (lightmap pages at x1), and Lost Coast's Source v2 bake (pages at x2, 3D sky block, reflective batches). A `.gcmeta` whose BSP has changed since is reported as stale. In the app, select maps or `.gcd`/`.gcmeta` files and press **Extract Lumps**.
 ### Studio models
 
 `gxbake slim models/barney.mdl` shows where a studio model's bytes go (animation, meshes, bones, sequences, skins) and how big the lean `gc_studio/` mesh is, since that is what fills the 1 MiB studio arena. For NPCs and view models the animation is usually the largest part, so:
@@ -246,6 +266,8 @@ gxbake budget staged/valve     # per-map memory report
 gxbake extract hl2_misc_dir.vpk -o unpacked --match 'models/*' --match 'materials/*'
 gxbake pack list staged/valve/media/wt_c1a0.gct --sort size
 gxbake sky sunset.hdr -o staged/valve --name sunset
+gxbake formats                 # every image format and which optional packages are missing
+gxbake decode textures/*.tpl -o check   # any supported image to PNG
 ```
 
 Every command and option is listed in the [command line reference](docs/cli.md), and [the porting workflow](docs/workflow.md) shows how they fit together, from unpacking a game to a staged tree that fits the GameCube's memory. The reference is generated from the CLI itself: after changing an option, run `python -m gxbake.clidoc` (a test fails until you do).
@@ -259,11 +281,12 @@ pip install -e ".[dev]"
 pyinstaller packaging/gxbake.spec    # → dist/GxBake (GxBake.exe on Windows, GxBake.app on macOS)
 ```
 
-The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`, `disc`, `slim`, `pack`, `sky`, `extract`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
+The executable opens the app when run with no arguments or with file paths. With a subcommand (`convert`, `inspect`, `validate`, `budget`, `fit`, `sfx`, `disc`, `slim`, `pack`, `sky`, `extract`, `formats`, `decode`) it runs as the CLI. The `build` GitHub workflow runs the tests and builds the executable for Linux, Windows and macOS on every push.
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, `particles`), the native readers (`source_mdl`, `vtf`, `quake`, `archives`, `rose`, `panda`, `runescape`, `ffxi`, `ff7`, `dmx`, `dmx_model`, `usd` for FreeUSD), the map converters (`source_bsp`, `source_map`, `bsp30`), and for Source 2 `vres`, `vents`, `s2map`, `kv3`, `kv3text`, `valvecomp`, `vtex`, `vsnd`, `vmdl`, `vanim`.
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, `particles`), the native readers (`source_mdl`, `vtf`, `quake`, `archives`, `rose`, `panda`, `runescape`, `ffxi`, `ff7`, `dmx`, `dmx_model`, `usd` for FreeUSD), the map converters (`source_bsp`, `source_map`, `bsp30`), the lump tool (`lumps`), and for Source 2 `vres`, `vents`, `s2map`, `kv3`, `kv3text`, `valvecomp`, `vtex`, `vsnd`, `vmdl`, `vanim`.
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, `particles`), the image readers (`imageformats` registry, `texcodec`, `gputex`, `consoletex`, `retrotex`), the native readers (`source_mdl`, `vtf`, `quake`, `archives`, `rose`, `panda`, `runescape`, `ffxi`, `ff7`, `dmx`, `dmx_model`, `usd` for FreeUSD), the map converters (`source_bsp`, `source_map`, `bsp30`), and for Source 2 `vres`, `vents`, `s2map`, `kv3`, `kv3text`, `valvecomp`, `vtex`, `vsnd`, `vmdl`, `vanim`.
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
-- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, a Source map in `s1_fixtures.py`, DMX models and particle systems in `dmx_fixtures.py`, Source 2 resources in `s2_fixtures.py` and a Source 2 map in `s2map_fixtures.py`, USD stages in `usd_fixtures.py`, RuneScape caches in `rs_fixtures.py`, Final Fantasy files in `ffxi_fixtures.py` and `ff7_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
+- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, a Source map in `s1_fixtures.py`, DMX models and particle systems in `dmx_fixtures.py`, Source 2 resources in `s2_fixtures.py` and a Source 2 map in `s2map_fixtures.py`, USD stages in `usd_fixtures.py`, RuneScape caches in `rs_fixtures.py`, Final Fantasy files in `ffxi_fixtures.py` and `ff7_fixtures.py`, the port's baked `.gcd` map files in `lump_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
