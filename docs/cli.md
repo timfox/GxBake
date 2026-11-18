@@ -26,6 +26,9 @@ build or CI job.
 | [`disc`](#gxbake-disc) | disc usage: sector cost, duplicate files and textures, files no map names |
 | [`extract`](#gxbake-extract) | unpack a Quake/GoldSrc .pak, Source .vpk, .pk3 or Panda3D .mf archive |
 | [`slim`](#gxbake-slim) | show where a studio model's bytes go and thin its animation |
+| [`squeeze`](#gxbake-squeeze) | measure smarter packing on a staged tree, and write what the port reads today |
+| [`adpcm`](#gxbake-adpcm) | encode WAV or .gcpcm audio as GameCube DSP ADPCM (.dsp, one per channel) |
+| [`yaz0`](#gxbake-yaz0) | Yaz0-compress files (Nintendo LZ), or decompress with -d |
 | [`sky`](#gxbake-sky) | turn a panorama, cubemap cross/strip, photo or six faces into the port's sky sides |
 | [`pack`](#gxbake-pack) | list, extract, build and edit .gct texture packs |
 | [`gui`](#gxbake-gui) | open the desktop app |
@@ -274,7 +277,8 @@ gxbake extract archives [archives ...] --output OUTPUT [--match MATCH]
 Show where a studio model's bytes go and thin its animation.
 
 ```
-gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTERN]
+gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTERN] [--anim-tol
+    UNITS]
 ```
 
 | Argument | Default | Description |
@@ -284,6 +288,58 @@ gxbake slim path [--output OUTPUT] [--step STEP] [--stub PATTERN] [--keep PATTER
 | `--step STEP` | `1` | keep every Nth animation frame (fps adjusted, same duration) |
 | `--stub PATTERN` |  | reduce matching sequences to one frame (repeatable) |
 | `--keep PATTERN` |  | never touch matching sequences (repeatable) |
+| `--anim-tol UNITS` |  | hold animation values within ±UNITS so runs get longer (lossy, bounded; 0 = lossless re-encode only) |
+
+## `gxbake squeeze`
+
+Measure smarter packing on a staged tree, and write what the port reads today.
+
+```
+gxbake squeeze path [--output OUTPUT] [--emit] [--min-db MIN_DB] [--anim-tol UNITS] [--skin-db
+    SKIN_DB] [--no-yaz0] [--only LIST] [--skip LIST] [--match GLOB] [--json] [--verbose]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `path` |  | staged gamedir (or one file) |
+| `-o OUTPUT`, `--output OUTPUT` |  | write the results here, same relative paths (otherwise a report only) |
+| `--emit` |  | with -o, also write the formats that need port support: .gsk skins, .dsp sound, .yaz0 |
+| `--min-db MIN_DB` | `40.0` | drop a world texture's top mip when the next level magnified is within this PSNR |
+| `--anim-tol UNITS` |  | studio animation deadband (0 = lossless) |
+| `--skin-db SKIN_DB` | `40.0` | lossy skin formats must stay within this PSNR of RGB565 |
+| `--no-yaz0` |  | skip the (slow) Yaz0 estimate (same as --skip yaz0) |
+| `--only LIST` |  | only these techniques, comma-separated: trim, anim, skins, adpcm, verts, lightmaps, yaz0 (repeatable) |
+| `--skip LIST` |  | leave these techniques out (same names as --only) (repeatable) |
+| `--match GLOB` |  | only these relative paths (repeatable) |
+| `--json` |  | print every row as JSON |
+| `-v`, `--verbose` |  | list every file |
+
+## `gxbake adpcm`
+
+Encode WAV or .gcpcm audio as GameCube DSP ADPCM (.dsp, one per channel).
+
+```
+gxbake adpcm paths [paths ...] --output OUTPUT
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `paths` … |  | .wav or .gcpcm files |
+| `-o OUTPUT`, `--output OUTPUT` |  | **Required.** folder for the .dsp files |
+
+## `gxbake yaz0`
+
+Yaz0-compress files (Nintendo LZ), or decompress with -d.
+
+```
+gxbake yaz0 paths [paths ...] [--decompress] [--output OUTPUT]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `paths` … |  | files |
+| `-d`, `--decompress` |  | decompress .yaz0 files |
+| `-o OUTPUT`, `--output OUTPUT` |  | folder to write into (default: next to the input) |
 
 ## `gxbake sky`
 
