@@ -438,3 +438,33 @@ def test_more_image_formats_detected(tmp_path):
 	assert images.load_rgba(tmp_path / "a.tif").shape == (16, 16, 4)
 	for ext in (".dds", ".psd", ".md2", ".md5mesh", ".iqm"):
 		assert detect_kind_of(tmp_path / f"x{ext}") in (Kind.IMAGE, Kind.MODEL)
+
+
+def test_tri_commands_strips_and_fans_cover_every_triangle():
+	rng = np.random.default_rng(9)
+	# a grid plus a disc (fan territory) sharing nothing
+	grid = np.arange(49).reshape(7, 7)
+	tris = []
+	for y in range(6):
+		for x in range(6):
+			a, b, c, d = grid[y, x], grid[y, x + 1], grid[y + 1, x + 1], grid[y + 1, x]
+			tris += [(a, b, c), (a, c, d)]
+	hub, rim = 100, list(range(101, 113))
+	tris += [(hub, rim[i], rim[(i + 1) % 12]) for i in range(12)]
+	tris = [tuple(int(v) for v in tris[i]) for i in rng.permutation(len(tris))]
+	cmds = models._tri_commands(tris)
+	got = []
+	for fan, s in cmds:
+		for k in range(len(s) - 2):
+			if fan:
+				got.append((s[0], s[k + 1], s[k + 2]))
+			else:
+				got.append((s[k], s[k + 1], s[k + 2]) if k % 2 == 0 else (s[k + 1], s[k], s[k + 2]))
+
+	def canon(t):
+		i = t.index(min(t))
+		return t[i:] + t[:i]
+
+	assert sorted(map(canon, got)) == sorted(map(canon, tris))
+	assert any(fan for fan, _ in cmds)	# the disc becomes a fan
+	assert sum(len(s) for _, s in cmds) < len(tris) * 1.6

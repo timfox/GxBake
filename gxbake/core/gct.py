@@ -22,7 +22,7 @@ from typing import Callable, Iterable
 
 import numpy as np
 
-from .cmpr import cmpr_decode, cmpr_size, gx_cmpr_encode_blocks
+from .cmpr import cmpr_decode, cmpr_refine, cmpr_size, gx_cmpr_encode_blocks
 from .goldsrc import (
 	bsp_miptex_offsets,
 	is_world_diffuse,
@@ -50,18 +50,23 @@ def encode_mip_chain(
 	*,
 	mipmaps: bool = True,
 	min_edge: int = 8,
+	refine: bool = False,
 ) -> tuple[int, bytes]:
 	"""CMPR levels for a power-of-two RGB image + coverage mask.
 
 	This is the loop body of wt_encode: a coverage-weighted box filter so a
 	transparent pixel's colour never bleeds into the edge of a cut-out.
+	`refine` adds least-squares CMPR endpoints (cmpr_refine): same size,
+	closer colours, different bytes from the disc builder's encoder.
 	"""
 	levels = bytearray()
 	count = 0
 	fcol = rgb.astype(np.float32)
 	fcov = opaque.astype(np.float32)
 	while True:
-		levels += gx_cmpr_encode_blocks(np.clip(fcol + 0.5, 0, 255).astype(np.uint8), fcov >= 0.5)
+		px, op = np.clip(fcol + 0.5, 0, 255).astype(np.uint8), fcov >= 0.5
+		lvl = gx_cmpr_encode_blocks(px, op)
+		levels += cmpr_refine(px, op, lvl) if refine else lvl
 		count += 1
 		ch, cw = fcov.shape
 		if not mipmaps or min(ch, cw) <= max(8, min_edge):
@@ -73,7 +78,8 @@ def encode_mip_chain(
 	return count, bytes(levels)
 
 
-def wt_encode(w: int, h: int, pixels: bytes, palette: bytes, alpha: bool) -> tuple[int, int, int, bytes]:
+def wt_encode(w: int, h: int, pixels: bytes, palette: bytes, alpha: bool,
+		refine: bool = False) -> tuple[int, int, int, bytes]:
 	"""Palette texture to a CMPR mip chain, power-of-two sides (GX_REPEAT
 	needs them; UVs are normalised, so a resize does not move anything)."""
 	pal = np.frombuffer(palette, np.uint8).reshape(256, 3)
@@ -84,24 +90,25 @@ def wt_encode(w: int, h: int, pixels: bytes, palette: bytes, alpha: bool) -> tup
 	if (tw, th) != (w, h):
 		rgb = _resize(rgb, (tw, th), nearest=alpha)
 		opaque = _resize(opaque, (tw, th), nearest=True)
-	count, body = encode_mip_chain(rgb, opaque)
+	count, body = encode_mip_chain(rgb, opaque, refine=refine)
 	return tw, th, count, body
 
 
-def wt_cache_key(w: int, h: int, pixels: bytes, palette: bytes, alpha: bool) -> str:
-	return hashlib.md5(bytes((alpha,)) + struct.pack("<II", w, h) + pixels + palette + b"2").hexdigest()
+def wt_cache_key(w: int, h: int, pixels: bytes, palette: bytes, alpha: bool, refine: bool = False) -> str:
+	return hashlib.md5(bytes((alpha,)) + struct.pack("<II", w, h) + pixels + palette + b"2"
+		+ (b"r" if refine else b"")).hexdigest()
 
 
 def wt_encode_cached(
-	w: int, h: int, pixels: bytes, palette: bytes, alpha: bool, cache: Path | None
+	w: int, h: int, pixels: bytes, palette: bytes, alpha: bool, cache: Path | None, refine: bool = False
 ) -> tuple[str, int, int, int, bytes]:
-	key = wt_cache_key(w, h, pixels, palette, alpha)
+	key = wt_cache_key(w, h, pixels, palette, alpha, refine)
 	item = cache / f"{key}.bin" if cache else None
 	if item is not None and item.is_file():
 		cached = item.read_bytes()
 		tw, th, levels = struct.unpack_from("<HHH", cached)
 		return key, tw, th, levels, cached[6:]
-	tw, th, levels, body = wt_encode(w, h, pixels, palette, alpha)
+	tw, th, levels, body = wt_encode(w, h, pixels, palette, alpha, refine)
 	if item is not None:
 		item.parent.mkdir(parents=True, exist_ok=True)
 		item.write_bytes(struct.pack("<HHH", tw, th, levels) + body)
@@ -235,6 +242,7 @@ def build_world_texture_pack(
 	wad_dirs: Iterable[Path] = (),
 	cache: Path | None = None,
 	progress: Callable[[int, int, str], None] | None = None,
+	refine: bool = False,
 ) -> tuple[bytes | None, WorldPackReport, list[GctEntry]]:
 	"""media/wt_<map>.gct for one map: each world texture as CMPR with mips."""
 	data = bsp.read_bytes()
@@ -272,7 +280,7 @@ def build_world_texture_pack(
 			continue
 		_, w, h, pixels, palette = mip
 		alpha = name.startswith("{")
-		key, tw, th, levels, body = wt_encode_cached(w, h, pixels, palette, alpha, cache)
+		key, tw, th, levels, body = wt_encode_cached(w, h, pixels, palette, alpha, cache, refine)
 		entries.append(GctEntry(name, tw, th, levels, GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body))
 	if progress:
 		progress(len(todo), len(todo), "")
@@ -291,6 +299,7 @@ def build_wad_texture_pack(
 	include: set[str] | None = None,
 	progress: Callable[[int, int, str], None] | None = None,
 	palette: bytes | None = None,
+	refine: bool = False,
 ) -> tuple[bytes | None, list[GctEntry]]:
 	"""A GCWT pack holding every miptex in one WAD (or the `include` subset).
 
@@ -308,7 +317,7 @@ def build_wad_texture_pack(
 			continue
 		_, w, h, pixels, palette = mip
 		alpha = name.startswith("{")
-		key, tw, th, levels, body = wt_encode_cached(w, h, pixels, palette, alpha, cache)
+		key, tw, th, levels, body = wt_encode_cached(w, h, pixels, palette, alpha, cache, refine)
 		entries.append(GctEntry(name, tw, th, levels, GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body))
 	if include is None:	# gfx.wad / fonts.wad: HUD pictures and console fonts, index 255 see-through
 		from .goldsrc import wad_pictures
@@ -317,7 +326,7 @@ def build_wad_texture_pack(
 			if name in found:
 				continue
 			alpha = pic.transparent
-			key, tw, th, levels, body = wt_encode_cached(pic.width, pic.height, pic.pixels, pic.palette, alpha, cache)
+			key, tw, th, levels, body = wt_encode_cached(pic.width, pic.height, pic.pixels, pic.palette, alpha, cache, refine)
 			entries.append(GctEntry(name, tw, th, levels, GC_WT_FLAG_ALPHA if alpha else 0, int(key[:4], 16), body))
 	if progress:
 		progress(len(names), len(names), "")

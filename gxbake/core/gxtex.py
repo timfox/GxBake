@@ -32,7 +32,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .cmpr import cmpr_decode, gx_cmpr_encode_blocks
+from .cmpr import cmpr_decode, cmpr_refine, gx_cmpr_encode_blocks
 
 # GXTexFmt values from libogc gx.h
 GX_TF_I4, GX_TF_I8, GX_TF_IA4, GX_TF_IA8 = 0x0, 0x1, 0x2, 0x3
@@ -190,7 +190,8 @@ def encode(rgba: "np.ndarray", fmt: str) -> GxTexture:
 	a = _pad(rgba, pw, ph)
 	if fmt == "CMPR":
 		opaque = a[..., 3] >= 128
-		return GxTexture(fmt, w, h, gx_cmpr_encode_blocks(np.ascontiguousarray(a[..., :3]), opaque))
+		px = np.ascontiguousarray(a[..., :3])
+		return GxTexture(fmt, w, h, cmpr_refine(px, opaque, gx_cmpr_encode_blocks(px, opaque)))
 	t = _tile(a, tw, th)
 	if fmt == "I4":
 		data = _nibbles(_q(luma(t), 4))
@@ -294,6 +295,42 @@ def _is_grey(rgb: "np.ndarray", tol: int = 3) -> bool:
 	return int(np.abs(c[..., 0] - c[..., 1]).max(initial=0)) <= tol and int(np.abs(c[..., 1] - c[..., 2]).max(initial=0)) <= tol
 
 
+_LUMA_W = np.sqrt(np.array([0.299, 0.587, 0.114]))
+
+
+def quantize_ci4(index: "np.ndarray", pal: "np.ndarray", alpha: bool, iters: int = 12) -> "tuple[np.ndarray, np.ndarray] | None":
+	"""16-colour palette for an indexed image by weighted k-means over the
+	colours actually used (each weighted by its pixel count), seeded by
+	weighted farthest-point picks so it is deterministic. A transparent
+	colour keeps its own entry. Returns (new index, 16×4 palette)."""
+	counts = np.bincount(index.reshape(-1), minlength=len(pal)).astype(np.float64)
+	solid = np.flatnonzero((pal[:, 3] > 0) & (counts > 0)) if alpha else np.flatnonzero(counts > 0)
+	k = 15 if alpha else 16
+	if len(solid) <= k:
+		return None
+	x = pal[solid, :3].astype(np.float64) * _LUMA_W	# luma-weighted distance
+	wts = counts[solid]
+	cent = [x[np.argmax(wts)]]
+	d = ((x - cent[0]) ** 2).sum(1)
+	for _ in range(k - 1):
+		cent.append(x[np.argmax(d * wts)])
+		d = np.minimum(d, ((x - cent[-1]) ** 2).sum(1))
+	c = np.array(cent)
+	for _ in range(iters):
+		lab = ((x[:, None] - c[None]) ** 2).sum(2).argmin(1)
+		for j in range(k):
+			m = lab == j
+			if m.any():
+				c[j] = (x[m] * wts[m, None]).sum(0) / wts[m].sum()
+	lab = ((x[:, None] - c[None]) ** 2).sum(2).argmin(1)
+	out_pal = np.zeros((16, 4), np.uint8)
+	out_pal[:k, :3] = np.clip(np.round(c / _LUMA_W), 0, 255)
+	out_pal[:k, 3] = 255
+	lut = np.full(len(pal), 15, np.uint8)	# transparent entries → 15 (zeroed)
+	lut[solid] = lab
+	return lut[index], out_pal
+
+
 def choose_indexed(index: "np.ndarray", palette_rgb: "np.ndarray", masked: bool, *,
 		min_db: float = 40.0, allow_cmpr: bool = True) -> Choice:
 	"""Smallest GX format for a palettised skin whose picture stays within
@@ -320,7 +357,14 @@ def choose_indexed(index: "np.ndarray", palette_rgb: "np.ndarray", masked: bool,
 	vis = ref[..., 3] > 0
 
 	tried: dict[str, tuple[int, float]] = {}
-	cands: list[GxTexture] = [encode_indexed(remap, pal, tlut)]
+	# Colours that differ in 8 bits but land on the same 16-bit TLUT word are
+	# one colour on the GameCube: merging them is lossless and can drop CI8 to CI4.
+	words, first, merged = np.unique(tlut_words(pal, tlut), return_index=True, return_inverse=True)
+	cands: list[GxTexture] = [encode_indexed(merged.reshape(-1)[remap], pal[first], tlut)]
+	if len(words) > 16:
+		q = quantize_ci4(remap, pal, alpha)
+		if q is not None:
+			cands.append(encode_indexed(q[0], q[1], tlut, "CI4"))
 	if allow_cmpr:
 		cands.append(encode(rgba, "CMPR"))
 	if _is_grey(palette_rgb[used]):
@@ -332,8 +376,10 @@ def choose_indexed(index: "np.ndarray", palette_rgb: "np.ndarray", masked: bool,
 		if alpha:
 			db = min(db, psnr(d[..., 3] > 127, ref[..., 3] > 127))
 		tried[t.fmt] = (t.size, db)
-		lossless = t.fmt in ("CI4", "CI8")
-		if (lossless or db >= min_db) and (best is None or t.size < best[0]):
+		lossless = t.fmt in ("CI4", "CI8") and db == float("inf")
+		ok = lossless or db >= min_db
+		# Smaller wins; within 64 bytes (a TLUT's worth) the closer picture wins.
+		if ok and (best is None or t.size < best[0] - 64 or (abs(t.size - best[0]) <= 64 and db > best[2])):
 			best = (t.size, t, db)
 	assert best is not None
 	return Choice(best[1], best[2], baseline, tried)

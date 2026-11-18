@@ -77,7 +77,7 @@ It also lists sprites, the sky and the BSP size, anything referenced but not sta
 
 ### Smarter packing
 
-`gxbake squeeze <staged gamedir>` measures optional packing techniques on the real files: detail-aware mip trimming, optimal and deadband animation runs, indexed (CI4/CI8 + TLUT) skins, DSP ADPCM sound, s16 vertices, CMPR lightmaps and Yaz0. It prints bytes before and after per memory window. `-o OUT` writes the ones the port reads today, `--emit` also writes the formats that need port support, and `--only`/`--skip` pick techniques. See [docs/packing.md](docs/packing.md) for the numbers on sample assets, the ranking and what the port must add.
+`gxbake squeeze <staged gamedir>` measures optional packing techniques on the real files: detail-aware mip trimming, optimal and deadband animation runs, animation keyframe fitting, indexed (CI4/CI8 + TLUT, k-means CI4) skins, DSP ADPCM sound, s16 vertices, CMPR lightmaps, duplicate textures, Yaz0 (plain and with CMPR byte splitting) and deflate. It prints bytes before and after per memory window. `-o OUT` writes the ones the port reads today, `--emit` also writes the formats that need port support, `--only`/`--skip` pick techniques, and `--preset lossless|balanced|max` sets the quality floor. See [docs/packing.md](docs/packing.md) for the numbers on sample assets, the ranking and what the port must add.
 
 ### Disc usage
 

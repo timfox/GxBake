@@ -65,6 +65,7 @@ class ImageOptions:
 	alpha: str = "auto"	# auto | on | off  (CMPR has 1-bit alpha)
 	alpha_threshold: int = 128
 	resample: str = "lanczos"	# lanczos | bicubic | nearest
+	cmpr_refine: bool = False	# least-squares CMPR endpoints (closer colours, same size)
 
 
 def _target_size(w: int, h: int, max_edge: int) -> tuple[int, int]:
@@ -92,7 +93,7 @@ def encode_image(rgba: "np.ndarray", opts: ImageOptions, name: str = "") -> GctE
 	if (tw, th) != (w, h):
 		rgb = np.asarray(Image.fromarray(rgb).resize((tw, th), resample))
 		opaque = np.asarray(Image.fromarray(opaque).resize((tw, th), Image.Resampling.NEAREST))
-	levels, body = encode_mip_chain(rgb, opaque, mipmaps=opts.mipmaps)
+	levels, body = encode_mip_chain(rgb, opaque, mipmaps=opts.mipmaps, refine=opts.cmpr_refine)
 	tag = int(wt_cache_key(tw, th, rgb.tobytes(), b"", use_alpha)[:4], 16)
 	return GctEntry(name[:15].lower(), tw, th, levels, GC_WT_FLAG_ALPHA if use_alpha else 0, tag, body)
 
