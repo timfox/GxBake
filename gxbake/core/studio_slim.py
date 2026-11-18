@@ -199,11 +199,114 @@ def deadband(q: list[int], tol: int) -> list[int]:
 	return out
 
 
+def _uniform_picks(n: int, step: int, min_frames: int = 2) -> list[int]:
+	count = max(min_frames, math.ceil((n - 1) / step) + 1)
+	return sorted({min(n - 1, k * step) for k in range(count)} | {n - 1})
+
+
+def _wrap(d: float, period: float | None) -> float:
+	return (d + period / 2) % period - period / 2 if period else d
+
+
+def resample(curve: list[float], m: int, period: float | None = None) -> list[float]:
+	"""`m` evenly spaced samples of `curve` over its whole duration, linear in
+	between (the short way round when `period` is set). When (n − 1) is a
+	multiple of (m − 1) these are exactly the original frames."""
+	n = len(curve)
+	if m <= 1 or n <= 1:
+		return [curve[0]] if curve else []
+	out = []
+	for k in range(m):
+		p = k * (n - 1) / (m - 1)
+		i = min(int(p), n - 2)
+		a = curve[i]
+		out.append(a + _wrap(curve[i + 1] - a, period) * (p - i))
+	return out
+
+
+def playback_error(curve: list[float], kept: list[float], period: float | None = None) -> float:
+	"""Worst error of playing `kept` back at the adjusted fps, in the curve's
+	units.
+
+	The engine plays the kept frames evenly over the sequence's old duration
+	and interpolates between neighbours, so original frame f lands at
+	f × (m − 1) / (n − 1) in the new sequence of m frames. Angles (`period`
+	set) interpolate the short way round, as the engine's quaternion slerp
+	does."""
+	n, m = len(curve), len(kept)
+	worst = 0.0
+	for f in range(n):
+		if m > 1 and n > 1:
+			p = f * (m - 1) / (n - 1)
+			i = min(int(p), m - 2)
+			v = kept[i] + _wrap(kept[i + 1] - kept[i], period) * (p - i)
+		else:
+			v = kept[0]
+		worst = max(worst, abs(_wrap(v - curve[f], period)))
+	return worst
+
+
+def resample_error(curve: list[float], picks: list[int], period: float | None = None) -> float:
+	"""playback_error of keeping only the frames in `picks`."""
+	if len(picks) == len(curve):
+		return 0.0
+	return playback_error(curve, [curve[k] for k in picks], period)
+
+
+def auto_step(curves: list[tuple[list[float], float, float | None]], max_step: int = 8, min_frames: int = 2) -> int:
+	"""Largest frame step (keeping a subset of the original frames) whose
+	playback keeps every curve within its tolerance. `curves` holds
+	(values, tolerance, period or None). Steps that do not divide the frame
+	count leave an uneven last gap, so every step is tried."""
+	n = len(curves[0][0]) if curves else 0
+	best, best_m = 1, n
+	for step in range(2, max_step + 1):
+		picks = _uniform_picks(n, step, min_frames)
+		if len(picks) < best_m and all(resample_error(c, picks, per) <= tol for c, tol, per in curves):
+			best, best_m = step, len(picks)
+	return best
+
+
+def fit_frames(curves: list[tuple[list[float], float, float | None]], max_step: float = 8, min_frames: int = 2) -> int:
+	"""Fewest evenly spaced keys m (resampled, so between original frames
+	when needed) whose playback keeps every curve within tolerance: a
+	bounded-error piecewise-linear fit under the studio format's constraint
+	that keys are uniform in time. Returns n when nothing fewer fits."""
+	n = len(curves[0][0]) if curves else 0
+	if n <= min_frames:
+		return n
+	lo = max(min_frames, math.ceil((n - 1) / max_step) + 1)
+	for m in range(lo, n):
+		if all(playback_error(c, resample(c, m, per), per) <= tol for c, tol, per in curves):
+			return m
+	return n
+
+
+def _to_i16(v: float, period: float | None) -> int:
+	"""Round a resampled raw value back into the int16 stream, wrapping
+	angles a whole turn when that brings them into range."""
+	r = int(round(v))
+	if period and not -32768 <= r <= 32767:
+		r = int(round(v - math.copysign(period, v)))
+	return max(-32768, min(32767, r))
+
+
+def _bone_channels(raw: bytes, bone: int) -> tuple[tuple[float, ...], tuple[float, ...]]:
+	"""(value[6], scale[6]) of mstudiobone_t: rest pose and raw-unit scale."""
+	b = _i(raw, 144) + bone * BONE
+	return struct.unpack_from("<6f", raw, b + 64), struct.unpack_from("<6f", raw, b + 88)
+
+
 def slim_studio(raw: bytes, step: int = 1, stub: list[str] | None = None, keep: list[str] | None = None,
-		min_frames: int = 2, tolerance: int = 0) -> SlimResult:
+		min_frames: int = 2, tolerance: int = 0, fit_deg: float = 0, fit_units: float | None = None,
+		max_step: int = 8) -> SlimResult:
 	"""Decimate (every `step`th frame) or stub (patterns → 1 frame) the
 	animation of seqgroup-0 sequences, and hold values within `tolerance`
-	(raw animation units, see deadband). `keep` patterns are left alone."""
+	(raw animation units, see deadband). With `fit_deg`, each sequence is
+	resampled to the fewest evenly spaced keys (at most `max_step` frames
+	apart) whose playback keeps every bone within fit_deg degrees and
+	fit_units model units (default fit_deg / 10) of the original (see
+	fit_frames). `keep` patterns are left alone."""
 	if not _is_studio(raw):
 		raise ValueError("not a GoldSrc studio model (IDST v10)")
 	stub, keep = stub or [], keep or []
@@ -234,16 +337,34 @@ def slim_studio(raw: bytes, step: int = 1, stub: list[str] | None = None, keep: 
 	for s in sorted(inline, key=lambda s: s.anim_off):
 		n = s.frames
 		tol = 0 if match(s.name, keep) else tolerance
+		fit_m = 0
 		if match(s.name, keep) or n <= min_frames:
 			picks = list(range(n))
 		elif match(s.name, stub):
 			picks = [0]
 		elif step > 1:
-			count = max(min_frames, math.ceil((n - 1) / step) + 1)
-			picks = sorted({min(n - 1, k * step) for k in range(count)} | {n - 1})
+			picks = _uniform_picks(n, step, min_frames)
+		elif fit_deg > 0:
+			units = fit_deg / 10 if fit_units is None else fit_units
+			curves = []
+			for bl in range(s.blends):
+				for bone in range(nbones):
+					scale = _bone_channels(raw, bone)[1]
+					src = s.anim_off + (bl * nbones + bone) * 12
+					for j, o in enumerate(struct.unpack_from("<6H", raw, src)):
+						if o and scale[j]:
+							c = [v * scale[j] for v in _expand(raw, src + o, n)]
+							if j < 3:
+								curves.append((c, units, None))
+							else:
+								curves.append((c, math.radians(fit_deg), 2 * math.pi))
+			m = fit_frames(curves, max_step, min_frames)
+			picks = list(range(n))
+			if m < n:
+				fit_m = m
 		else:
 			picks = list(range(n))
-		new_n = len(picks)
+		new_n = fit_m or len(picks)
 		head = bytearray(s.blends * nbones * 12)
 		data = bytearray()
 		for bl in range(s.blends):
@@ -255,7 +376,13 @@ def slim_studio(raw: bytes, step: int = 1, stub: list[str] | None = None, keep: 
 					if not o:
 						continue
 					full = _expand(raw, src + o, n)
-					q = deadband([full[k] for k in picks], tol)
+					if fit_m:
+						sc = _bone_channels(raw, bone)[1][j]
+						per = 2 * math.pi / abs(sc) if j >= 3 and sc else None
+						vals = [_to_i16(v, per) for v in resample(full, fit_m, per)]
+					else:
+						vals = [full[k] for k in picks]
+					q = deadband(vals, tol)
 					if not any(q):
 						continue
 					rel = len(head) + len(data) - hpos
