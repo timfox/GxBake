@@ -26,6 +26,9 @@ DSP ADPCM sound         port   sound effects and .gcpcm music as DSP ADPCM,
                                the GameCube's hardware sound format (3.5x)
 s16 vertices            port   studio positions as s16 and normals as s8,
                                dequantised for free by Gekko's psq_l loads
+u8 texture coords       port   strip/fan commands whose S/T all fit 0..255
+                               sent as u8 in a second GX vertex format
+                               (lossless: same step; from Lost Coast props)
 CMPR lightmaps          port   static lightmap pages as CMPR, not RGB565 (4x)
 Yaz0 on disc            port   LZ the files the port reads whole
 =====================  =====  ================================================
@@ -279,6 +282,34 @@ def studio_vertex_counts(raw: bytes) -> tuple[int, int]:
 	return nv, nn
 
 
+def studio_texcoord_counts(raw: bytes) -> tuple[int, int]:
+	"""(vertices in the triangle commands, vertices of commands whose S and T
+	all fit 0..255). GoldSrc stores S/T as whole texels in s16, so a command
+	that stays inside 0..255 can go to the GPU as u8 in a second GX vertex
+	format with no loss, 2 bytes a vertex less; Lost Coast's props took 15%
+	off their display lists this way."""
+	total = fit = 0
+	nbody, body = struct.unpack_from("<ii", raw, 204)
+	for bp in range(max(0, nbody)):
+		nmodels, model_off = struct.unpack_from("<i", raw, body + bp * 76 + 64)[0], struct.unpack_from("<i", raw, body + bp * 76 + 72)[0]
+		for m in range(max(0, nmodels)):
+			mb = model_off + m * 112
+			nmesh, mesh_off = struct.unpack_from("<ii", raw, mb + 72)
+			for k in range(max(0, nmesh)):
+				_ntris, tri = struct.unpack_from("<ii", raw, mesh_off + k * 20)
+				while 0 <= tri < len(raw) - 2:
+					n = abs(struct.unpack_from("<h", raw, tri)[0])
+					tri += 2
+					if not n:
+						break
+					st = struct.unpack_from("<%dh" % (4 * n), raw, tri)
+					tri += 8 * n
+					total += n
+					if all(0 <= v <= 255 for i, v in enumerate(st) if i % 4 >= 2):
+						fit += n
+	return total, fit
+
+
 # --- sound -------------------------------------------------------------------
 
 def _pcm16(snd) -> "np.ndarray":
@@ -362,10 +393,17 @@ def analyse_file(path: Path, rel: str, opt: SqueezeOptions) -> list[Saving]:
 						(keys + more) if fit.changed else "no sequence fits fewer keys"))
 			except (ValueError, struct.error) as exc:
 				out.append(Saving("optimal anim runs", True, "MEM1 studio arena", rel, len(data), len(data), "", str(exc)))
-			nv, nn = studio_vertex_counts(data) if not is_tex and opt.on("verts") else (0, 0)
-			if nv:
-				out.append(Saving("s16 vertices", False, "MEM1 studio arena", rel, nv * 12 + nn * 12, nv * 6 + nn * 3,
-					"≤1/65536 of the model's extent", f"{nv} positions, {nn} normals"))
+		nv, nn = studio_vertex_counts(data) if not is_tex and opt.on("verts") else (0, 0)
+		if nv:
+			out.append(Saving("s16 vertices", False, "MEM1 studio arena", rel, nv * 12 + nn * 12, nv * 6 + nn * 3,
+				"≤1/65536 of the model's extent", f"{nv} positions, {nn} normals"))
+			try:
+				tv, fit = studio_texcoord_counts(data)
+			except struct.error:
+				tv = fit = 0
+			if tv:
+				out.append(Saving("u8 texture coords", False, "MEM1 studio arena", rel, tv * 4, tv * 4 - fit * 2,
+					"lossless", f"{fit} of {tv} strip vertices fit u8"))
 		skins = studio_skins(data, min_db=opt.skin_db, viewmodel=Path(rel).name.lower().startswith("v_")) \
 			if opt.on("skins") else []
 		if skins:
