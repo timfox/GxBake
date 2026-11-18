@@ -17,6 +17,7 @@ from typing import Callable
 
 import numpy as np
 
+from . import audit, budget, ff7, ffxi, gct, goldsrc, images, media, models, quake, rose, runescape, skybox, sprite, studio, studio_slim
 from . import audit, budget, gct, goldsrc, images, media, models, particles, quake, rose, runescape, skybox, sprite, studio, studio_slim
 from . import audit, budget, gct, goldsrc, images, media, models, panda, quake, rose, skybox, sprite, studio, studio_slim
 from . import audit, budget, gct, goldsrc, images, media, models, pandaquake, rose, runescape, skybox, sprite, studio, studio_slim
@@ -64,6 +65,12 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.MODEL
 	if runescape.is_cache(path):
 		return Kind.MODEL	# a RuneScape cache: one asset per NPC or model
+	if ext in ffxi.AUDIO_EXTENSIONS:
+		return Kind.AUDIO	# Final Fantasy XI sound effects / music (ADPCM)
+	if ext == ffxi.MANIFEST_EXTENSION or (ext == ".dat" and ffxi.is_model_dat(path)):
+		return Kind.MODEL	# a Final Fantasy XI model DAT
+	if ext in ff7.FF7_EXTENSIONS or (not ext and ff7.is_battle_skeleton(path)):
+		return Kind.MODEL if ff7.is_ff7(path) else Kind.UNKNOWN	# Final Fantasy VII field and battle models
 	if ext == ".mdl":
 		# GoldSrc studio (IDST v10), Source studio (IDST v44-49) and Quake alias (IDPO) share .mdl.
 		head = _head(path)
@@ -132,6 +139,13 @@ class Settings:
 	rs_scale: float = runescape.DEFAULT_SCALE	# RuneScape: GoldSrc units per model unit (128 = one tile)
 	rs_yaw: float = 0.0	# RuneScape: extra turn about Z (models already face GoldSrc's +X)
 	rs_entries: list[str] = field(default_factory=list)	# RuneScape caches: npc:<id> / model:<id> ([] = every named NPC)
+	ffxi_scale: float = ffxi.DEFAULT_SCALE	# Final Fantasy XI: GoldSrc units per FFXI unit
+	ffxi_yaw: float = 0.0	# Final Fantasy XI: extra turn about Z
+	ffxi_skeleton: str = ""	# Final Fantasy XI: race skeleton DAT for equipment/face DATs
+	ff7_scale: float = ff7.DEFAULT_SCALE	# Final Fantasy VII: GoldSrc units per field unit
+	ff7_yaw: float = 0.0	# Final Fantasy VII: extra turn about Z
+	ff7_battle_scale: float = 0.0	# Final Fantasy VII battle models: GoldSrc units per unit (0 = fit to 72 tall)
+	ffxi_music: bool = True	# Final Fantasy XI .bgw music → media/<name>.gcpcm (else a WAV like the .spw effects)
 	spr_scale: int = 2
 	video_width: int = media.GCVID_WIDTH
 	video_height: int = media.GCVID_HEIGHT
@@ -158,6 +172,8 @@ class Settings:
 	def model_options(self) -> models.ModelOptions:
 		return models.ModelOptions(self.model_scale, self.model_up_axis, self.model_skin_max_edge,
 			self.image.alpha_threshold, self.model_anim_fps, self.model_static, self.model_clip_files,
+			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.rs_scale, self.rs_yaw,
+			self.ffxi_scale, self.ffxi_yaw, self.ffxi_skeleton, self.ff7_scale, self.ff7_yaw, self.ff7_battle_scale)
 			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.panda_scale, self.panda_yaw)
 			self.model_blend_bones, self.rose_scale, self.rose_yaw, self.rs_scale, self.rs_yaw)
 
@@ -237,6 +253,15 @@ class Asset:
 		return runescape.is_cache(self.path)
 
 	@property
+	def is_ff7(self) -> bool:
+		return self.path.suffix.lower() in ff7.FF7_EXTENSIONS or ff7.is_battle_skeleton(self.path)
+
+	@property
+	def is_ffxi(self) -> bool:
+		ext = self.path.suffix.lower()
+		return ext == ffxi.MANIFEST_EXTENSION or ext in ffxi.AUDIO_EXTENSIONS or (ext == ".dat" and self.kind == Kind.MODEL)
+
+	@property
 	def size(self) -> int:
 		try:
 			if self.kind == Kind.SKYBOX:
@@ -310,6 +335,8 @@ class Project:
 				return self.add_skybox([path])
 		rel = path.relative_to(root.resolve()).as_posix() if root else None
 		asset = Asset(path, kind, warnings=audit.file_warnings(path, rel))
+		if kind == Kind.MODEL and path.suffix.lower() == ".dat":
+			asset.extra["stem"] = ffxi.dat_stem(path)	# ROM/27/82.DAT → ffxi_rom_27_82
 		self.assets.append(asset)
 		return [asset]
 
@@ -459,6 +486,10 @@ class Project:
 						d["Animation files"] = ", ".join(f.name for _l, f in anims) or "-"
 				elif asset.is_runescape:
 					d["Source"] = "RuneScape cache" + (f", {asset.entry}" if asset.entry is not None else "")
+				elif asset.is_ff7:
+					d["Source"] = "Final Fantasy VII " + ("battle model" if not asset.path.suffix else "field model")
+				elif asset.is_ffxi:
+					d["Source"] = "Final Fantasy XI DAT" if asset.path.suffix.lower() == ".dat" else "Final Fantasy XI manifest"
 			elif asset.kind == Kind.SPR and particles.is_particles(asset.path):
 				d.update(particles.info(asset.path))
 				d["Sprites"] = len(self._particle_sprites(asset))
@@ -635,6 +666,10 @@ class Project:
 				(f.name, f.stat().st_mtime_ns) for _l, f in (panda.animation_files(asset.path) if opts.clip_files else [])))
 		elif asset.is_runescape:
 			clips = (opts.rs_scale, opts.rs_yaw)
+		elif asset.is_ffxi:
+			clips = (opts.ffxi_scale, opts.ffxi_yaw, opts.ffxi_skeleton)
+		elif asset.is_ff7:
+			clips = (opts.ff7_scale, opts.ff7_yaw, opts.ff7_battle_scale)
 		else:
 			clips = tuple((p.name, p.stat().st_mtime_ns) for p in models.clip_files(asset.path)) if opts.clip_files else ()
 		key = (asset.path, asset.entry, mtime, clips, opts.scale, opts.up_axis, opts.skin_max_edge,
@@ -649,6 +684,10 @@ class Project:
 			model = panda.import_panda(asset.path, opts)
 		elif asset.is_runescape:
 			model = runescape.import_runescape(asset.path, opts, asset.entry)
+		elif asset.is_ffxi:
+			model = ffxi.import_ffxi(asset.path, opts)
+		elif asset.is_ff7:
+			model = ff7.import_ff7(asset.path, opts)
 		else:
 			model = models.import_model(asset.path, opts)
 		mdl = models.build_studio_mdl(model, opts)
@@ -690,6 +729,30 @@ class Project:
 				info["Companion"] = f"{res.shape[1]}x{res.shape[0]}"
 			return Preview(child, mat.rgba, res, info)
 		return Preview(asset.name, models.preview_imported(model), models.preview_studio(mdl, comp), info)
+
+	def _ffxi_sound(self, asset: Asset, out_dir: Path, emit, emit_file, log) -> None:
+		"""FFXI .spw effects → fitted sound/ffxi/<name>.wav; .bgw music → media/<name>.gcpcm."""
+		import io
+
+		from . import sfx
+
+		wav, info = ffxi.sound_to_wav(asset.path.read_bytes())
+		log(f"  {info.kind}: {info.channels} ch, {info.rate} Hz, {'ADPCM' if info.format == 0 else 'PCM'}")
+		if info.kind == "music" and self.settings.ffxi_music:
+			pcm = media.wav_to_pcm48k(io.BytesIO(wav))
+			if pcm is None:
+				raise ValueError("could not resample the decoded music")
+			rel = f"media/{asset.stem}.gcpcm"
+			media._write_gcpcm(pcm, out_dir / rel, log)
+			emit_file(asset, rel)
+			return
+		data, rep = sfx.fit_wav_bytes(wav)
+		for step in rep.steps:
+			log(f"  {step}")
+		if not rep.ok:
+			asset.warnings.append(f"still {rep.after // 1024} KiB after fitting; the engine skips WAVs over "
+				f"{sfx.GAMEPLAY_MAX_FILE // 1024} KiB (try gxbake sfx --truncate)")
+		emit(asset, f"sound/ffxi/{asset.stem}.wav", data)
 
 	def _quake_palette(self, asset: Asset) -> bytes:
 		pal = quake.quake_palette(asset.path)
@@ -897,6 +960,8 @@ class Project:
 					emit_file(asset, rel)
 					if s.video_audio and media.build_gcpcm_companion(asset.path, out_dir / f"media/{stem}.gcpcm", log=log):
 						emit_file(asset, f"media/{stem}.gcpcm")
+				elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() in ffxi.AUDIO_EXTENSIONS:
+					self._ffxi_sound(asset, out_dir, emit, emit_file, log)
 				elif asset.kind == Kind.AUDIO and asset.path.suffix.lower() == ".vsnd_c":
 					from . import vsnd
 
@@ -988,6 +1053,9 @@ class Project:
 def _skip_rose_parts(files: list[Path]) -> list[Path]:
 	"""A folder scan of ROSE data keeps the list files (.zsc/.chr) and drops what they
 	reference: loose .zms meshes and .dds textures, and the PART_*.ZSC beside a .chr."""
+	skels = {f.parent for f in files if f.suffix.lower() in (".hrc", ".ff7mdl")}
+	if skels:	# FF7: skeletons draw the .p parts beside them
+		files = [f for f in files if not (f.suffix.lower() == ".p" and f.parent in skels)]
 	lists = [f for f in files if f.suffix.lower() in rose.LIST_EXTENSIONS]
 	if not lists:
 		return files

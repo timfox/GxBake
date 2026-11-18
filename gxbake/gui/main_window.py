@@ -53,6 +53,7 @@ _USD_GLOBS = " ".join(f"*{e}" for e in sorted(models.USD_EXTENSIONS))
 FILE_FILTER = (
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.vmap_c *.vwrld_c *.mdl *.spr *.sp2 *.pcf *.vpcf_c *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
+	f"{_MODEL_GLOBS} {_ROSE_GLOBS} main_file_cache.dat2 main_file_cache.dat *.dat *.ffximdl *.spw *.bgw *.hrc *.p *.ff7mdl);;"
 	f"{_MODEL_GLOBS} {_USD_GLOBS} {_ROSE_GLOBS});;"
 _PANDA_GLOBS = "*.egg *.bam *.pz *.pandactor"
 FILE_FILTER = (
@@ -68,6 +69,9 @@ FILE_FILTER = (
 	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
 	f"ROSE Online models ({_ROSE_GLOBS});;"
 	"RuneScape caches (main_file_cache.dat2 main_file_cache.dat);;"
+	"Final Fantasy XI (*.dat *.ffximdl *.spw *.bgw);;"
+	"Final Fantasy VII field models (*.hrc *.p *.ff7mdl);;"
+	"Final Fantasy VII battle skeletons (*aa);;"
 	"GameCube outputs (*.gct *.cmp *.gcvid *.gcpcm);;All files (*)"
 )
 
@@ -251,6 +255,45 @@ class SettingsPanel(QWidget):
 		f.addRow("Turn (degrees)", self.rs_yaw)
 		outer.addWidget(rsg)
 
+		xi = QGroupBox("Final Fantasy XI (ROM .dat, .ffximdl, .spw/.bgw)")
+		f = QFormLayout(xi)
+		self.ffxi_scale = QDoubleSpinBox()
+		self.ffxi_scale.setRange(0.01, 1000.0)
+		self.ffxi_scale.setDecimals(2)
+		self.ffxi_scale.setValue(settings.ffxi_scale)
+		self.ffxi_scale.setToolTip("GoldSrc units per FFXI unit (taken as a metre; not yet checked against real data).")
+		f.addRow("Units per FFXI unit", self.ffxi_scale)
+		self.ffxi_yaw = QDoubleSpinBox()
+		self.ffxi_yaw.setRange(-180.0, 180.0)
+		self.ffxi_yaw.setDecimals(0)
+		self.ffxi_yaw.setValue(settings.ffxi_yaw)
+		self.ffxi_yaw.setToolTip("Extra turn about the up axis. Models are turned from FFXI's y-down space and assumed to face +X.")
+		f.addRow("Turn (degrees)", self.ffxi_yaw)
+		outer.addWidget(xi)
+
+		f7 = QGroupBox("Final Fantasy VII field and battle models (.hrc, .p, .ff7mdl, <base>aa)")
+		f = QFormLayout(f7)
+		self.ff7_scale = QDoubleSpinBox()
+		self.ff7_scale.setRange(0.01, 1000.0)
+		self.ff7_scale.setDecimals(2)
+		self.ff7_scale.setValue(settings.ff7_scale)
+		self.ff7_scale.setToolTip("GoldSrc units per FF7 field unit. 2.5 makes a field character about 70 units tall (unverified).")
+		f.addRow("Units per FF7 unit", self.ff7_scale)
+		self.ff7_battle_scale = QDoubleSpinBox()
+		self.ff7_battle_scale.setRange(0.0, 100.0)
+		self.ff7_battle_scale.setDecimals(4)
+		self.ff7_battle_scale.setValue(settings.ff7_battle_scale)
+		self.ff7_battle_scale.setSpecialValueText("auto (72 units tall)")
+		self.ff7_battle_scale.setToolTip("Battle models: GoldSrc units per FF7 battle unit. Auto fits each model to 72 units tall.")
+		f.addRow("Battle units per FF7 unit", self.ff7_battle_scale)
+		self.ff7_yaw = QDoubleSpinBox()
+		self.ff7_yaw.setRange(-180.0, 180.0)
+		self.ff7_yaw.setDecimals(0)
+		self.ff7_yaw.setValue(settings.ff7_yaw)
+		self.ff7_yaw.setToolTip("Extra turn about the up axis. Models are turned from FF7's y-down space and assumed to face -Z.")
+		f.addRow("Turn (degrees)", self.ff7_yaw)
+		outer.addWidget(f7)
+
 		vid = QGroupBox("Video and audio")
 		f = QFormLayout(vid)
 		self.vw = self._spin(8, 640, settings.video_width, step=8)
@@ -300,6 +343,7 @@ class SettingsPanel(QWidget):
 				self.model_static, self.model_clips, self.model_blend, self.sky_detect):
 			w.toggled.connect(self._sync)
 		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw,
+				self.rs_scale, self.rs_yaw, self.ffxi_scale, self.ffxi_yaw, self.ff7_scale, self.ff7_battle_scale, self.ff7_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
 				self.panda_scale, self.panda_yaw,
 				self.sky_yaw, self.sky_fov, self.sky_exposure):
 				self.rs_scale, self.rs_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
@@ -370,6 +414,11 @@ class SettingsPanel(QWidget):
 		s.panda_yaw = self.panda_yaw.value()
 		s.rs_scale = self.rs_scale.value()
 		s.rs_yaw = self.rs_yaw.value()
+		s.ffxi_scale = self.ffxi_scale.value()
+		s.ffxi_yaw = self.ffxi_yaw.value()
+		s.ff7_scale = self.ff7_scale.value()
+		s.ff7_yaw = self.ff7_yaw.value()
+		s.ff7_battle_scale = self.ff7_battle_scale.value()
 		s.video_width = self.vw.value()
 		s.video_height = self.vh.value()
 		s.video_fps = self.fps.value()
