@@ -1,4 +1,4 @@
-"""Game archives: Quake/GoldSrc PACK (.pak), Source VPK (v1/v2), PK3/ZIP and Panda3D multifiles (.mf).
+"""Game archives: Quake/GoldSrc PACK (.pak), Source VPK (v1/v2), PK3/ZIP, Final Fantasy VII LGP, and Panda3D multifiles (.mf).
 
 Game content usually ships inside these, so `gxbake extract` unpacks them to
 a folder that `gxbake convert` (or the app) can then take. The Quake palette
@@ -13,6 +13,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+ARCHIVE_EXTENSIONS = {".pak", ".vpk", ".pk3", ".pk4", ".zip", ".lgp"}
+LGP_CREATORS = (b"\0\0SQUARESOFT", b"FICEDULA-LGP")
 ARCHIVE_EXTENSIONS = {".pak", ".vpk", ".pk3", ".pk4", ".zip", ".mf"}
 VPK_SIGNATURE = 0x55AA1234
 MF_MAGIC = b"pmf\0\n\r"
@@ -100,6 +102,57 @@ def _vpk_members(path: Path) -> list[Member]:
 	return out
 
 
+def _lgp_members(path: Path) -> list[Member]:
+	"""FF7 PC .lgp: 12-byte creator, file count, 27-byte TOC entries (name, offset, check, dup id),
+	a 3600-byte lookup table, an optional folder table for duplicate names, then per-file
+	headers (20-byte name, uint32 length) in front of the data."""
+	with path.open("rb") as f:
+		head = f.read(16)
+		if head[:12] not in LGP_CREATORS:
+			raise ValueError(f"{path.name}: not an LGP archive")
+		count = struct.unpack_from("<I", head, 12)[0]
+		toc = f.read(27 * count)
+		if len(toc) < 27 * count:
+			raise ValueError(f"{path.name}: LGP table of contents truncated")
+		entries = []
+		for i in range(count):
+			raw, off, _check, dup = struct.unpack_from("<20sIBH", toc, 27 * i)
+			entries.append([raw.split(b"\0")[0].decode("latin-1"), off, dup])
+		folders: dict[int, str] = {}
+		if any(e[2] for e in entries):
+			try:
+				f.seek(16 + 27 * count + 3600)
+				(n,) = struct.unpack("<H", f.read(2))
+				for _ in range(n):
+					(k,) = struct.unpack("<H", f.read(2))
+					for _ in range(k):
+						folder = f.read(128).split(b"\0")[0].decode("latin-1").replace("\\", "/").strip("/")
+						(idx,) = struct.unpack("<H", f.read(2))
+						if idx < count and folder:
+							folders[idx] = folder
+			except (struct.error, ValueError):
+				folders = {}
+	out = []
+	used: set[str] = set()
+	for i, (name, off, _dup) in enumerate(entries):
+		full = f"{folders[i]}/{name}" if i in folders else name
+		base, n = full, 1
+		while full.lower() in used:	# duplicate names without a folder table: keep them all
+			n += 1
+			stem, dot, ext = base.rpartition(".")
+			full = f"{stem}~{n}.{ext}" if dot else f"{base}~{n}"
+		used.add(full.lower())
+
+		def read(off=off) -> bytes:
+			with path.open("rb") as f:
+				f.seek(off + 20)
+				(size,) = struct.unpack("<I", f.read(4))
+				return f.read(size)
+
+		out.append(Member(full, 0, read))
+	return out
+
+
 def _zip_members(path: Path) -> list[Member]:
 	zf = zipfile.ZipFile(path)
 	return [Member(i.filename, i.file_size, (lambda n=i.filename: zf.read(n)))
@@ -178,6 +231,10 @@ def _mf_encrypted(path: Path, name: str) -> bytes:
 def members(path: Path) -> list[Member]:
 	path = Path(path)
 	with path.open("rb") as f:
+		head = f.read(12)
+	if head in LGP_CREATORS:
+		return _lgp_members(path)
+	head = head[:4]
 		head = f.read(4)
 		if head[:1] == b"#" or head[:3] == b"pmf":
 			f.seek(0)
@@ -190,6 +247,7 @@ def members(path: Path) -> list[Member]:
 		return _vpk_members(path)
 	if head[:2] == b"PK":
 		return _zip_members(path)
+	raise ValueError(f"{path.name}: not a PAK, VPK, PK3/ZIP or LGP archive")
 	raise ValueError(f"{path.name}: not a PAK, VPK, PK3/ZIP or Panda3D multifile")
 
 
