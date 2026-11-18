@@ -815,6 +815,40 @@ def _strips(tris: list[tuple[int, int, int]]) -> list[list[int]]:
 	return out
 
 
+def _first_use_order(positions, vert_bone, normals, norm_bone, meshes):
+	"""Renumber vertices and normals in the order the triangle commands first
+	touch them. The engine transforms every vertex into an array and the
+	commands then read it, so first-use order turns scattered reads into a
+	mostly forward walk (better for Gekko's 32-byte cache lines), and the
+	index stream becomes small forward steps, which compresses better. The
+	geometry and every triangle are unchanged. Normals stay inside their
+	mesh's range (the format stores them per mesh)."""
+	pmap: dict[int, int] = {}
+	nmap: dict[int, int] = {}
+	for _skin, _n, norm_start, strips in meshes:
+		local: list[int] = []
+		used: set[int] = set()
+		for _fan, s in strips:
+			for vi, ni, _s, _t in s:
+				if vi not in pmap:
+					pmap[vi] = len(pmap)
+				if ni not in used:
+					used.add(ni)
+					local.append(ni)
+		rest = [k for k in range(norm_start, norm_start + _n) if k not in used]
+		for k, ni in enumerate(local + rest):
+			nmap[ni] = norm_start + k
+	for vi in range(len(positions)):
+		if vi not in pmap:
+			pmap[vi] = len(pmap)
+	inv_p = sorted(pmap, key=pmap.get)
+	inv_n = sorted(range(len(normals)), key=lambda k: nmap.get(k, k))
+	new_meshes = [(skin, n, start, [(fan, [(pmap[vi], nmap.get(ni, ni), s, t) for vi, ni, s, t in st]) for fan, st in strips])
+		for skin, n, start, strips in meshes]
+	return ([positions[k] for k in inv_p], [vert_bone[k] for k in inv_p], [normals[k] for k in inv_n],
+		[norm_bone[k] for k in inv_n], new_meshes)
+
+
 def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> bytes:
 	"""Bake an imported model into a GoldSrc studio MDL (v10): bones, sequences, meshes, skins."""
 	opts = opts or ModelOptions()
@@ -874,6 +908,8 @@ def build_studio_mdl(model: ImportedModel, opts: ModelOptions | None = None) -> 
 		ntris += len(tris)
 		strips = [(fan, [corner_list[c] for c in s]) for fan, s in _tri_commands(tris)]
 		meshes.append((skin, len(normals) - norm_start, norm_start, strips))
+
+	positions, vert_bone, normals, norm_bone, meshes = _first_use_order(positions, vert_bone, normals, norm_bone, meshes)
 
 	if len(positions) > MAXSTUDIOVERTS:
 		model.warnings.append(f"{len(positions)} vertices exceeds the studio limit of {MAXSTUDIOVERTS}; decimate the source")

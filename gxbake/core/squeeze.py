@@ -398,6 +398,17 @@ def analyse_file(path: Path, rel: str, opt: SqueezeOptions) -> list[Saving]:
 			rgb565 = ln * 2 // 3	# 24-bit samples → 16-bit atlas texels
 			out.append(Saving("CMPR lightmaps", False, "MEM1 lightmap atlas", rel, rgb565, rgb565 // 4,
 				"lossy (DXT1 on smooth gradients)", "estimate from the lighting lump; styled pages stay RGB565"))
+			from .rectpack import lightmap_plan
+
+			try:
+				lp = lightmap_plan(data, min_db=opt.min_db if opt.min_db != float("inf") else 99.0)
+			except (ValueError, struct.error):
+				lp = None
+			if lp and lp.faces:
+				out.append(Saving("lightmap size by error", False, "MEM1 lightmap atlas", rel, lp.luxels * 2,
+					lp.luxels_after * 2, f"flat ±2, half-res ≥{opt.min_db:.0f} dB" if lp.half else "flat ±2",
+					f"{lp.flat}/{lp.faces} faces flat → 1×1, {lp.half} at half resolution; "
+					f"128² pages {lp.pages_before} → {lp.pages_after}", lp.worst_db if lp.half else None))
 	if opt.on("yaz0") and ext in (".gct", ".mdl", ".bsp", ".spr", ".cmp") and len(data) > 4 * KiB:
 		out.append(Saving("Yaz0 on disc", False, "disc + ARAM cache", rel, len(data), _yaz0_estimate(data, opt.yaz0_sample),
 			"lossless"))

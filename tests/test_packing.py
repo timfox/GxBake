@@ -361,3 +361,33 @@ def test_split_cmpr_roundtrip_and_helps_lz():
 	assert len(sp) == len(pack) and sp != pack
 	assert squeeze.split_cmpr(sp, inverse=True) == pack
 	assert gct.read_gct(squeeze.split_cmpr(sp, inverse=True))[0].data == gct.read_gct(pack)[0].data
+
+
+def test_rect_packers_never_overlap_and_meet_the_bound():
+	from gxbake.core import rectpack
+
+	rng = np.random.default_rng(1)
+	sizes = [(int(w), int(h)) for w, h in zip(rng.integers(2, 18, 600), rng.integers(2, 18, 600))]
+	bound = rectpack.lower_bound([(w + 1, h + 1) for w, h in sizes], 128, 128)
+	for method in rectpack.PACKERS:
+		res = rectpack.pack(sizes, 128, 128, method, pad=1)
+		assert not rectpack.overlaps(res) and len(res.placements) == len(sizes)
+		assert all(p.x + p.w < 128 and p.y + p.h < 128 for p in res.placements)
+		assert bound <= res.pages <= bound + 1
+	with pytest.raises(ValueError):
+		rectpack.pack([(200, 4)], 128, 128)
+
+
+def test_lightmap_plan_on_a_lit_map(tmp_path):
+	from gxbake.core import rectpack, s2map
+	from tests import s2map_fixtures
+
+	bsp = s2map.convert(s2map_fixtures.write_map(tmp_path)).bsp
+	sizes = rectpack.goldsrc_lightmap_sizes(bsp)
+	assert sizes and all(2 <= min(s) and max(s) <= 17 for s in sizes)
+	plan = rectpack.lightmap_plan(bsp)
+	assert plan.faces == len(sizes) and plan.flat > 0
+	assert plan.luxels_after < plan.luxels and plan.pages_after <= plan.pages_before
+	assert plan.half == 0 or plan.worst_db >= 40
+	strict = rectpack.lightmap_plan(bsp, min_db=99, flat_tol=0)
+	assert strict.luxels_after >= plan.luxels_after

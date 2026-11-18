@@ -47,6 +47,9 @@ Real, freely licensed assets, not synthetic ones: Kenney's CC0 tiles, sound effe
 | Yaz0 + CMPR split, flat-art pack | yes | 2.0 MiB | 461 KiB | **77 %** | lossless; plain Yaz0 on the same pack: 805 KiB, so 43 % smaller |
 | Deflate (LZ + Huffman) instead of Yaz0, 4 packs and models | yes | 2.2 MiB | 487 KiB | 78 % | lossless; Yaz0: 943 KiB |
 | Duplicate textures, flat-art pack | yes | 21.3 KiB | 10.7 KiB | 50 % of the pair | ≥ 59 dB look-alike in the same pack |
+| Lightmap size by error, GxBake-lit Source 2 test map (24 faces; synthetic light, no real HL map to hand) | yes | 2,981 luxels | 1,022 luxels | 66 % | 14 flat faces → 1×1 within ±2; 4 at half resolution, worst 48 dB |
+| Vertex order by first use, panda | **no** | 2,131 cache-line misses | 1,934 | 9 % fewer misses (simulated 2 KiB LRU, 32-byte lines) | lossless; Yaz0 and deflate 0.1–0.4 % smaller |
+| Atlas packing, sorted skyline vs Quake's allocator, 600–3,000 GoldSrc-sized faces | yes | n pages | n pages | 0 % | both already reach the area lower bound |
 | CMPR endpoint refinement, 158 textures | **no** (`--cmpr-refine`) | same size | same size | 0 % | +0.3 dB median, +0.4 mean, up to +2.4 dB |
 
 What the sound numbers mean: Kenney's effects are synthetic square-wave chiptune, the worst case for any 4-bit ADPCM (22.6 dB on `laser4`). Natural recordings code far better, as the music shows (51.6 dB). Against today's fitter, which drops long sounds to 8-bit at 11 kHz to get under the 20 KiB cap, ADPCM at 22 kHz fits every one of the 55 sounds under the cap with twice the bandwidth.
@@ -152,6 +155,18 @@ A CMPR block is 4 bytes of colour endpoints followed by 4 bytes of 2-bit indices
 
 Yaz0 is LZ with no entropy coding stage, so every literal costs a full byte. Measured on the staged samples, deflate (LZ + Huffman) comes out 10–25 % smaller than Yaz0 on every file type, and LZMA smaller again. On already-dense data Yaz0 is worse than nothing: the 8-bit Kenney sound effects grow by up to 12 % under Yaz0, while deflate still saves a little, so `squeeze` only offers Yaz0 for packs, models, BSPs and sprites. A small inflater (tinf or uzlib, about 2 KiB of code) would be worth it if disc space or ARAM caching becomes the limit; the `deflate on disc` row in `squeeze` shows what it would save.
 
+### Lightmap atlas packing (`rectpack.py`): a measured non-win
+
+Packing face lightmaps into atlas pages is 2D bin packing. `rectpack` has Quake's `AllocBlock` (a per-column skyline, faces in map order), a height-sorted shelf, and a height-sorted skyline, and a lower bound of ceil(total area / page area). On GoldSrc-shaped inputs (hundreds to thousands of rectangles 2–17 luxels a side, 128² pages, 1-luxel border) all three hit the lower bound: the pieces are so small next to the page that only the last page has slack. MaxRects (Best Short Side Fit) was also tried and did worse in a strip and ran about 300× slower. So the atlas is not where lightmap memory goes; the next section is.
+
+### Lightmap resolution by error (`rectpack.lightmap_plan`, `squeeze` row "lightmap size by error")
+
+The same idea as detail mip trim, applied per face. A face whose luxels all sit within ±2 of their mean is one colour, so it can be 1×1. Otherwise the face is resampled to half resolution over the same span (corners kept), interpolated back, and kept at half size when the result is within the PSNR floor (40 dB by default). The port bakes lightmap UVs per vertex in its world display lists, so a face's grid size costs nothing at runtime: only the baker (`bake_worlddl_goldsrc.py` in the port tree) needs to scale those UVs. On the one lit map available here, a GxBake-lit Source 2 test map, it removes 66 % of the luxels. That light is smooth and synthetic; real Half-Life maps have hard shadows, so expect less. Run `squeeze` on a real staged `maps/` folder to measure it.
+
+### Vertex order by first use (`models._first_use_order`, ships today)
+
+The engine transforms every studio vertex into an array, and the triangle commands then read it. GxBake now numbers vertices (and each mesh's normals) in the order the commands first touch them, so the reads walk mostly forward. In a simulated 2 KiB LRU cache with 32-byte lines (Gekko's line size), the panda's command stream misses 9 % less. The model is the same: same triangles, same vertices, different numbering. The index stream also compresses slightly better (0.1–0.4 %).
+
 ### Presets (`squeeze --preset`)
 
 | Preset | Detail trim | Lossy skins | Animation |
@@ -167,7 +182,6 @@ Any explicit option (`--min-db`, `--skin-db`, `--anim-tol`, `--anim-fit`) overri
 - **Lightmaps**: GoldSrc lightmaps are mostly low-saturation. I8 or IA4 intensity with a per-face tint in TEV would be 50–75 % smaller than RGB565 and could be close to invisible; this needs a BSP sample to measure.
 - **Detail split for world textures**: a half-resolution CMPR base times a shared, tiling I4 detail texture in TEV. That is 4× less for the base, at the cost of a second texture stage.
 - **Shared TLUTs across skins**: skins of one model, or the NPCs of one map, drawn from one 256-colour palette (median cut over the union), so TMEM holds one TLUT for all of them. Identical TLUTs are already stored once.
-- **Vertex cache order** (Forsyth/Tipsify) for indexed display lists, and Morton order for vertex arrays, if the port moves studio meshes to `GX_INDEX16` display lists.
-- **Rect packing** (MaxRects or skyline) for the lightmap atlas, which would let more maps fit the 800 KiB window.
+- **Vertex cache order** (Forsyth/Tipsify) for indexed display lists, if the port moves studio meshes to `GX_INDEX16` display lists. Today's software transform path gets first-use order instead (above).
 - **Bit-packed BSP/collision**: plane indices and node children in the narrowest integer that holds them, plane sharing between brushes.
 - **GX index formats**: `GX_INDEX8` vertex indices in display lists when a mesh has under 256 vertices.
