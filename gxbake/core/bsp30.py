@@ -315,7 +315,7 @@ def build_clip_hull(brushes: list[list[tuple["np.ndarray", float]]], hull: int, 
 	b = _HullBuilder(planes)
 	frags = []
 	for sides in brushes:
-		grown = expanded_brush(sides, HULL_SIZES[hull])
+		grown = expanded_brush(sides, HULL_SIZES.get(hull, (0.0, 0.0, 0.0)))
 		if grown:
 			f = b.frag(grown)
 			if f is not None:
@@ -329,6 +329,30 @@ def build_clip_hull(brushes: list[list[tuple["np.ndarray", float]]], hull: int, 
 	for plane, c0, c1 in b.nodes:
 		clipnodes.append([plane, c0 + base if c0 >= 0 else c0, c1 + base if c1 >= 0 else c1])
 	return base + head
+
+
+def point_contents_many(clipnodes: list[list[int]], planes: PlaneTable, head: int, points) -> "np.ndarray":
+	"""hull_contents for many points at once: (n, 3) → (n,) contents."""
+	p = np.asarray(points, np.float64).reshape(-1, 3)
+	out = np.full(len(p), CONTENTS_EMPTY, np.int64)
+	if head < 0:
+		out[:] = head
+		return out
+	cn = np.asarray(clipnodes, np.int64).reshape(-1, 3)
+	normals = np.asarray(planes.normals, np.float64).reshape(-1, 3)
+	dists = np.asarray(planes.dists, np.float64)
+	node = np.full(len(p), head, np.int64)
+	live = np.arange(len(p))
+	while len(live):
+		nd = node[live]
+		pl = cn[nd, 0]
+		d = np.einsum("ij,ij->i", p[live], normals[pl]) - dists[pl]
+		nxt = np.where(d >= 0, cn[nd, 1], cn[nd, 2])
+		node[live] = nxt
+		done = nxt < 0
+		out[live[done]] = nxt[done]
+		live = live[~done]
+	return out
 
 
 def hull_contents(clipnodes: list[list[int]], planes: PlaneTable, head: int, point) -> int:

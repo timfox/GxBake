@@ -58,6 +58,10 @@ class MapOptions:
 	props: bool = True	# prop_static → cycler_sprite entities
 	hulls: bool = True	# build clip hulls 1-3 (slow on big maps; off gives point-only collision)
 	search: list[Path] = field(default_factory=list)	# extra game folders or _dir.vpk files
+	# Source 2 maps only: they carry no lightmaps GxBake can read, so light is recomputed
+	ambient: float = 0.25	# light everywhere, as a share of full bright
+	shadows: bool = True	# trace shadows from the sun and lights through the collision
+	max_collision: int = 4000	# collision pieces kept for the clip hulls (largest first)
 
 
 @dataclass

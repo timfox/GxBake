@@ -14,6 +14,7 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | WAD3, Quake WAD2 | `media/<wad>.gct` | `wt_read_miptex`, `wt_encode` |
 | BSP v30, Quake BSP v29 | `media/wt_<map>.gct` (world textures resolved through the map's WADs, or embedded with the Quake palette) and its sky | `build_world_texture_packs`, `wt_read_wads` |
 | Source BSP v19–21 (`VBSP`) | `maps/<map>.bsp` rebuilt as BSP30, plus its `media/wt_<map>.gct` and `media/sky_<sky>*.cmp` | `source_map.convert` |
+| Source 2 map (`<map>.vmap_c` or `maps/<map>/world.vwrld_c`) | the same `maps/<map>.bsp`, world pack and sky | `s2map.convert` |
 | Studio `.mdl` | `gc_studio/<name>.mdl` (lean mesh) and `gc_studio/<name>t.mdl` (downsampled skins) | `lean_studio_mesh_bytes`, `lean_studio_tex_companion_bytes` |
 | 3D models via Assimp (OBJ, FBX, glTF/GLB, DAE, 3DS, Blend, MD2/MD3/MD5, IQM, B3D, SMD, MS3D and ~25 more) | `models/<name>.mdl` (studio MDL v10 with bones, sequences and paletted skins), then the same `gc_studio/<name>.mdl` + `<name>t.mdl` as a studio model | `models.import_model`, `models.build_studio_mdl`, then the two functions above |
 | Source `.mdl` (v44–49) + `.vvd` + `.vtx`, Quake `.mdl` | the same `models/` and `gc_studio/` outputs as an Assimp model | `source_mdl.import_source`, `quake.import_alias`, then `models.build_studio_mdl` |
@@ -135,7 +136,14 @@ GxBake reads Source 2's compiled resources (the `_c` files inside a Source 2 `.v
 - **Textures** (`.vtex_c`): DXT1/DXT5, BC4/BC5 (ATI1N/ATI2N), BC7, the 8-bit orders, I8/IA88/A8, 16- and 32-bit float (tone-mapped), and textures stored as PNG, JPEG or WebP; YCoCg-encoded colour and compressed mips are handled. The top mip of the first face goes into the pack.
 - **Sounds** (`.vsnd_c`): 8/16-bit PCM and Microsoft ADPCM decode directly, MP3 through `ffmpeg`. The result is resampled to 22050 Hz at most and written as `sound/<name>.wav`; `gxbake sfx` then fits it under the port's per-file cap.
 
-Not converted yet: Source 2 maps (`.vmap_c`/`.vwrld_c`, planned to become BSP30), BC6H and ETC2 textures, cubemap skies (only the first face is packed), physics, morphs, cloth, bodygroups other than the default, and animation-graph (AG2) clips. Readers follow [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- **Maps** (`<map>.vmap_c`, or `maps/<map>/world.vwrld_c` with its `worldnodes/` and `entities/`) become BSP30 like Source 1 maps, but a Source 2 map has no BSP tree, brushes or lightmaps the port can use, so GxBake builds them:
+  - Every scene object and aggregate fragment of the world nodes is placed in world space (LOD 0, tool materials dropped). Coplanar neighbouring triangles with the same texture mapping are merged into convex faces and cut at 16 luxels; texture vectors come from the mesh UVs, with textures scaled to about a texel per unit (`--map-texture-max`).
+  - The tree is an axis-aligned split of the faces into empty leafs, all visible from each other.
+  - Collision comes from `world_physics` (convex hulls become brushes, triangle meshes become thin slabs under each face; trigger and NPC-clip shapes are skipped), or from the render faces when there is none. At most 4000 pieces are kept, largest first.
+  - Light is recomputed per luxel from `light_environment`, the point and spot lights and an ambient term, with shadows traced through the collision (`--no-map-shadows` skips the tracing). Source 2's own lightmaps are not read.
+  - Entity lumps (KeyValues3 and the older hashed binary records) are read. Brush entities whose model lives under `maps/<map>/entities/` become inline models `*N` with their own faces and hulls (triggers keep only their bounds), props become `cycler_sprite` entities naming `models/<name>.mdl`, spawns are adapted as for Source 1, and the `env_sky` cubemap is rendered into the port's six sky sides.
+
+Not converted yet: Source 2 lightmaps and light probes, water volumes, decals and overlays, BC6H and ETC2 textures, cubemap skies (only the first face is packed), physics, morphs, cloth, bodygroups other than the default, and animation-graph (AG2) clips. Readers follow [ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 **Quake**: alias models (`.mdl`, IDPO v6) convert their first frame and first skin, since studio models can't morph vertices (the inspector says how many frames there were). BSP v29 world textures and WAD2 miptex carry no palette, so GxBake reads `gfx/palette.lmp` from the game folder or from a `pak*.pak` there. Quake sprites (v1) become Half-Life sprites with that palette and index 255 transparent.
 
@@ -207,7 +215,7 @@ The executable opens the app when run with no arguments or with file paths. With
 
 ## Layout
 
-- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`, and `source_bsp`, `source_map`, `bsp30`, and for Source 2 `vres`, `kv3`, `kv3text`, `valvecomp`, `vtex`, `vsnd`, `vmdl`, `vanim`).
+- `gxbake/core/`: the pipeline as a library, with no Qt dependency (`budget`, `sfx`, `disc`, `studio_slim`, `packtool`, `skybox`, `cmpr`, `gct`, `goldsrc`, `images`, `studio`, `models`, `skeleton`, `sprite`, `media`, `audit`, `project`, and the native readers `source_mdl`, `vtf`, `quake`, `archives`, `rose`, `runescape`, and `source_bsp`, `source_map`, `bsp30`, and for Source 2 `vres`, `vents`, `s2map`, `kv3`, `kv3text`, `valvecomp`, `vtex`, `vsnd`, `vmdl`, `vanim`).
 - `gxbake/gui/`: the PySide6 front end.
 - `gxbake/cli.py`: the command line.
-- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, a Source map in `s1_fixtures.py`, Source 2 resources in `s2_fixtures.py`, RuneScape caches in `rs_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.
+- `tests/`: builds synthetic WAD, BSP, MDL and SPR files (and Source, Quake and Quake II ones in `game_fixtures.py`, a Source map in `s1_fixtures.py`, Source 2 resources in `s2_fixtures.py` and a Source 2 map in `s2map_fixtures.py`, RuneScape caches in `rs_fixtures.py`), so no game data is needed. Set `GXBAKE_UPSTREAM_SCRIPT=/path/to/scripts/build-gamecube-disc.py` to also check byte-for-byte parity with the disc builder.

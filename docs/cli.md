@@ -42,8 +42,8 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
     [--rs-entry KIND:ID] [--video-width VIDEO_WIDTH] [--video-height VIDEO_HEIGHT] [--video-fps
     VIDEO_FPS] [--fit-world] [--wt-pool WT_POOL] [--wad-dir WAD_DIR] [--game-dir DIR_OR_VPK]
     [--map-texture-max MAP_TEXTURE_MAX] [--map-disp-power {0,1,2,3,4}] [--no-map-hulls]
-    [--no-map-props] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW] [--sky-fov SKY_FOV]
-    [--sky-exposure SKY_EXPOSURE]
+    [--no-map-shadows] [--no-map-props] [--cache CACHE] [--no-sky-detect] [--sky-yaw SKY_YAW]
+    [--sky-fov SKY_FOV] [--sky-exposure SKY_EXPOSURE]
 ```
 
 | Argument | Default | Description |
@@ -83,6 +83,7 @@ gxbake convert paths [paths ...] --output OUTPUT [--max-edge MAX_EDGE] [--no-mip
 | `--map-texture-max MAP_TEXTURE_MAX` | `256` | Source maps: largest embedded texture side |
 | `--map-disp-power {0,1,2,3,4}` | `2` | Source maps: displacement detail kept (2 = 5x5 vertices per displacement) |
 | `--no-map-hulls` |  | Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0) |
+| `--no-map-shadows` |  | Source 2 maps: light without tracing shadows (faster) |
 | `--no-map-props` |  | Source maps: don't turn prop_static into cycler_sprite entities |
 | `--cache CACHE` |  | CMPR encode cache folder |
 | `--no-sky-detect` |  | keep big 2:1 images, crosses, strips and .hdr files as textures instead of making skies of them |

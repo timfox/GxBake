@@ -70,6 +70,8 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.MDL
 	if ext == ".sp2":
 		return Kind.SPR
+	if path.name.lower().endswith((".vmap_c", ".vwrld_c")):
+		return Kind.BSP	# a compiled Source 2 map, rebuilt as BSP30
 	if ext in images.IMAGE_EXTENSIONS:
 		return Kind.IMAGE
 	if ext in media.VIDEO_EXTENSIONS:
@@ -134,6 +136,7 @@ class Settings:
 	map_props: bool = True	# Source maps: prop_static → cycler_sprite entities
 	map_texture_max: int = 256	# Source maps: largest embedded texture
 	map_disp_power: int = 2	# Source maps: displacement detail kept (0-4)
+	map_shadows: bool = True	# Source 2 maps: trace shadows when relighting
 
 	def sky_options(self, layout: str = "auto") -> skybox.SkyOptions:
 		return skybox.SkyOptions(layout=layout, yaw=self.sky_yaw, fov=self.sky_fov, exposure=self.sky_exposure, size=self.sky_size)
@@ -150,7 +153,7 @@ class Settings:
 		from .source_map import MapOptions
 
 		return MapOptions(max_texture=self.map_texture_max, disp_power=self.map_disp_power, props=self.map_props,
-			hulls=self.map_hulls, search=[Path(p) for p in self.source_dirs])
+			hulls=self.map_hulls, shadows=self.map_shadows, search=[Path(p) for p in self.source_dirs])
 
 	def to_json(self) -> dict:
 		d = asdict(self)
@@ -204,7 +207,12 @@ class Asset:
 	@property
 	def stem(self) -> str:
 		"""Output file stem."""
-		return self.extra.get("stem") or self.path.stem.lower()
+		if self.extra.get("stem"):
+			return self.extra["stem"]
+		low = self.path.name.lower()
+		if low.endswith(".vwrld_c"):
+			return self.path.parent.name.lower()
+		return self.path.stem.lower()
 
 	@property
 	def is_rose(self) -> bool:
@@ -433,9 +441,9 @@ class Project:
 
 				d.update(vsnd.load(asset.path).info())
 			elif asset.kind == Kind.BSP and self._is_source_map(asset):
-				from . import source_map
+				from . import s2map, source_map
 
-				d.update(source_map.map_info(asset.path))
+				d.update((s2map if s2map.is_source2_map(asset.path) else source_map).map_info(asset.path))
 				conv = self.source_map(asset)
 				d["Converted"] = ", ".join(f"{v} {k}" for k, v in conv.stats.items())
 				d["Sky"] = conv.sky or "-"
@@ -850,16 +858,19 @@ class Project:
 
 	@staticmethod
 	def _is_source_map(asset: Asset) -> bool:
-		return asset.kind == Kind.BSP and _head(asset.path, 4) == b"VBSP"
+		if asset.kind != Kind.BSP:
+			return False
+		return asset.path.name.lower().endswith((".vmap_c", ".vwrld_c")) or _head(asset.path, 4) == b"VBSP"
 
 	def source_map(self, asset: Asset, log: Log = lambda _m: None):
-		"""The Source map converted to BSP30 (cached on the asset)."""
-		from . import source_map
+		"""The Source 1 or Source 2 map converted to BSP30 (cached on the asset)."""
+		from . import s2map, source_map
 
 		key = ("source_map", json.dumps(asdict(self.settings.map_options()), default=str))
 		cached = asset.extra.get("source_map")
 		if cached is None or cached[0] != key:
-			cached = (key, source_map.convert(asset.path, self.settings.map_options(), log=log))
+			conv = s2map.convert if s2map.is_source2_map(asset.path) else source_map.convert
+			cached = (key, conv(asset.path, self.settings.map_options(), log=log))
 			asset.extra["source_map"] = cached
 		return cached[1]
 

@@ -33,6 +33,7 @@ def _convert(args) -> int:
 	s.map_props = not args.no_map_props
 	s.map_texture_max = args.map_texture_max
 	s.map_disp_power = args.map_disp_power
+	s.map_shadows = not args.no_map_shadows
 	s.image.max_edge = args.max_edge
 	s.image.mipmaps = not args.no_mipmaps
 	s.image.alpha = args.alpha
@@ -511,6 +512,8 @@ def build_parser() -> argparse.ArgumentParser:
 		help="Source maps: displacement detail kept (2 = 5x5 vertices per displacement)")
 	c.add_argument("--no-map-hulls", action="store_true",
 		help="Source maps: skip building collision hulls 1-3 (faster; players then only collide with hull 0)")
+	c.add_argument("--no-map-shadows", action="store_true",
+		help="Source 2 maps: light without tracing shadows (faster)")
 	c.add_argument("--no-map-props", action="store_true", help="Source maps: don't turn prop_static into cycler_sprite entities")
 	c.add_argument("--cache", help="CMPR encode cache folder")
 	c.add_argument("--no-sky-detect", action="store_true",
