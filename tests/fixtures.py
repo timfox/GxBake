@@ -30,7 +30,24 @@ def miptex(name: str, w: int, h: int, seed: int = 0, embed: bool = True) -> byte
 	return head + struct.pack("<4I", *offs) + b"".join(mips) + struct.pack("<H", 256) + palette(seed) + b"\0\0"
 
 
-def wad3(textures: dict[str, bytes]) -> bytes:
+def qpic(w: int, h: int, seed: int = 0) -> bytes:
+	"""A WAD3 picture lump (kind 0x42) with a see-through border of index 255."""
+	pix = np.full((h, w), 255, np.uint8)
+	pix[1:-1, 1:-1] = (np.arange(w - 2)[None] + np.arange(h - 2)[:, None]) % 200
+	return struct.pack("<ii", w, h) + pix.tobytes() + struct.pack("<H", 256) + palette(seed)
+
+
+def font(row_height: int = 8, seed: int = 0) -> bytes:
+	"""A WAD3 console font lump (kind 0x46): 256 wide, 16 glyphs a row, 16 rows."""
+	h = row_height * 16
+	pix = np.full((h, 256), 255, np.uint8)
+	pix[::2, ::3] = 7
+	glyphs = b"".join(struct.pack("<hh", (c // 16) * row_height * 256 + (c % 16) * 16, 16) for c in range(256))
+	return struct.pack("<iiii", 256, h, 16, row_height) + glyphs + pix.tobytes() + struct.pack("<H", 256) + palette(seed)
+
+
+def wad3(textures: dict[str, bytes], kinds: dict[str, int] | None = None) -> bytes:
+	"""kinds maps a lump name to its type (default 0x43 miptex; 0x42 qpic, 0x46 font)."""
 	body = bytearray(b"WAD3" + struct.pack("<ii", 0, 0))
 	entries = []
 	for name, data in textures.items():
@@ -38,7 +55,8 @@ def wad3(textures: dict[str, bytes]) -> bytes:
 		body += data
 	table = len(body)
 	for pos, size, name in entries:
-		body += struct.pack("<iiibbh16s", pos, size, size, 0x43, 0, 0, name.encode()[:15])
+		kind = (kinds or {}).get(name, 0x43)
+		body += struct.pack("<iiibbh16s", pos, size, size, kind, 0, 0, name.encode()[:15])
 	struct.pack_into("<ii", body, 4, len(entries), table)
 	return bytes(body)
 
@@ -378,3 +396,34 @@ def box(center, half) -> tuple[np.ndarray, np.ndarray]:
 	tris = np.array([[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1],
 		[2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]])
 	return corners, tris
+
+
+# -- Panda3D ------------------------------------------------------------------
+
+
+def panda_multifile(files: dict[str, bytes], compress: bool = False, prefix: bytes = b"") -> bytes:
+	"""A Panda3D multifile v1.1 (the phase_N.mf layout): linked index entries, names XOR 0xff,
+	offsets from the start of the file (scale factor 1)."""
+	import zlib
+
+	out = bytearray(prefix + b"pmf\0\n\r" + struct.pack("<hhII", 1, 1, 1, 0))
+	entries = []
+	for name, body in files.items():
+		stored = zlib.compress(body) if compress else body
+		raw_name = bytes(b ^ 0xFF for b in name.encode())
+		entries.append((body, stored, raw_name))
+	sizes = [14 + (4 if compress else 0) + 6 + len(e[2]) for e in entries]
+	idx = [len(out) + sum(sizes[:i]) for i in range(len(entries))]
+	end = len(out) + sum(sizes)
+	data_at = end + 4
+	for i, (body, stored, raw_name) in enumerate(entries):
+		nxt = idx[i + 1] if i + 1 < len(entries) else end
+		start = data_at + sum(len(e[1]) for e in entries[:i])
+		rec = struct.pack("<IIIH", nxt, start, len(stored), 0x8 if compress else 0)
+		if compress:
+			rec += struct.pack("<I", len(body))
+		out += rec + struct.pack("<IH", 0, len(raw_name)) + raw_name
+	out += struct.pack("<I", 0)
+	for _body, stored, _n in entries:
+		out += stored
+	return bytes(out)

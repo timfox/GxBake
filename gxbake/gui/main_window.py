@@ -38,20 +38,33 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..core import audit, images, media, models, rose
+from ..core import audit, images, media, models, panda, rose
 from ..core.project import CONVERTIBLE, Asset, Kind, Project, Settings
 from .widgets import ImagePane, Task
 
 ASSET_ROLE = Qt.ItemDataRole.UserRole
 CHILD_ROLE = Qt.ItemDataRole.UserRole + 1
 HAS_CHILDREN = {Kind.WAD, Kind.BSP, Kind.GCT, Kind.MDL, Kind.MODEL, Kind.SKYBOX}
-_MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS))
+_MODEL_GLOBS = " ".join(f"*{e}" for e in sorted(models.MODEL_EXTENSIONS | models.SOURCE2_MODEL_EXTENSIONS | models.DMX_MODEL_EXTENSIONS))
 _IMAGE_GLOBS = " ".join(f"*{e}" for e in sorted(images.IMAGE_EXTENSIONS))
 _AUDIO_GLOBS = " ".join(f"*{e}" for e in sorted(media.AUDIO_EXTENSIONS))
 _ROSE_GLOBS = " ".join(f"*{e}" for e in sorted(rose.ROSE_EXTENSIONS))
+_USD_GLOBS = " ".join(f"*{e}" for e in sorted(models.USD_EXTENSIONS))
 FILE_FILTER = (
+	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.vmap_c *.vwrld_c *.mdl *.spr *.sp2 *.pcf *.vpcf_c *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
 	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
 	f"{_MODEL_GLOBS} {_ROSE_GLOBS} main_file_cache.dat2 main_file_cache.dat *.dat *.ffximdl *.spw *.bgw *.hrc *.p *.ff7mdl);;"
+	f"{_MODEL_GLOBS} {_USD_GLOBS} {_ROSE_GLOBS});;"
+_PANDA_GLOBS = "*.egg *.bam *.pz *.pandactor"
+FILE_FILTER = (
+	f"Source assets ({_IMAGE_GLOBS} *.wad *.bsp *.mdl *.spr *.sp2 *.avi *.mp4 *.mkv *.mov *.webm {_AUDIO_GLOBS} "
+	f"{_MODEL_GLOBS} {_ROSE_GLOBS} {_PANDA_GLOBS});;"
+	f"3D models via Assimp ({_MODEL_GLOBS});;"
+	f"USD scenes via FreeUSD ({_USD_GLOBS});;"
+	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
+	f"ROSE Online models ({_ROSE_GLOBS});;"
+	f"Panda3D and Toontown models ({_PANDA_GLOBS});;"
+	f"{_MODEL_GLOBS} {_ROSE_GLOBS} main_file_cache.dat2 main_file_cache.dat);;"
 	f"3D models via Assimp ({_MODEL_GLOBS});;"
 	"Source, Quake and Quake II (*.mdl *.vtf *.bsp *.wad *.spr *.sp2 *.wal);;"
 	f"ROSE Online models ({_ROSE_GLOBS});;"
@@ -145,7 +158,7 @@ class SettingsPanel(QWidget):
 		f.addRow("Sprite scale ÷", self.spr_scale)
 		outer.addWidget(mdl)
 
-		imp = QGroupBox("3D model import (Assimp, Source, Quake)")
+		imp = QGroupBox("3D model import (Assimp, USD, Source, Quake)")
 		f = QFormLayout(imp)
 		if not models.available():
 			warn = QLabel("assimp-py is not installed, so OBJ/FBX/glTF files can't be read.\npip install assimp-py")
@@ -153,6 +166,12 @@ class SettingsPanel(QWidget):
 			f.addRow(warn)
 		elif not models.skeletal_supported():
 			warn = QLabel("This assimp-py has no bone API (needs 1.2+ on Python 3.12+);\nmodels import static.")
+			warn.setStyleSheet("color: #d9a63c;")
+			f.addRow(warn)
+		from ..core import usd as _usd
+
+		if not _usd.available():
+			warn = QLabel("FreeUSD is not installed, so .usd/.usda/.usdz files can't be read.\npip install 'gxbake[usd]'")
 			warn.setStyleSheet("color: #d9a63c;")
 			f.addRow(warn)
 		self.model_scale = QDoubleSpinBox()
@@ -202,6 +221,23 @@ class SettingsPanel(QWidget):
 		f.addRow("Turn (degrees)", self.rose_yaw)
 		outer.addWidget(ro)
 
+		pa = QGroupBox("Panda3D and Toontown models (.egg .bam .pandactor)")
+		f = QFormLayout(pa)
+		self.panda_scale = QDoubleSpinBox()
+		self.panda_scale.setRange(0.01, 1000.0)
+		self.panda_scale.setDecimals(2)
+		self.panda_scale.setValue(settings.panda_scale)
+		self.panda_scale.setToolTip("GoldSrc units per Panda unit. Toontown's unit is a foot, so 12 keeps GoldSrc's inch scale.")
+		f.addRow("Units per Panda unit", self.panda_scale)
+		self.panda_yaw = QDoubleSpinBox()
+		self.panda_yaw.setRange(-180.0, 180.0)
+		self.panda_yaw.setDecimals(0)
+		self.panda_yaw.setValue(settings.panda_yaw)
+		self.panda_yaw.setToolTip("Turn about the up axis. Panda models face +Y; -90 makes them face GoldSrc's +X.")
+		f.addRow("Turn (degrees)", self.panda_yaw)
+		if not panda.bam_available():
+			f.addRow(QLabel(".bam needs Panda3D (pip install panda3d) or bam2egg on PATH; .egg works as is."))
+		outer.addWidget(pa)
 		rsg = QGroupBox("RuneScape caches (main_file_cache.dat2 / .dat)")
 		f = QFormLayout(rsg)
 		self.rs_scale = QDoubleSpinBox()
@@ -308,6 +344,9 @@ class SettingsPanel(QWidget):
 			w.toggled.connect(self._sync)
 		for w in (self.threshold, self.vw, self.vh, self.fps, self.model_scale, self.model_fps, self.rose_scale, self.rose_yaw,
 				self.rs_scale, self.rs_yaw, self.ffxi_scale, self.ffxi_yaw, self.ff7_scale, self.ff7_battle_scale, self.ff7_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
+				self.panda_scale, self.panda_yaw,
+				self.sky_yaw, self.sky_fov, self.sky_exposure):
+				self.rs_scale, self.rs_yaw, self.sky_yaw, self.sky_fov, self.sky_exposure):
 			w.valueChanged.connect(self._sync)
 		self.pack_name.editingFinished.connect(self._sync)
 		self.cache.editingFinished.connect(self._sync)
@@ -371,6 +410,8 @@ class SettingsPanel(QWidget):
 		s.model_blend_bones = self.model_blend.isChecked()
 		s.rose_scale = self.rose_scale.value()
 		s.rose_yaw = self.rose_yaw.value()
+		s.panda_scale = self.panda_scale.value()
+		s.panda_yaw = self.panda_yaw.value()
 		s.rs_scale = self.rs_scale.value()
 		s.rs_yaw = self.rs_yaw.value()
 		s.ffxi_scale = self.ffxi_scale.value()
