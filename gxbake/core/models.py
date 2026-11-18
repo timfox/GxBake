@@ -301,10 +301,8 @@ def import_model(path: Path, opts: ModelOptions | None = None) -> ImportedModel:
 	"""Read a model into triangulated submeshes, bones and sequences.
 
 	Source (.mdl v44-49), Source 2 (.vmdl_c, .vmesh_c), DMX model sources and
-	Quake (.mdl IDPO) models are parsed natively;
-	everything else goes through Assimp.
-	Source (.mdl v44-49) and Quake (.mdl IDPO) models are parsed natively,
-	USD stages go through FreeUSD, and everything else goes through Assimp.
+	Quake (.mdl IDPO) models are parsed natively, USD stages go through
+	FreeUSD, and everything else goes through Assimp.
 	"""
 	opts = opts or ModelOptions()
 	path = Path(path)

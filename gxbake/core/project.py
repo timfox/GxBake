@@ -91,10 +91,10 @@ def detect_kind(path: Path) -> Kind:
 		return Kind.VIDEO
 	if ext in media.AUDIO_EXTENSIONS:
 		return Kind.AUDIO
-	if ext in models.MODEL_EXTENSIONS or ext in models.SOURCE2_MODEL_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
+	if (ext in models.MODEL_EXTENSIONS or ext in models.SOURCE2_MODEL_EXTENSIONS or ext in models.USD_EXTENSIONS
+			or ext in rose.ROSE_EXTENSIONS):
 		return Kind.MODEL
 	if ext == ".dmx" and models.native_format(path) == "dmx":
-	if ext in models.MODEL_EXTENSIONS or ext in models.USD_EXTENSIONS or ext in rose.ROSE_EXTENSIONS:
 		return Kind.MODEL
 	return {
 		".wad": Kind.WAD,
@@ -249,6 +249,8 @@ class Asset:
 	@property
 	def is_panda(self) -> bool:
 		return panda.is_panda(self.path)
+
+	@property
 	def is_runescape(self) -> bool:
 		return runescape.is_cache(self.path)
 
@@ -477,7 +479,7 @@ class Project:
 				d["Studio MDL"] = audit.human_bytes(len(mdl))
 				if asset.is_rose:
 					d["Source"] = "ROSE Online" + (f", entry {asset.entry}" if asset.entry is not None else "")
-				if asset.is_panda:
+				elif asset.is_panda:
 					kind = panda._kind(asset.path)
 					d["Source"] = {".egg": "Panda3D egg", ".bam": "Panda3D bam", ".pandactor": "Panda3D multi-part actor"}[kind]
 					d["Joints"] = ", ".join(b.name for b in model.bones[1:]) or "-"
