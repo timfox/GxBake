@@ -476,8 +476,8 @@ def build_parser() -> argparse.ArgumentParser:
 	c.add_argument("--mdl-anim-step", type=int, default=1,
 		help="keep every Nth animation frame in gc_studio/<name>.mdl (seqgroup 0 only)")
 	c.add_argument("--spr-scale", type=int, default=2, help="sprite downscale factor")
-	c.add_argument("--model-scale", type=float, default=1.0, help="3D model import: source units → GoldSrc units")
-	c.add_argument("--model-up", choices=("y", "z"), default="y", help="3D model import: source up axis")
+	c.add_argument("--model-scale", type=float, default=1.0, help="3D model import: source units → GoldSrc units (USD: multiplies the stage's metersPerUnit scale)")
+	c.add_argument("--model-up", choices=("y", "z"), default="y", help="3D model import: source up axis (USD files use their own upAxis)")
 	c.add_argument("--model-skin-max-edge", type=int, default=256, help="3D model import: largest skin side in models/<name>.mdl")
 	c.add_argument("--no-model-full", action="store_true", help="skip models/<name>.mdl for imported 3D models")
 	c.add_argument("--model-static", action="store_true", help="3D model import: ignore skeletons and animations")

@@ -55,6 +55,9 @@ gxbake convert src/valve -o staged/valve --cache ~/.cache/gxbake \
 - `--mdl-anim-step 2` halves the animation frames in every `gc_studio` model (see step 6).
 - `--cache` keeps encoded CMPR between runs, so a second run only encodes what changed.
 
+New models can come from any format Assimp reads, and USD stages (`.usda`, `.usdz`)
+come in through FreeUSD once the `usd` extra is installed; see [USD import](usd.md).
+
 ### Skies
 
 A map's sky comes from `gfx/env/<skyname><side>.tga` when the BSP is converted.
