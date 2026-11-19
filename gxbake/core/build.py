@@ -51,6 +51,15 @@ Manifest (TOML or JSON), paths relative to the manifest:
 	combine = "cam_c1a0.gcam"   # every clip in one file (default: one .gcam per source)
 	pos_tol = 0.25          # GoldSrc units; rot_tol (degrees), fov_tol (degrees)
 	max_bytes = "4K"        # loosen the tolerances until the file fits
+	[[gi]]                  # GoldSrc BSPs → radiosity lightmaps (docs/gi.md)
+	inputs = ["maps/*.bsp"]
+	bounces = 3             # light bounces between surfaces
+	rad = "lights.rad"      # texture lights
+	ao = 0.5                # ambient occlusion on indirect and sky light
+	budget = "800K"         # per map; each map is its own group
+
+Lightmap atlases are per map (the port loads one map's at a time), so every
+BSP of a [[gi]] rule is placed against its own budget, default 800 KiB.
 """
 
 from __future__ import annotations
@@ -71,7 +80,8 @@ from .budget import parse_size
 
 STATE_FILE = ".gxbake-build.json"
 CONTAINERS = ("tpl", "bti", "gct")
-RULE_KINDS = ("textures", "pbr", "hdr", "sphere", "sky", "camera")
+RULE_KINDS = ("textures", "pbr", "hdr", "sphere", "sky", "camera", "gi")
+GI_BUDGET = "800K"	# the port's lightmap atlas window (vid_gamecube.c GC_PackCapLightmapAtlas)
 
 
 @dataclass
@@ -472,11 +482,35 @@ def camera_units(rule: Rule, root: Path, out: Path, defaults: dict, preview: Pat
 		notes = [f"{camera.clip_name(e.path.name)}: {n}" for e in o.clips for n in e.path.notes]
 		units.append(Unit("camera", o.path.name, [], write_cam, o.inputs, fixed_bytes=len(o.data), notes=notes,
 			info={"clips": [camera.describe(e) for e in o.clips]}))
+def gi_units(rule: Rule, root: Path, out: Path, defaults: dict, preview: Path | None = None, log=None) -> list[Unit]:
+	"""Radiosity lightmaps: each BSP is baked here, its atlas pages become jobs, and the writer
+	saves the relit BSP, the TPL pages, the .gclm face table and the .gxm."""
+	from . import radiosity
+
+	g = {**{k: v for k, v in defaults.items() if k == "min_db"}, **rule.options}
+	g.setdefault("min_db", 40.0)
+	settings = radiosity.atlas_settings(g)
+	units = []
+	for f, _b in expand(rule.inputs, root, {".bsp"}):
+		opts = radiosity.options_from(g, root, log)
+		name = safe_name(f.stem)
+		b, at, jobs = radiosity.prepare(f, opts, name=name, **settings)
+
+		def write_gi(placed, b=b, at=at, name=name):
+			files, report = radiosity.write_outputs(b, at, placed, out, name, write_bsp=settings["write_bsp"],
+				gamma_bsp=opts.gamma, atlas_gamma=settings["atlas_gamma"], preview=preview is not None)
+			return [Written(p, n, k) for p, n, k in files]
+
+		notes = list(b.stats["notes"])
+		if at is not None:
+			notes.append(f"{len(at.sizes)} page(s) {', '.join(f'{w}x{h}' for w, h in at.sizes)}, light stored ÷{at.scale} "
+				f"(TEV ×{at.scale}), {at.stats['stored_luxels']} of {at.stats['luxels']} luxels kept")
+		units.append(Unit("gi", name, jobs, write_gi, [f], notes=notes, info=b.stats))
 	return units
 
 
 BUILDERS = {"textures": texture_units, "pbr": pbr_units, "hdr": hdr_units, "sphere": sphere_units, "sky": sky_units,
-	"camera": camera_units}
+	"gi": gi_units}
 
 
 # -- placing and writing ------------------------------------------------------------------------------
@@ -546,7 +580,12 @@ def _fingerprint(rule: Rule, root: Path, settings: dict) -> str:
 	h = hashlib.sha256(json.dumps([__version__, rule.kind, rule.inputs, rule.output, rule.options,
 		{k: v for k, v in settings.items() if k not in ("jobs",)}], sort_keys=True, default=str).encode())
 	files: list[Path] = []
-	for raw in rule.inputs + ([rule.options["env"]] if rule.options.get("env") else []):
+	extra = []
+	for key in ("env", "rad", "wads"):
+		v = rule.options.get(key)
+		if v:
+			extra += [v] if isinstance(v, str) else list(v)
+	for raw in rule.inputs + extra:
 		p = Path(raw)
 		p = p if p.is_absolute() else root / p
 		if any(c in raw for c in "*?["):
@@ -602,6 +641,11 @@ def build(manifest: Path, force: bool = False, dry_run: bool = False, workers: i
 		state = {}
 	groups: dict[str, list[Rule]] = {}
 	for i, r in enumerate(rules):
+		if r.kind == "gi":	# every map has the lightmap window to itself
+			for f, _b in expand(r.inputs, root, {".bsp"}):
+				one = Rule("gi", [str(f)], r.output, {**r.options, "budget": r.get("budget", GI_BUDGET)})
+				groups.setdefault(f"gi#{i}:{f.stem}", []).append(one)
+			continue
 		key = f"{r.kind}#{i}" if r.get("budget") is not None else "shared"
 		groups.setdefault(key, []).append(r)
 	results: dict[str, GroupResult] = {}
@@ -617,6 +661,12 @@ def build(manifest: Path, force: bool = False, dry_run: bool = False, workers: i
 		units: list[Unit] = []
 		for r in rs:
 			dest = out / r.output if r.output else out
+			if r.kind == "gi" and dry_run:	# baking is the slow part: only name what would be baked
+				units += [Unit("gi", Path(x).stem, [], lambda placed: [], [Path(x)]) for x in r.inputs]
+				continue
+			if r.kind == "gi":
+				units += gi_units(r, root, dest, defaults, preview, log)
+				continue
 			units += BUILDERS[r.kind](r, root, dest, defaults, preview)
 		log(f"{key}: {len(units)} unit(s), {sum(len(u.jobs) for u in units)} texture(s)"
 			+ (f", budget {budget} bytes" if budget else ""))
@@ -677,12 +727,12 @@ container = "tpl"    # tpl | bti | gct
 # inputs = ["sky/canyon.hdr"]
 # tonemap = "aces"     # aces | reinhard | hable | agx | clip
 
-# [[camera]]
-# inputs = ["cutscenes/*.glb", "maps/c1a0.bsp"]   # glTF, DAE/FBX (Assimp), JSON, CSV, BSP trigger_cameras
-# output = "media"
-# combine = "cam_c1a0.gcam"   # gxbake budget counts media/cam_<map>.gcam
-# encoding = "fixed"   # fixed (s16 values, u16 ticks) | f32
-# pos_tol = 0.25       # GoldSrc units
-# rot_tol = 0.15       # degrees
-# max_bytes = "4K"
+# [[gi]]               # radiosity lightmaps: relit .bsp + GX atlas pages (.tpl/.gclm/.gxm)
+# inputs = ["maps/*.bsp"]
+# bounces = 3
+# rad = "lights.rad"   # texture lights: TEXNAME r g b intensity
+# wads = ["wads"]      # texture colours for bounce light
+# ao = 0.5
+# budget = "800K"      # per map (the port's lightmap window)
+# texlights = { "~light1" = "255 255 220 800" }
 '''

@@ -461,6 +461,54 @@ def _lightmaps(args) -> int:
 	return 0
 
 
+def _gi(args) -> int:
+	from .core import radiosity
+
+	g = {"bounces": args.bounces, "patch": args.patch, "rays": args.rays, "gather": args.gather, "ao": args.ao,
+		"ao_radius": args.ao_radius, "light_scale": args.light_scale, "sun_scale": args.sun_scale,
+		"sky_scale": args.sky_scale, "texlight_scale": args.texlight_scale, "reflect": args.reflect,
+		"gamma": args.gamma, "exposure": args.exposure, "calibrate": args.calibrate,
+		"entity_shadows": args.entity_shadows, "use_vis": not args.no_vis, "rad": args.rad, "wads": args.wad,
+		"ambient": args.ambient, "texlights": dict(t.split("=", 1) for t in args.texlight or []),
+		"page": args.page, "format": args.format, "formats": args.formats, "min_db": args.min_db,
+		"overbright": args.overbright, "atlas_gamma": args.atlas_gamma, "tone": args.tone, "shrink": not args.no_shrink,
+		"bsp": not args.no_bsp, "atlas": not args.no_atlas}
+	log = (lambda s: None) if args.json else (lambda s: print(s, file=sys.stderr))
+	hb = audit.human_bytes
+	code = 0
+	for path in args.maps:
+		try:
+			opts = radiosity.options_from({k: v for k, v in g.items() if v is not None}, Path.cwd(), log)
+			res = radiosity.run(Path(path), Path(args.output), opts, budget=budget.parse_size(args.budget) if args.budget else 0,
+				preview=args.preview, **radiosity.atlas_settings({k: v for k, v in g.items() if v is not None}))
+		except (OSError, ValueError, struct.error) as exc:
+			print(f"{path}: {exc}", file=sys.stderr)
+			code = 1
+			continue
+		rep = res.report
+		if args.json:
+			print(json.dumps(rep, indent=1, default=float))
+			continue
+		print(f"{path}: {rep['faces']} faces, {rep['luxels']} luxels, {rep['patches']} patches, "
+			f"{sum(rep['lights'].values())} lights, {rep['emissive_samples']} emissive samples, {rep['seconds']} s")
+		if "calibration" in rep:
+			print(f"  calibrated ×{rep['calibration']} to the map's existing lighting")
+		at = rep.get("atlas")
+		if at:
+			print(f"  atlas: {len(at['pages'])} page(s), {hb(at['bytes'])}, light ÷{at['scale']} (TEV ×{at['scale']}, "
+				f"{100 * at['clipped']:.2f} % clipped), {at['stored_luxels']} of {at['luxels']} luxels "
+				f"({at['flat_faces']} flat faces, {at['shrunk_faces']} shrunk), {100 * at['occupancy']:.0f} % full")
+			for t in at["textures"]:
+				db = "lossless" if t["psnr"] is None else f"{t['psnr']:.1f} dB"
+				print(f"    {t['name']:24} {t['format']:6} {t['width']:4}x{t['height']:<4} {hb(t['bytes']):>9}  {db}")
+		for n in rep["notes"]:
+			print(f"  note: {n}", file=sys.stderr)
+		for f, n, kind in res.files:
+			if kind != "preview":
+				print(f"  wrote {f} ({hb(n)})")
+	return code
+
+
 def _slim(args) -> int:
 	from .core import studio_slim
 
@@ -1461,6 +1509,48 @@ def build_parser() -> argparse.ArgumentParser:
 	lm.add_argument("--no-resize", action="store_true", help="keep every face's size; only repack")
 	lm.add_argument("--plan", metavar="OUT.json", help="write per-face sizes and atlas positions for a world baker")
 	lm.set_defaults(fn=_lightmaps)
+
+	gi = sub.add_parser("gi", help="bake radiosity lightmaps (bounces, sky, emissive textures, AO) into a GoldSrc BSP "
+		"and GX atlas pages (TPL + .gclm)")
+	gi.add_argument("maps", nargs="+", help="GoldSrc BSPs (v30)")
+	gi.add_argument("-o", "--output", required=True, help="folder for the relit .bsp, <map>_lm.tpl, <map>.gclm, <map>_lm.gxm")
+	gi.add_argument("--bounces", type=int, default=3, help="light bounces between surfaces (0: direct and sky only)")
+	gi.add_argument("--patch", type=float, default=64.0, help="radiosity patch size in world units")
+	gi.add_argument("--rays", type=int, default=96, help="hemisphere rays per patch")
+	gi.add_argument("--gather", type=int, default=0, help="final-gather rays per luxel (sharper bounce light; slower)")
+	gi.add_argument("--ao", type=float, default=0.0, help="ambient occlusion strength 0..1 on indirect and sky light")
+	gi.add_argument("--ao-radius", type=float, default=96.0, help="how far ambient occlusion looks, world units")
+	gi.add_argument("--rad", action="append", help="lights.rad file: TEXNAME r g b intensity per line (repeatable)")
+	gi.add_argument("--texlight", action="append", metavar="NAME=R G B I", help='one texture light, e.g. "~light1=255 255 220 800"')
+	gi.add_argument("--wad", action="append", help="WAD file or folder for texture colours (repeatable)")
+	gi.add_argument("--light-scale", type=float, default=1.0, help="multiply point and spot lights")
+	gi.add_argument("--sun-scale", type=float, default=1.0, help="multiply the light_environment sun")
+	gi.add_argument("--sky-scale", type=float, default=1.0, help="multiply the sky's diffuse light")
+	gi.add_argument("--texlight-scale", type=float, default=1.0, help="multiply texture lights")
+	gi.add_argument("--reflect", type=float, default=1.0, help="multiply texture reflectance (bounce strength)")
+	gi.add_argument("--ambient", help="light added everywhere, 0..1 (one value or r g b)")
+	gi.add_argument("--exposure", type=float, default=0.0, help="stops over the baked light")
+	gi.add_argument("--gamma", type=float, default=0.55, help="BSP bytes = light^gamma (HLRAD's -gamma)")
+	gi.add_argument("--calibrate", action="store_true", help="scale to match the map's existing lighting (median)")
+	gi.add_argument("--entity-shadows", action="store_true", help="brush entities (doors, func_wall) cast shadows too")
+	gi.add_argument("--no-vis", action="store_true", help="do not cull lights with the map's PVS")
+	gi.add_argument("--page", type=int, default=256, help="atlas page side (the last page shrinks to fit)")
+	gi.add_argument("--format", help="force one GX format for every page (default: auto per page)")
+	gi.add_argument("--formats", help="comma list of formats auto may pick (default CMPR,RGB565,I4,I8)")
+	gi.add_argument("--min-db", type=float, default=40.0, help="quality floor for format choice and half-size faces")
+	gi.add_argument("--budget", metavar="SIZE", help="atlas bytes per map (e.g. 800K, the port's lightmap window)")
+	gi.add_argument("--overbright", choices=("auto", "1", "2", "4"), default="auto",
+		help="atlas holds light / N for a TEV stage scaled ×N; auto picks the smallest that clips ≤ 0.1 %%")
+	gi.add_argument("--tone", choices=("port", "linear"), default="port",
+		help="port: pages hold what the port shows for the relit BSP (2 x byte, the x2 lightmap stage), "
+		"overbright kept; linear: pages hold light itself")
+	gi.add_argument("--atlas-gamma", type=float, default=1.0, help="linear tone: atlas stores (light/N)^(1/gamma)")
+	gi.add_argument("--no-shrink", action="store_true", help="keep every face at the engine's grid in the atlas")
+	gi.add_argument("--no-bsp", action="store_true", help="do not write the relit BSP")
+	gi.add_argument("--no-atlas", action="store_true", help="do not write atlas pages")
+	gi.add_argument("--preview", action="store_true", help="also write the pages decoded as GX samples them (preview/)")
+	gi.add_argument("--json", action="store_true", help="print the report as JSON")
+	gi.set_defaults(fn=_gi)
 
 	sq = sub.add_parser("squeeze", help="measure smarter packing on a staged tree, and write what the port reads today")
 	sq.add_argument("path", help="staged gamedir (or one file)")

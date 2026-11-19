@@ -6,6 +6,8 @@ Copy both files into `engine/platform/gamecube/`, add `gc_pack.c` to the GameCub
 
 `gc_thp.h` / `gc_thp.c` are the same kind of drop-in for THP movies from `gxbake video` (see [THP movies](#thp-movies-thp) below). Add `gc_thp.c` to the sources the same way; it needs nothing else.
 
+`gc_lmap.h` / `gc_lmap.c` read the `.gclm` face table that `gxbake gi` writes next to a map's radiosity lightmap pages (`<map>_lm.tpl`), and map a vertex's lightmap coordinates into a page. See [Radiosity lightmap atlas](#radiosity-lightmap-atlas-gclm) below.
+
 `gc_mat.h` / `gc_mat.c` read the TPL textures that `gxbake auto`, `gxbake pbr` and `gxbake hdr` write, and the small `.gxm` material file next to them, and (behind `GC_MAT_GX`) set GX up to draw each preset. See [Materials and TPL textures](#materials-and-tpl-textures-tpl-gxm) below.
 
 ## Where each one hooks in
@@ -46,6 +48,19 @@ Studio vertices are transformed on the CPU in `R_StudioDrawPoints` (`ref/gx/r_st
 ### Lightmap sizes (`gxbake lightmaps --plan`)
 
 The atlas is RGB565, built in `engine/common/mod_bmodel.c` (`Mod_GCBakeMenuLightmapAtlas`, `GC_GetLiveLightmapAtlas`). It is capped in `GC_PackCapLightmapAtlas` (`vid_gamecube.c`) and bound by `R_GXBindLightmapAtlas` (`r_gx_world.c`). The plan's per-face `new_w`/`new_h`/`page`/`x`/`y` replace the allocator's own placement. A face's lightmap UVs scale by `(new − 1) / (old − 1)` per axis. A 1×1 face samples a single texel.
+
+### Radiosity lightmap atlas (`.gclm`)
+
+`gxbake gi` ([docs/gi.md](../docs/gi.md)) writes two things for a map. The relit `<map>.bsp` needs nothing new: its LIGHTING lump has the same per-face grids, so `Mod_GCBakeMenuLightmapAtlas` / the CapFaces atlas and the `×2` lightmap stage in `r_gx_world.c` show it as they show any map.
+
+The GX-native pages replace the RGB565 atlas the port builds at load. Not wired in yet; the steps:
+
+1. At map load, read `maps/<map>.gclm` and `maps/<map>_lm.tpl` (32-byte aligned, `DCFlushRange`) instead of running `Mod_GCBakeMenuLightmapAtlas`. `gc_lmap_parse`, then `gc_tpl_parse`. Skip the LIGHTING lump: the pages are the light.
+2. Where the world baker or `R_GXBindLightmapAtlas` sets each face's lightmap texcoords, use `gc_lmap_face` and `gc_lmap_uv` with the engine's per-vertex `s`, `t` (luxels from `lightmapmins`). A face can be stored smaller than its grid (1×1 when flat); `gc_lmap_uv` handles that.
+3. Bind page `f.page` with `gc_tpl_bind` on `GX_TEXMAP1` (pages are 1–8 per map, so group faces by page and switch rarely), and set the lightmap stage's scale from `lm.tev_scale` instead of the fixed `GX_CS_SCALE_2`. With the default "port" tone, scale 2 looks the same as today.
+4. Pages are CMPR, RGB565, I4 or I8. An I4/I8 page reads as grey in TEVC, which is what a white-lit map needs.
+
+Faces with no entry (`page == 0xFFFF`) are sky, water and other special faces; they keep their current path.
 
 ### Yaz0 (`*.yaz0`)
 

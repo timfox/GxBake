@@ -41,3 +41,7 @@ include = ["gxbake*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+# the ray caster's C inner loop, compiled on first use when a C compiler is present (raytrace.py)
+"gxbake.core" = ["_rt.c"]

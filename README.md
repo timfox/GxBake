@@ -138,6 +138,14 @@ Every source is resampled by direction, so each side comes out the way `R_GXDraw
 
 `--preview` writes the decoded sides as a cross, front in the middle, to check seams and orientation; `--env SIZE` also writes `gfx/env/<name><side>.tga` for PC builds and the disc builder. When `convert` or the app is given a 2:1 image at least 1024 wide, a `.hdr`, a 6:1 strip or a cross with empty corners, it makes a sky of it too (`--no-sky-detect`, or the **Skies from panoramas** settings, turn that off; smaller images stay textures). Expand a sky in the app to see each side or **all sides** as a cross.
 
+## Radiosity lightmaps
+
+`gxbake gi map.bsp -o out/` relights a compiled GoldSrc map with global illumination: point, spot and sun lights with shadows, texture lights from a `lights.rad`, sky light, light bouncing between surfaces (radiosity), and optional ambient occlusion. It writes the map back with the new lighting (the port loads it as it loads any map) and the same light as GX-native atlas pages: `<map>_lm.tpl` (CMPR, RGB565, I4 or I8 per page, under a byte budget), `<map>.gclm` (where each face sits; read by `port/gc_lmap.c`) and `<map>_lm.gxm` (the overbright TEV scale). `[[gi]]` rules do the same in `gxbake build`. See [docs/gi.md](docs/gi.md).
+
+```sh
+gxbake gi maps/c1a0.bsp -o build/gi --rad lights.rad --wad valve/ --ao 0.5 --calibrate --budget 800K
+```
+
 ## PBR materials, HDR and automated builds
 
 `gxbake auto` picks each texture's GX format (I4 … RGBA8, CI4/CI8 with a TLUT, CMPR) and size automatically by PSNR, alone or under a shared byte budget, and writes TPL, BTI or `.gct`. `gxbake pbr` bakes PBR material sets and glTF/GLB materials (albedo, normal, roughness, metal, AO, height, emissive, packed ORM/MaskMap) into a few GX textures plus a TEV recipe (`prelit`, `lit`, `emboss`, `indirect` presets). `gxbake hdr` turns EXR/HDR/PFM into tone-mapped textures (ACES, Reinhard, Hable, AgX), overbright lightmaps for a TEV scale of 2 or 4, or GX sphere maps for reflections. `gxbake build` runs all of that from a `gxbake.toml` manifest, incrementally and under budgets. See [docs/pbr-hdr.md](docs/pbr-hdr.md).
