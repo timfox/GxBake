@@ -40,6 +40,7 @@ build or CI job.
 | [`pbr`](#gxbake-pbr) | bake PBR material sets (albedo/normal/roughness/metal/AO/height/emissive, glTF) for TEV |
 | [`hdr`](#gxbake-hdr) | EXR/HDR/PFM to tone-mapped textures, overbright lightmaps or GX sphere maps |
 | [`build`](#gxbake-build) | run a gxbake.toml/.json manifest: batch conversions under budgets, incremental |
+| [`tpl`](#gxbake-tpl) | list what is in .tpl, .bti and .gxm files (and decode them to PNG) |
 | [`gui`](#gxbake-gui) | open the desktop app |
 
 ## `gxbake convert`
@@ -694,7 +695,8 @@ gxbake hdr inputs [inputs ...] --output OUTPUT [--min-db MIN_DB] [--max-edge MAX
 Run a gxbake.toml/.json manifest: batch conversions under budgets, incremental.
 
 ```
-gxbake build [manifest] [--init] [--force] [--dry-run] [--jobs JOBS] [--json]
+gxbake build [manifest] [--init] [--force] [--dry-run] [--jobs JOBS] [--json] [--watch] [--interval
+    INTERVAL]
 ```
 
 | Argument | Default | Description |
@@ -705,6 +707,21 @@ gxbake build [manifest] [--init] [--force] [--dry-run] [--jobs JOBS] [--json]
 | `--dry-run` |  | show what would be built |
 | `-j JOBS`, `--jobs JOBS` |  | worker processes (default: [build] jobs, or 1) |
 | `--json` |  | print the build report as JSON |
+| `--watch` |  | keep running: rebuild what changed whenever an input or the manifest changes |
+| `--interval INTERVAL` | `1.0` | --watch: seconds between checks |
+
+## `gxbake tpl`
+
+List what is in .tpl, .bti and .gxm files (and decode them to PNG).
+
+```
+gxbake tpl files [files ...] [--extract DIR]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `files` … |  | .tpl, .bti or .gxm files |
+| `--extract DIR` |  | write every image's top level as PNG, as the GameCube samples it |
 
 ## `gxbake gui`
 

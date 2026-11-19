@@ -58,7 +58,9 @@ gxbake pbr materials/ -o build/mats --gct-base mats.gct    # also pack the base 
 
 What the bake does: albedo goes to linear, is multiplied by AO (from the map, or estimated from the height map, or from the normal map integrated to a height field when there is no height) and by a detail term from the normal map (how far each normal tilts; for `prelit` also N·L to the key light), normalised so a flat surface keeps its albedo. `prelit` adds a normalised Blinn-Phong highlight with an exponent from roughness and F0 from metalness. The spec mask is gloss² × (¼ dielectric … 1 metal). Normal maps for `indirect` are stored X in intensity and Y in alpha of IA8.
 
-**`.gxmat.json`** lists each map (TPL index, format, size, bytes, PSNR), the material's alpha mode with the blend/alpha-compare set-up, and the TEV stages in libogc terms (`GX_TEXMAPn` follows the TPL order). The recipes are the standard fixed-function set-ups; nothing in this repository draws them yet, so treat the emboss and indirect ones as a starting point to check on hardware or Dolphin.
+**`.gxm`** is the same material in 12 + 4 bytes per map for the port: preset, alpha mode and cut-off, TEV scale and the TPL index of each role. `port/gc_mat.c` reads it and sets up GX for the preset (`gc_mat_setup`); see [port/README.md](../port/README.md#materials-and-tpl-textures-tpl-gxm). `gxbake hdr --mode lightmap` writes one too, with the overbright scale.
+
+**`.gxmat.json`** lists each map (TPL index, format, size, bytes, PSNR), the material's alpha mode with the blend/alpha-compare set-up, and the TEV stages in libogc terms (`GX_TEXMAPn` follows the TPL order). `port/gc_mat.c` implements them (host-tested against a recording GX stub); none has run on hardware or in Dolphin yet, so check the emboss and indirect ones there first.
 
 ## HDR (`gxbake hdr`, `gxbake sky --tonemap`)
 
@@ -82,5 +84,8 @@ gxbake sky canyon.exr -o staged/valve --tonemap hable              # HDR sky wit
 * `[build] preview = "preview"` writes every texture decoded as the GameCube samples it.
 * A group whose inputs (size and mtime), options and GxBake version have not changed is skipped; `--force` rebuilds. The state is `output/.gxbake-build.json`.
 * `--json` prints the report; the exit code is 2 when a budget cannot be met even at the smallest options, so CI can fail on it.
+
+* `gxbake build --watch` keeps running and rebuilds whatever changed (polling every `--interval` seconds; editing the manifest rebuilds everything).
+* `gxbake tpl out/*.tpl out/*.gxm [--extract DIR]` lists what was written (formats, sizes, mips, TLUTs, material roles) and decodes it to PNG.
 
 TOML needs Python 3.11+ (or `pip install tomli`); JSON manifests work everywhere.

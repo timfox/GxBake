@@ -325,6 +325,9 @@ def pbr_units(rule: Rule, root: Path, out: Path, defaults: dict, preview: Path |
 				"maps": [{"index": i, **autotex.summary(p), "map": p.job.meta.get("map")} for i, p in enumerate(placed)],
 				"tev": baked.tev, "sources": baked.material.sources, "notes": baked.notes}
 			res.append(_save(stem.with_suffix(".gxmat.json"), json.dumps(desc, indent=1).encode(), "gxmat"))
+			if container == "tpl":
+				res.append(_save(stem.with_suffix(".gxm"), pbr.gxm_bytes(baked.preset,
+					[p.job.meta.get("map") for p in placed], baked.tev["alpha"], baked.material.alpha_cutoff), "gxm"))
 			return res + _preview(placed, preview)
 
 		units.append(Unit("pbr", mat.name, baked.jobs, write_mat, [], notes=baked.notes,
@@ -376,8 +379,13 @@ def hdr_units(rule: Rule, root: Path, out: Path, defaults: dict, preview: Path |
 		def write_one(placed, stem=stem, meta=meta, container=container):
 			res = write_images(placed, stem, container)
 			if meta.get("mode") == "lightmap":
+				from .pbr import gxm_bytes
+
 				res.append(_save(stem.with_suffix(".lightmap.json"),
 					json.dumps({**meta, **autotex.summary(placed[0])}, indent=1).encode(), "json"))
+				if container == "tpl":
+					res.append(_save(stem.with_suffix(".gxm"), gxm_bytes("lightmap", ["lightmap"],
+						tev_scale=int(meta["scale"])), "gxm"))
 			return res + _preview(placed, preview)
 
 		units.append(Unit("hdr", name, [job], write_one, [f], info=meta))
