@@ -49,13 +49,16 @@ def test_c_dsp_matches_python(harness, tmp_path):
 
 
 def test_c_gsk_table(harness, tmp_path):
-	raw = fixtures.studio([("skin", 32, 32, 0), ("mask", 16, 16, 0x40)])
+	# Several skins of different sizes, so a wrong table stride cannot pass by luck.
+	# (name, flags, w, h). Several skins of different sizes, so a wrong table stride cannot pass by luck.
+	raw = fixtures.studio([("skin", 0, 32, 32), ("mask", 0x40, 16, 16), ("arm", 0, 64, 32), ("hand", 0x40, 8, 8),
+		("face", 0, 16, 48)])
 	skins = squeeze.studio_skins(raw)
 	blob = squeeze.write_skin_pack(skins)
 	(tmp_path / "m.gsk").write_bytes(blob)
 	res = subprocess.run([harness, "gsk", tmp_path / "m.gsk"], check=True, capture_output=True, text=True)
 	rows = [list(map(int, line.split())) for line in res.stdout.splitlines()]
-	assert len(rows) == len(skins)
+	assert len(rows) == len(skins) == 5
 	for i, (row, s) in enumerate(zip(rows, skins)):
 		t = s.choice.tex
 		assert row[:5] == [i, squeeze.gxtex.FORMATS[t.fmt][0], t.tlut_fmt, t.width, t.height]
