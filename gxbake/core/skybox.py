@@ -88,6 +88,7 @@ class SkyOptions:
 	yaw: float = DEFAULT_YAW
 	fov: float = 180.0	# photo layout: horizontal degrees the image covers
 	exposure: float = 0.0	# .hdr: stops over the automatic exposure
+	tonemap: str = "aces"	# HDR input: one of hdr.TONEMAPS
 	size: int = SKY_SIZE
 	supersample: int = 4
 
@@ -105,7 +106,7 @@ class SkySource:
 # -- loading -----------------------------------------------------------------
 
 
-def load_rgb(path: Path, exposure: float = 0.0) -> "np.ndarray":
+def load_rgb(path: Path, exposure: float = 0.0, op: str = "aces") -> "np.ndarray":
 	"""Any image GxBake reads, or an HDR one (.hdr, .exr, .pfm) tone-mapped, as uint8 RGB."""
 	path = Path(path)
 	if path.suffix.lower() in (".hdr", ".pic", ".exr", ".pfm"):
@@ -113,7 +114,7 @@ def load_rgb(path: Path, exposure: float = 0.0) -> "np.ndarray":
 
 		hdr = read_float(path)
 		if hdr is not None:
-			return tonemap(np.ascontiguousarray(hdr[..., :3]), exposure)
+			return tonemap(np.ascontiguousarray(hdr[..., :3]), exposure, op)
 	from .images import load_rgba
 
 	return load_rgba(path)[..., :3]
@@ -169,14 +170,11 @@ def read_hdr(path: Path) -> "np.ndarray":
 	return out[..., :3].astype(np.float32) * scale[..., None]
 
 
-def tonemap(hdr: "np.ndarray", exposure: float = 0.0) -> "np.ndarray":
-	"""Linear HDR → sRGB uint8: key-0.18 auto exposure, ACES fit, sRGB curve."""
-	lum = hdr @ np.array([0.2126, 0.7152, 0.0722], np.float32)
-	gmean = float(np.exp(np.log(np.maximum(lum, 1e-6)).mean()))
-	x = hdr * (0.18 / max(gmean, 1e-6) * 2.0 ** exposure)
-	x = np.clip((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0, 1)
-	srgb = np.where(x <= 0.0031308, x * 12.92, 1.055 * np.power(x, 1 / 2.4) - 0.055)
-	return np.clip(srgb * 255 + 0.5, 0, 255).astype(np.uint8)
+def tonemap(hdr: "np.ndarray", exposure: float = 0.0, op: str = "aces") -> "np.ndarray":
+	"""Linear HDR → sRGB uint8: key-0.18 auto exposure, then `op` (ACES fit by default), sRGB curve."""
+	from . import hdr as _hdr
+
+	return _hdr.tonemap(hdr, op, exposure)
 
 
 def _shrink(rgb: "np.ndarray", max_w: int) -> "np.ndarray":
@@ -458,7 +456,7 @@ def open_source(paths: list[Path], opts: SkyOptions | None = None, name: str | N
 
 	if faces is not None:
 		base, scheme, files = faces
-		imgs = {k: _shrink(load_rgb(p, opts.exposure), work) for k, p in files.items()}
+		imgs = {k: _shrink(load_rgb(p, opts.exposure, opts.tonemap), work) for k, p in files.items()}
 		sizes = {im.shape[:2] for im in imgs.values()}
 		if len(sizes) > 1:
 			notes.append(f"face sizes differ: {sorted(sizes)}")
@@ -471,7 +469,7 @@ def open_source(paths: list[Path], opts: SkyOptions | None = None, name: str | N
 		return SkySource("faces", name or base, cube_sampler(imgs, _view_frames(basis)), notes)
 
 	path = paths[0]
-	rgb = load_rgb(path, opts.exposure)
+	rgb = load_rgb(path, opts.exposure, opts.tonemap)
 	if layout == "auto":
 		layout = detect_layout(rgb)
 	stem = name or re.sub(r"[^a-z0-9_]+", "_", path.stem.lower()).strip("_") or "sky"

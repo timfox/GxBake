@@ -137,6 +137,17 @@ Every source is resampled by direction, so each side comes out the way `R_GXDraw
 
 `--preview` writes the decoded sides as a cross, front in the middle, to check seams and orientation; `--env SIZE` also writes `gfx/env/<name><side>.tga` for PC builds and the disc builder. When `convert` or the app is given a 2:1 image at least 1024 wide, a `.hdr`, a 6:1 strip or a cross with empty corners, it makes a sky of it too (`--no-sky-detect`, or the **Skies from panoramas** settings, turn that off; smaller images stay textures). Expand a sky in the app to see each side or **all sides** as a cross.
 
+## PBR materials, HDR and automated builds
+
+`gxbake auto` picks each texture's GX format (I4 … RGBA8, CI4/CI8 with a TLUT, CMPR) and size automatically by PSNR, alone or under a shared byte budget, and writes TPL, BTI or `.gct`. `gxbake pbr` bakes PBR material sets and glTF/GLB materials (albedo, normal, roughness, metal, AO, height, emissive, packed ORM/MaskMap) into a few GX textures plus a TEV recipe (`prelit`, `lit`, `emboss`, `indirect` presets). `gxbake hdr` turns EXR/HDR/PFM into tone-mapped textures (ACES, Reinhard, Hable, AgX), overbright lightmaps for a TEV scale of 2 or 4, or GX sphere maps for reflections. `gxbake build` runs all of that from a `gxbake.toml` manifest, incrementally and under budgets. See [docs/pbr-hdr.md](docs/pbr-hdr.md).
+
+```sh
+gxbake auto art/ -o build/tex --budget 448K -j 4
+gxbake pbr materials/ crate.glb -o build/mats --preset lit
+gxbake hdr lightmaps/ -o build/lm --mode lightmap
+gxbake build --init && gxbake build
+```
+
 ## Source, Quake and Quake II formats
 
 These are read by GxBake itself (no Assimp), and each becomes what the GameCube port loads.
