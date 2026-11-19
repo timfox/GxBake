@@ -66,6 +66,16 @@ gxbake video src/movies/*.avi -o staged/valve/media --max 448x336 --max-kbps 400
 New models can come from any format Assimp reads, and USD stages (`.usda`, `.usdz`)
 come in through FreeUSD once the `usd` extra is installed; see [USD import](usd.md).
 
+### Camera paths
+
+Cutscene and fly-through cameras from glTF, Collada/FBX, Blender (JSON), CSV or a
+map's own `trigger_camera`s become `.gcam` keyframe tracks; see [camera.md](camera.md).
+`budget` lists `media/cam_<map>.gcam` with each map.
+
+```sh
+gxbake camera src/cutscenes/c1a0_*.glb --combine cam_c1a0.gcam -o staged/valve/media
+```
+
 ### Skies
 
 A map's sky comes from `gfx/env/<skyname><side>.tga` when the BSP is converted.

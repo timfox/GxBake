@@ -32,6 +32,7 @@ GxBake wraps the GX pipeline from the Xash3D GameCube port (`scripts/build-gamec
 | Final Fantasy VII (PC): field models (`.hrc` + `.rsd` + `.p` + `.tex`, `.a` animations), `.ff7mdl` manifests, lone `.p` models, battle models (`<base>aa` skeletons with their parts, textures and `<base>da` animation packs); `.lgp` archives through `gxbake extract` | studio models, one per skeleton | `ff7.import_ff7` |
 | Video: any codec and container FFmpeg reads (MP4, MKV, MOV, AVI, WebM, MPEG, WMV, FLV, Bink, Smacker, RoQ, PlayStation STR…) | `media/<name>.thp`: THP, the GameCube SDK's movie format (4:2:0 JPEG frames + stereo DSP ADPCM), sized, frame-rate-limited and size-capped; see [docs/video.md](docs/video.md) | `thp.convert` (`gxbake video`, **Convert Video…**) |
 | Video, for the port's current player | `media/<name>.gcvid` (RGB565 delta) and `.gcpcm` (the default for `convert`; `--video-format thp\|both` switches) | `build_gcvid_companion`, `build_gcpcm_companion` |
+| Camera paths: glTF/GLB cameras (with parent rigs and animated FOV), Collada/FBX camera nodes through Assimp, JSON or CSV keys (a Blender export script is in the docs), GoldSrc `trigger_camera` + `path_corner` | `media/<name>.gcam`: position, rotation and FOV keyframe tracks, reduced to tolerances in units and degrees, s16 fixed point or f32, read by `port/gc_cam.c` into GX matrices or GoldSrc view angles; see [docs/camera.md](docs/camera.md) | `camera.convert` (`gxbake camera`, `[[camera]]` in a `gxbake.toml`) |
 | Audio (WAV, MP3, OGG, FLAC, AIFF, VOC, Opus…) | `media/<name>.gcpcm` (48 kHz stereo, s16 big-endian); PCM WAV needs no ffmpeg | `build_gcpcm_companion` |
 
 It also opens the outputs (`.gct`, `.cmp`, `.gcvid`, `.gcpcm`, `.thp`) to inspect them. Every run writes `gxbake-manifest.json` with the settings, every output and its size, and the share of GameCube main RAM it uses.
@@ -288,6 +289,7 @@ gxbake extract hl2_misc_dir.vpk -o unpacked --match 'models/*' --match 'material
 gxbake pack list staged/valve/media/wt_c1a0.gct --sort size
 gxbake sky sunset.hdr -o staged/valve --name sunset
 gxbake video intro.mkv -o staged/valve/media/intro.thp --max-size 20M   # any video → THP
+gxbake camera cutscenes/intro.glb -o staged/valve/media --preview check  # camera paths → .gcam
 gxbake formats                 # every image format and which optional packages are missing
 gxbake decode textures/*.tpl -o check   # any supported image to PNG
 ```

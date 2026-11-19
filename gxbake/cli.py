@@ -891,6 +891,13 @@ def _print_group(g, as_json: bool = False) -> None:
 				"files": [str(w.path) for w in r.written], "notes": r.unit.notes} for r in g.units]}, indent=1))
 		return
 	for r in g.units:
+		for c in r.unit.info.get("clips", []) if r.unit.kind == "camera" else []:
+			print(f"  {r.unit.name + ':' + c['name']:40} {c['duration']:7.2f} s  keys "
+				+ "/".join(str(c["keys"][k]) for k in ("pos", "rot", "fov"))
+				+ f"  err {c['max_error']['pos']:.3f}u {c['max_error']['rot']:.3f}° {c['max_error']['fov']:.3f}°"
+				+ f"  {c['encoding']}")
+		if r.unit.kind == "camera":
+			print(f"  {r.unit.name:40} {audit.human_bytes(r.unit.fixed_bytes):>9}")
 		for p in r.placed:
 			o = p.option
 			db = "lossless" if o.db == float("inf") else f"{o.db:5.1f} dB"
@@ -1069,6 +1076,132 @@ def _tpl(args) -> int:
 				out.mkdir(parents=True, exist_ok=True)
 				Image.fromarray(im.decode()).save(out / f"{p.stem}_{i}.png")
 	return 0
+
+
+def _camera(args) -> int:
+	from .core import build, camera
+
+	if args.inspect:
+		out = []
+		for name in args.inputs:
+			p = Path(name)
+			try:
+				clips = camera.read_gcam(p.read_bytes())
+			except (OSError, ValueError) as exc:
+				print(f"{p}: {exc}", file=sys.stderr)
+				return 1
+			for c in clips:
+				row = {"file": str(p), "name": c.name, "duration": round(c.duration, 3), "near": c.near, "far": c.far,
+					"aspect": c.aspect, "loop": c.loop, "encoding": "fixed" if c.fixed else "f32", "bytes": c.bytes,
+					"tracks": {("pos", "rot", "fov")[k]: {"keys": len(t.times), "interp": t.interp}
+						for k, t in sorted(c.tracks.items())}}
+				out.append(row)
+				if args.preview:
+					camera.preview_png(c, Path(args.preview) / f"{p.stem}_{c.name}.png")
+				if args.samples:
+					at = [i / args.samples_rate for i in range(int(c.duration * args.samples_rate) + 1)]
+					s = c.sample(at)
+					dest = Path(args.samples) / f"{p.stem}_{c.name}.csv"
+					dest.parent.mkdir(parents=True, exist_ok=True)
+					with dest.open("w", encoding="utf-8") as fh:
+						fh.write("t,x,y,z,pitch,yaw,roll,fov_y\n")
+						for k, t in enumerate(at):
+							pitch, yaw, roll = camera.matrix_to_angles(camera.quat_to_matrix(s["rot"][k]))
+							x, y, z = s["pos"][k]
+							fh.write(f"{t:.4f},{x:.3f},{y:.3f},{z:.3f},{pitch:.3f},{yaw:.3f},{roll:.3f},{s['fov'][k]:.3f}\n")
+		if args.json:
+			print(json.dumps(out, indent=1))
+		else:
+			for r in out:
+				tr = ", ".join(f"{k} {v['keys']} {v['interp']}" for k, v in r["tracks"].items())
+				print(f"{Path(r['file']).name}:{r['name']}: {r['duration']:.2f} s, near {r['near']:g} far {r['far']:g}"
+					+ (f", aspect {r['aspect']:.3f}" if r["aspect"] else "") + (", loops" if r["loop"] else "")
+					+ f", {r['encoding']}, {r['bytes']} B; {tr}")
+		return 0
+	try:
+		opts = camera.options_from({k: getattr(args, k) for k in ("rate", "interp", "encoding", "pos_tol", "rot_tol",
+			"fov_tol", "axes", "scale", "yaw", "offset", "fov", "fov_x", "near", "far", "aspect", "node", "max_bytes")}
+			| {"clips": args.clip, "loop": True if args.loop else None})
+		files = [f for f, _b in build.expand(args.inputs, Path.cwd(), camera.EXTENSIONS)]
+		if not files:
+			print("no camera sources found (" + ", ".join(sorted(camera.EXTENSIONS)) + ")", file=sys.stderr)
+			return 1
+		if args.list:
+			for f in files:
+				for c in camera.load(f, opts):
+					print(f"{f.name}:{camera.clip_name(c.name)}: {c.duration:.2f} s, {len(c.times)} keys/samples, "
+						f"fov_y {c.fov.min():.1f}-{c.fov.max():.1f}°, near {c.near:g} far {c.far:g}")
+					for n in c.notes:
+						print(f"  note: {n}", file=sys.stderr)
+			return 0
+		if not args.output:
+			print("-o/--output is required to convert", file=sys.stderr)
+			return 1
+		outs = camera.convert(files, opts, Path(args.output), args.combine)
+	except (OSError, ValueError, RuntimeError) as exc:
+		print(f"error: {exc}", file=sys.stderr)
+		return 1
+	report = []
+	for o in outs:
+		o.path.parent.mkdir(parents=True, exist_ok=True)
+		o.path.write_bytes(o.data)
+		report.append({"file": str(o.path), "bytes": len(o.data), "clips": [camera.describe(e) for e in o.clips]})
+		if args.preview:
+			for c in camera.read_gcam(o.data):
+				camera.preview_png(c, Path(args.preview) / f"{o.path.stem}_{c.name}.png")
+	if args.json:
+		print(json.dumps(report, indent=1))
+		return 0
+	for r in report:
+		print(f"{r['file']}: {audit.human_bytes(r['bytes'])}")
+		for c in r["clips"]:
+			e = c["max_error"]
+			print(f"  {c['name']:24} {c['duration']:7.2f} s  {c['samples']:6} samples -> keys "
+				+ "/".join(f"{c['keys'][k]}{c['interp'][k][0]}" for k in ("pos", "rot", "fov"))
+				+ f"  max err {e['pos']:.3f} u, {e['rot']:.3f}°, fov {e['fov']:.3f}°")
+			for n in c["notes"]:
+				print(f"  note ({c['name']}): {n}", file=sys.stderr)
+	return 0
+
+
+def _add_camera_parser(sub) -> None:
+	from .core import camera
+
+	c = sub.add_parser("camera", help="camera paths (glTF/DAE/FBX/JSON/CSV, HL1 trigger_camera) to .gcam keyframe tracks for GX")
+	c.add_argument("inputs", nargs="+", help="camera sources, folders or globs; with --inspect, .gcam files")
+	c.add_argument("-o", "--output", help="folder to write into")
+	c.add_argument("--combine", metavar="NAME.gcam", help="every clip in one file (default: one .gcam per source; "
+		"a .bsp gives cam_<map>.gcam, which `budget` counts from media/)")
+	c.add_argument("--list", action="store_true", help="only show the clips found in the sources")
+	c.add_argument("--inspect", action="store_true", help="read .gcam files and show their clips and tracks")
+	c.add_argument("--clip", action="append", metavar="PATTERN", help="only clips whose name matches (repeatable)")
+	c.add_argument("--rate", type=float, default=60.0, help="sample rate in Hz, also the tick of fixed-point times")
+	c.add_argument("--interp", choices=camera.INTERPS, default="auto",
+		help="curve the port evaluates; auto picks per track whichever needs fewer keys")
+	c.add_argument("--encoding", choices=camera.ENCODINGS, default="fixed",
+		help="fixed: s16 values with a per-track binary point and u16 ticks (about half the size); f32: floats")
+	c.add_argument("--pos-tol", type=float, default=0.25, help="largest position error allowed, in GoldSrc units")
+	c.add_argument("--rot-tol", type=float, default=0.15, help="largest rotation error allowed, in degrees")
+	c.add_argument("--fov-tol", type=float, default=0.05, help="largest FOV error allowed, in degrees")
+	c.add_argument("--max-bytes", metavar="SIZE", help="loosen the tolerances (x1.5 steps) until each file fits")
+	c.add_argument("--axes", choices=camera.AXES, default="auto",
+		help="source axes: engine (Z-up, camera looks +X), gltf (Y-up, looks -Z), blender (Z-up, looks -Z), "
+		"fbx (Y-up, looks +X); auto by file type")
+	c.add_argument("--scale", type=float, help="GoldSrc units per source unit (default 39.37 for metre formats, else 1)")
+	c.add_argument("--yaw", type=float, default=0.0, help="turn the whole path about Z by this many degrees")
+	c.add_argument("--offset", metavar="X,Y,Z", help="move the whole path (engine units, after scale and yaw)")
+	c.add_argument("--fov", type=float, help="vertical FOV in degrees for every key (overrides the source)")
+	c.add_argument("--fov-x", type=float, help="horizontal FOV at the aspect (4:3 if not given), like HL's default_fov")
+	c.add_argument("--near", type=float, help="near plane (default the source's, else 4)")
+	c.add_argument("--far", type=float, help="far plane (default the source's, else 4096)")
+	c.add_argument("--aspect", type=float, help="store a fixed aspect ratio (default 0: the port uses the screen's)")
+	c.add_argument("--loop", action="store_true", help="mark clips as looping (gc_cam_sample wraps time)")
+	c.add_argument("--node", help="Assimp sources: the camera node's name (default: the animated node named *cam*)")
+	c.add_argument("--preview", metavar="DIR", help="write a top/side/FOV plot of each clip as the port will sample it")
+	c.add_argument("--samples", metavar="DIR", help="--inspect: write each clip sampled as CSV (t,x,y,z,pitch,yaw,roll,fov_y)")
+	c.add_argument("--samples-rate", type=float, default=30.0, help=argparse.SUPPRESS)
+	c.add_argument("--json", action="store_true", help="print the results as JSON")
+	c.set_defaults(fn=_camera)
 
 
 def _add_auto_opts(p, max_edge: int = 256, min_db: float = 38.0) -> None:
@@ -1496,6 +1629,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 	_add_pack_parser(sub)
 	_add_auto_parsers(sub)
+	_add_camera_parser(sub)
 
 	g = sub.add_parser("gui", help="open the desktop app")
 	g.add_argument("paths", nargs="*", help="files or folders to open")

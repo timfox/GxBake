@@ -103,3 +103,14 @@ Hooks (not yet checked against the port's current source, and nothing here has r
 3. **Plain TPL textures** (`gxbake auto`, `--combine ui.tpl` writes a `.h` of image indices): `gc_tpl_image` + `gc_tpl_bind`, then draw as any other texture.
 
 Two things to verify first on hardware: which components of an IA8 texel the indirect unit reads for s and t (the code assumes alpha → s, colour → t and swaps them back in the matrix; flip the matrix if reflections bend the wrong way), and the emboss sign (if bumps look inverted, swap the two height lookups).
+
+### Camera paths (`.gcam`)
+
+`gc_cam.h` / `gc_cam.c` read the `.gcam` files that `gxbake camera` writes (see [docs/camera.md](../docs/camera.md)): named clips of position, rotation and vertical-FOV keys, with near and far planes. `gc_cam_sample` gives the pose at a time. `gc_cam_angles` and `gc_cam_fov_x` turn it into GoldSrc `viewangles` and `fov_x`. `gc_cam_view_mtx` and `gc_cam_proj_mtx` turn it into GX matrices instead (the projection is the same as `guPerspective`'s). `gc_cam_load` (behind `GC_CAM_GX`) loads the projection with `GX_LoadProjectionMtx`. Add `gc_cam.c` to the sources like the others; it needs `<math.h>` and nothing else. The host tests check that it samples exactly what GxBake's reader does; it has not run on hardware or in Dolphin.
+
+There is no hook yet, and none of this has been checked against the port's source. The simplest one plays a clip as a scripted camera:
+
+1. Load `media/cam_<map>.gcam` (or a named file) whole at map load. It is a few hundred bytes to a few KiB, so the heap is fine, and no alignment is needed because only the CPU reads it.
+2. A console command, or a game event, starts a clip by name (`gc_cam_find`) and records the start time.
+3. Each frame, after the client DLL has filled in the view (`V_CalcRefdef` → the engine's refdef set-up in `cl_view.c` in upstream Xash3D), call `gc_cam_sample` and overwrite `vieworg`, `viewangles` (`gc_cam_angles`) and `fov_x` (`gc_cam_fov_x(pose.fov_y, 4.0f / 3.0f)` keeps HL's 4:3 convention). Stop when the time passes `clip.duration`, unless the clip loops.
+4. The engine keeps its own near and far. To honour the clip's `near_z` / `far_z` too, build the projection with `gc_cam_proj_mtx` where the GX renderer loads its own.

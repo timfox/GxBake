@@ -1,4 +1,4 @@
-/* A recording stand-in for libogc's <ogc/gx.h>, only for host tests of port/gc_mat.c:
+/* A recording stand-in for libogc's <ogc/gx.h>, only for host tests of port/gc_mat.c and gc_cam.c:
  * every GX call prints its name and arguments, one per line. Names and signatures
  * follow libogc; the constant values here are arbitrary (except where the code
  * relies on order, e.g. GX_TG_BUMP0..7 and GX_TEXMAP0..7 being consecutive). */
@@ -28,7 +28,8 @@ enum {
 	GX_ALWAYS = 7, GX_GEQUAL = 6, GX_AOP_AND = 0,
 	GX_BM_NONE = 0, GX_BM_BLEND = 1, GX_BL_ZERO = 0, GX_BL_ONE = 1, GX_BL_SRCALPHA = 4, GX_BL_INVSRCALPHA = 5, GX_LO_CLEAR = 0,
 	GX_INDTEXSTAGE0 = 0, GX_ITS_1 = 0, GX_ITM_0 = 1, GX_ITF_8 = 0, GX_ITB_ST = 3, GX_ITW_OFF = 0, GX_ITBA_OFF = 0,
-	GX_TEV_KCSEL_1_4 = 6
+	GX_TEV_KCSEL_1_4 = 6,
+	GX_PERSPECTIVE = 0, GX_ORTHOGRAPHIC = 1
 };
 void GX_InitTlutObj( GXTlutObj *obj, void *lut, u8 fmt, u16 entries );
 void GX_LoadTlut( GXTlutObj *obj, u32 name );
@@ -56,4 +57,5 @@ void GX_SetTevIndirect( u8 st, u8 ind, u8 fmt, u8 bias, u8 mtx, u8 ws, u8 wt, u8
 void GX_SetAlphaCompare( u8 c0, u8 r0, u8 op, u8 c1, u8 r1 );
 void GX_SetZCompLoc( u8 before );
 void GX_SetBlendMode( u8 type, u8 src, u8 dst, u8 op );
+void GX_LoadProjectionMtx( f32 mt[4][4], u8 type );
 #endif

@@ -42,6 +42,7 @@ build or CI job.
 | [`hdr`](#gxbake-hdr) | EXR/HDR/PFM to tone-mapped textures, overbright lightmaps or GX sphere maps |
 | [`build`](#gxbake-build) | run a gxbake.toml/.json manifest: batch conversions under budgets, incremental |
 | [`tpl`](#gxbake-tpl) | list what is in .tpl, .bti and .gxm files (and decode them to PNG) |
+| [`camera`](#gxbake-camera) | camera paths (glTF/DAE/FBX/JSON/CSV, HL1 trigger_camera) to .gcam keyframe tracks for GX |
 | [`gui`](#gxbake-gui) | open the desktop app |
 
 ## `gxbake convert`
@@ -776,6 +777,49 @@ gxbake tpl files [files ...] [--extract DIR]
 | --- | --- | --- |
 | `files` … |  | .tpl, .bti or .gxm files |
 | `--extract DIR` |  | write every image's top level as PNG, as the GameCube samples it |
+
+## `gxbake camera`
+
+Camera paths (glTF/DAE/FBX/JSON/CSV, HL1 trigger_camera) to .gcam keyframe tracks for GX.
+
+```
+gxbake camera inputs [inputs ...] [--output OUTPUT] [--combine NAME.gcam] [--list] [--inspect]
+    [--clip PATTERN] [--rate RATE] [--interp {auto,smooth,linear}] [--encoding {fixed,f32}]
+    [--pos-tol POS_TOL] [--rot-tol ROT_TOL] [--fov-tol FOV_TOL] [--max-bytes SIZE] [--axes
+    {auto,engine,gltf,blender,fbx}] [--scale SCALE] [--yaw YAW] [--offset X,Y,Z] [--fov FOV]
+    [--fov-x FOV_X] [--near NEAR] [--far FAR] [--aspect ASPECT] [--loop] [--node NODE] [--preview
+    DIR] [--samples DIR] [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `inputs` … |  | camera sources, folders or globs; with --inspect, .gcam files |
+| `-o OUTPUT`, `--output OUTPUT` |  | folder to write into |
+| `--combine NAME.gcam` |  | every clip in one file (default: one .gcam per source; a .bsp gives cam_<map>.gcam, which `budget` counts from media/) |
+| `--list` |  | only show the clips found in the sources |
+| `--inspect` |  | read .gcam files and show their clips and tracks |
+| `--clip PATTERN` |  | only clips whose name matches (repeatable) |
+| `--rate RATE` | `60.0` | sample rate in Hz, also the tick of fixed-point times |
+| `--interp {auto,smooth,linear}` | `auto` | curve the port evaluates; auto picks per track whichever needs fewer keys |
+| `--encoding {fixed,f32}` | `fixed` | fixed: s16 values with a per-track binary point and u16 ticks (about half the size); f32: floats |
+| `--pos-tol POS_TOL` | `0.25` | largest position error allowed, in GoldSrc units |
+| `--rot-tol ROT_TOL` | `0.15` | largest rotation error allowed, in degrees |
+| `--fov-tol FOV_TOL` | `0.05` | largest FOV error allowed, in degrees |
+| `--max-bytes SIZE` |  | loosen the tolerances (x1.5 steps) until each file fits |
+| `--axes {auto,engine,gltf,blender,fbx}` | `auto` | source axes: engine (Z-up, camera looks +X), gltf (Y-up, looks -Z), blender (Z-up, looks -Z), fbx (Y-up, looks +X); auto by file type |
+| `--scale SCALE` |  | GoldSrc units per source unit (default 39.37 for metre formats, else 1) |
+| `--yaw YAW` |  | turn the whole path about Z by this many degrees |
+| `--offset X,Y,Z` |  | move the whole path (engine units, after scale and yaw) |
+| `--fov FOV` |  | vertical FOV in degrees for every key (overrides the source) |
+| `--fov-x FOV_X` |  | horizontal FOV at the aspect (4:3 if not given), like HL's default_fov |
+| `--near NEAR` |  | near plane (default the source's, else 4) |
+| `--far FAR` |  | far plane (default the source's, else 4096) |
+| `--aspect ASPECT` |  | store a fixed aspect ratio (default 0: the port uses the screen's) |
+| `--loop` |  | mark clips as looping (gc_cam_sample wraps time) |
+| `--node NODE` |  | Assimp sources: the camera node's name (default: the animated node named *cam*) |
+| `--preview DIR` |  | write a top/side/FOV plot of each clip as the port will sample it |
+| `--samples DIR` |  | --inspect: write each clip sampled as CSV (t,x,y,z,pitch,yaw,roll,fov_y) |
+| `--json` |  | print the results as JSON |
 
 ## `gxbake gui`
 
