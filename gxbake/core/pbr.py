@@ -632,6 +632,20 @@ def bake(mat: Material, opts: BakeOptions | None = None) -> Baked:
 	return Baked(mat, opts.preset, images, jobs, tev, notes)
 
 
+GXM_PRESETS = {"prelit": 0, "lit": 1, "emboss": 2, "indirect": 3, "lightmap": 4}
+GXM_ALPHA = {"opaque": 0, "mask": 1, "blend": 2}
+GXM_ROLES = {"base": 0, "spec": 1, "emit": 2, "height": 3, "normal": 4, "env": 5, "lightmap": 6}
+
+
+def gxm_bytes(preset: str, maps: list[str], alpha_mode: str = "opaque", cutoff: float = 0.5,
+		tev_scale: int = 1, flags: int = 0) -> bytes:
+	"""The binary material the port reads (port/gc_mat.c gc_mat_parse): preset, alpha, TEV scale
+	and which TPL image holds each role (`maps` in TPL order)."""
+	head = b"GXM1" + struct.pack(">BBBBBBH", GXM_PRESETS[preset], GXM_ALPHA[alpha_mode],
+		max(0, min(255, round(cutoff * 255))), tev_scale, len(maps), 0, flags)
+	return head + b"".join(struct.pack(">BBH", GXM_ROLES[m], i, 0) for i, m in enumerate(maps))
+
+
 def tev_recipe(preset: str, maps: list[str], alpha_mode: str, cutoff: float) -> dict:
 	"""How to draw the baked maps with GX (libogc names). TEXMAPn follows the TPL image order.
 	The recipes are the standard fixed-function set-ups; check them against your renderer."""

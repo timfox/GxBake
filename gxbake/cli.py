@@ -19,7 +19,8 @@
 	gxbake auto <images or folders...> -o OUT [--role auto|ui|world|mask] [--budget 448K] [--combine ui.tpl]
 	gxbake pbr <material folders|maps|.gltf|.glb...> -o OUT [--preset prelit|lit|emboss|indirect] [--env PANO]
 	gxbake hdr <exr|hdr|pfm...> -o OUT [--mode texture|lightmap|sphere] [--tonemap aces|reinhard|hable|agx|clip]
-	gxbake build [gxbake.toml] [--init] [--force] [--dry-run] [-j N] [--json]
+	gxbake build [gxbake.toml] [--init] [--force] [--dry-run] [--watch] [-j N] [--json]
+	gxbake tpl <files.tpl|.bti|.gxm...> [--extract DIR]
 	gxbake rs <main_file_cache.dat2|.dat> [--find NAME] [--json]
 	gxbake ff7 <.hrc|.p|.a|.tex|<base>aa> [--anims] [--json]
 	gxbake ffxi <DAT|.spw|.bgw|FINAL FANTASY XI folder> [--id N] [--textures DIR] [--wav OUT] [--obj DIR [--prefabs]] [--json]
@@ -932,6 +933,8 @@ def _build(args) -> int:
 		print("no gxbake.toml or gxbake.json here (gxbake build --init writes an example)", file=sys.stderr)
 		return 1
 	log = (lambda s: None) if args.json else (lambda s: print(s, file=sys.stderr))
+	if args.watch:
+		return _watch(man, args, log)
 	try:
 		rep = build.build(man, force=args.force, dry_run=args.dry_run, workers=args.jobs, log=log)
 	except (OSError, ValueError, RuntimeError) as exc:
@@ -945,6 +948,79 @@ def _build(args) -> int:
 				print(f"[{name}]")
 				_print_group(g)
 	return 0 if rep.fits else 2
+
+
+def _watch(man: Path, args, log) -> int:
+	"""Rebuild whenever an input or the manifest changes (polling: no extra dependency)."""
+	import time
+
+	from .core import build
+
+	print(f"watching {man} (Ctrl+C to stop)", file=sys.stderr)
+	force = args.force
+	last = None
+	try:
+		while True:
+			try:
+				stamp = man.stat().st_mtime_ns
+				if stamp != last:
+					force = force or last is not None	# a manifest edit can change any rule
+					last = stamp
+				rep = build.build(man, force=force, workers=args.jobs, log=lambda s: None)
+				force = False
+				for name, g in rep.groups.items():
+					if not g.skipped:
+						print(f"[{name}] {time.strftime('%H:%M:%S')}", file=sys.stderr)
+						_print_group(g)
+			except (OSError, ValueError, RuntimeError) as exc:
+				print(f"error: {exc}", file=sys.stderr)
+			if args.once:
+				return 0
+			time.sleep(args.interval)
+	except KeyboardInterrupt:
+		return 0
+
+
+def _tpl(args) -> int:
+	"""List (and extract) what GxBake wrote: .tpl, .bti and .gxm."""
+	from PIL import Image
+
+	from .core import consoletex, pbr, tpl
+
+	out = Path(args.extract) if args.extract else None
+	for name in args.files:
+		p = Path(name)
+		data = p.read_bytes()
+		if data[:4] == b"GXM1":
+			preset = {v: k for k, v in pbr.GXM_PRESETS.items()}.get(data[4], "?")
+			alpha = {v: k for k, v in pbr.GXM_ALPHA.items()}.get(data[5], "?")
+			roles = {v: k for k, v in pbr.GXM_ROLES.items()}
+			maps = [f"{roles.get(data[12 + 4 * i], '?')}=#{data[13 + 4 * i]}" for i in range(data[8])]
+			print(f"{p.name}: material, preset {preset}, alpha {alpha} (ref {data[6]}), TEV scale x{data[7]}, "
+				+ ", ".join(maps))
+			continue
+		if p.suffix.lower() == ".bti":
+			img = consoletex.read_bti(data)
+			print(f"{p.name}: BTI {img.shape[1]}x{img.shape[0]}")
+			if out:
+				out.mkdir(parents=True, exist_ok=True)
+				Image.fromarray(img).save(out / f"{p.stem}.png")
+			continue
+		try:
+			images = tpl.read_tpl(data)
+		except (ValueError, KeyError, struct.error) as exc:
+			print(f"{p.name}: not a TPL, BTI or GXM ({exc})", file=sys.stderr)
+			return 1
+		print(f"{p.name}: TPL, {len(images)} image(s), {audit.human_bytes(len(data))}")
+		wraps = {0: "clamp", 1: "repeat", 2: "mirror"}
+		for i, im in enumerate(images):
+			pal = f", TLUT {len(im.tlut) // 2}" if im.tlut else ""
+			print(f"  #{i}: {im.fmt:6} {im.width}x{im.height}, {len(im.levels)} level(s), "
+				f"{wraps.get(im.wrap_s, im.wrap_s)}, {audit.human_bytes(im.size)}{pal}")
+			if out:
+				out.mkdir(parents=True, exist_ok=True)
+				Image.fromarray(im.decode()).save(out / f"{p.stem}_{i}.png")
+	return 0
 
 
 def _add_auto_opts(p, max_edge: int = 256, min_db: float = 38.0) -> None:
@@ -1024,7 +1100,15 @@ def _add_auto_parsers(sub) -> None:
 	b.add_argument("--dry-run", action="store_true", help="show what would be built")
 	b.add_argument("-j", "--jobs", type=int, help="worker processes (default: [build] jobs, or 1)")
 	b.add_argument("--json", action="store_true", help="print the build report as JSON")
+	b.add_argument("--watch", action="store_true", help="keep running: rebuild what changed whenever an input or the manifest changes")
+	b.add_argument("--interval", type=float, default=1.0, help="--watch: seconds between checks")
+	b.add_argument("--once", action="store_true", help=argparse.SUPPRESS)
 	b.set_defaults(fn=_build)
+
+	t = sub.add_parser("tpl", help="list what is in .tpl, .bti and .gxm files (and decode them to PNG)")
+	t.add_argument("files", nargs="+", help=".tpl, .bti or .gxm files")
+	t.add_argument("--extract", metavar="DIR", help="write every image's top level as PNG, as the GameCube samples it")
+	t.set_defaults(fn=_tpl)
 
 
 def build_parser() -> argparse.ArgumentParser:
