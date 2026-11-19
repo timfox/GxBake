@@ -371,6 +371,9 @@ def choose_indexed(index: "np.ndarray", palette_rgb: "np.ndarray", masked: bool,
 	# one colour on the GameCube: merging them is lossless and can drop CI8 to CI4.
 	words, first, merged = np.unique(tlut_words(pal, tlut), return_index=True, return_inverse=True)
 	cands: list[GxTexture] = [encode_indexed(merged.reshape(-1)[remap], pal[first], tlut)]
+	# Tiny skins: a 512-byte TLUT can cost more than the texels it saves, so
+	# today's direct 16-bit format stays a candidate (lossless by definition).
+	cands.append(encode(rgba, base_fmt))
 	if len(words) > 16:
 		q = quantize_ci4(remap, pal, alpha)
 		if q is not None:
@@ -386,10 +389,10 @@ def choose_indexed(index: "np.ndarray", palette_rgb: "np.ndarray", masked: bool,
 		if alpha:
 			db = min(db, psnr(d[..., 3] > 127, ref[..., 3] > 127))
 		tried[t.fmt] = (t.size, db)
-		lossless = t.fmt in ("CI4", "CI8") and db == float("inf")
+		lossless = t.fmt in ("CI4", "CI8", base_fmt) and db == float("inf")
 		ok = lossless or db >= min_db
 		# Smaller wins; within 64 bytes (a TLUT's worth) the closer picture wins.
-		if ok and (best is None or t.size < best[0] - 64 or (abs(t.size - best[0]) <= 64 and db > best[2])):
+		if ok and (best is None or t.size < best[0] - 64 or (abs(t.size - best[0]) <= 64 and (db > best[2] or (db == best[2] and t.size < best[0])))):
 			best = (t.size, t, db)
 	assert best is not None
 	return Choice(best[1], best[2], baseline, tried)

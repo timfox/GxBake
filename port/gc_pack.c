@@ -144,7 +144,7 @@ uint32_t gc_dsp_decode( const gc_dsp_t *dsp, uint32_t first, uint32_t count, gc_
 /* --- GCSK --------------------------------------------------------------- */
 
 #define GSK_HEADER 16
-#define GSK_ENTRY 32
+#define GSK_ENTRY 36	/* squeeze.GCSK_ENTRY: >HBBHHHHIIII8x */
 
 int gc_gsk_parse( const uint8_t *blob, size_t len )
 {

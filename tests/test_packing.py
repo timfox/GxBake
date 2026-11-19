@@ -177,9 +177,10 @@ def test_detail_trim_drops_only_flat_mips():
 
 
 def test_skin_pack_roundtrip():
-	raw = fixtures.studio([("skin", 32, 32, 0), ("mask", 16, 16, 0x40)])
+	raw = fixtures.studio([("skin", 0, 32, 32), ("mask", 0x40, 16, 16), ("arm", 0, 64, 32)])	# (name, flags, w, h)
 	skins = squeeze.studio_skins(raw)
-	assert [s.choice.tex.fmt for s in skins] and all(s.choice.tex.size < s.choice.baseline for s in skins)
+	assert len(skins) == 3
+	assert [s.choice.tex.fmt for s in skins] and all(s.choice.tex.size <= s.choice.baseline for s in skins)
 	blob = squeeze.write_skin_pack(skins)
 	back = squeeze.read_skin_pack(blob)
 	for s, t in zip(skins, back):
