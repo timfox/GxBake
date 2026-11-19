@@ -479,6 +479,17 @@ def map_budget(gamedir: Path, bsp: Path, budgets: Budgets | None = None,
 		if not all(sides):
 			out.missing.append(f"media/sky_{sky}*.cmp")
 		out.lines.append(Line("Sky", size, None, INFO, sky))
+	cam = _ci_file(gamedir, f"media/cam_{stem}.gcam")
+	if cam is not None:
+		from .camera import read_gcam
+
+		raw = cam.read_bytes()
+		try:
+			clips = read_gcam(raw)
+			out.lines.append(Line("Camera paths", len(raw), None, INFO, f"{len(clips)} clips",
+				_top([(c.name, c.bytes) for c in clips])))
+		except ValueError as exc:
+			out.lines.append(Line("Camera paths", len(raw), None, WARN, f"media/cam_{stem}.gcam: {exc}"))
 	out.lines.append(Line("BSP file", len(data), None, INFO, "lumps are read into the heap at map load"))
 	return out
 

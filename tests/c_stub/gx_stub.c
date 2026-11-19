@@ -27,3 +27,4 @@ void GX_SetTevIndirect( u8 s, u8 i, u8 f, u8 b, u8 m, u8 ws, u8 wt, u8 ap, u8 u,
 void GX_SetAlphaCompare( u8 c0, u8 r0, u8 o, u8 c1, u8 r1 ) { printf( "SetAlphaCompare %d %d %d %d %d\n", c0, r0, o, c1, r1 ); }
 void GX_SetZCompLoc( u8 b ) { printf( "SetZCompLoc %d\n", b ); }
 void GX_SetBlendMode( u8 t, u8 s, u8 d, u8 o ) { printf( "SetBlendMode %d %d %d %d\n", t, s, d, o ); }
+void GX_LoadProjectionMtx( f32 m[4][4], u8 t ) { printf( "LoadProjectionMtx %d %g %g %g %g %g\n", t, m[0][0], m[1][1], m[2][2], m[2][3], m[3][2] ); }

@@ -77,7 +77,7 @@ gxbake sky canyon.exr -o staged/valve --tonemap hable              # HDR sky wit
 
 ## Manifests (`gxbake build`)
 
-`gxbake build --init` writes a commented `gxbake.toml`. Rules: `[[textures]]`, `[[pbr]]`, `[[hdr]]`, `[[sphere]]`, `[[sky]]`; every option of the matching command is a key (underscores for dashes). Paths are relative to the manifest; `inputs` take files, folders (recursive, sub-folders kept in the output) and globs (`**` works); `exclude` takes name globs.
+`gxbake build --init` writes a commented `gxbake.toml`. Rules: `[[textures]]`, `[[pbr]]`, `[[hdr]]`, `[[sphere]]`, `[[sky]]`, `[[camera]]` (see [camera.md](camera.md)); every option of the matching command is a key (underscores for dashes). Paths are relative to the manifest; `inputs` take files, folders (recursive, sub-folders kept in the output) and globs (`**` works); `exclude` takes name globs.
 
 * `[build] budget` is shared by every rule that has no `budget` of its own; a rule with one is placed alone. Skies are counted separately (they live in the port's 48 KiB sky block).
 * `[build] jobs` encodes in that many processes.

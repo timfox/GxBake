@@ -44,6 +44,13 @@ Manifest (TOML or JSON), paths relative to the manifest:
 	[[sky]]                 # → media/sky_<name><side>.cmp
 	inputs = ["sky/canyon.hdr"]
 	tonemap = "aces"
+
+	[[camera]]              # glTF/DAE/FBX/JSON/CSV/BSP camera paths → .gcam keyframe tracks
+	inputs = ["cutscenes/*.glb"]
+	output = "media"
+	combine = "cam_c1a0.gcam"   # every clip in one file (default: one .gcam per source)
+	pos_tol = 0.25          # GoldSrc units; rot_tol (degrees), fov_tol (degrees)
+	max_bytes = "4K"        # loosen the tolerances until the file fits
 """
 
 from __future__ import annotations
@@ -64,7 +71,7 @@ from .budget import parse_size
 
 STATE_FILE = ".gxbake-build.json"
 CONTAINERS = ("tpl", "bti", "gct")
-RULE_KINDS = ("textures", "pbr", "hdr", "sphere", "sky")
+RULE_KINDS = ("textures", "pbr", "hdr", "sphere", "sky", "camera")
 
 
 @dataclass
@@ -445,7 +452,31 @@ def sky_units(rule: Rule, root: Path, out: Path, defaults: dict, preview: Path |
 	return units
 
 
-BUILDERS = {"textures": texture_units, "pbr": pbr_units, "hdr": hdr_units, "sphere": sphere_units, "sky": sky_units}
+def camera_units(rule: Rule, root: Path, out: Path, defaults: dict, preview: Path | None = None) -> list[Unit]:
+	from . import camera
+
+	g = {**rule.options}
+	opts = camera.options_from(g)
+	files = [f for f, _b in expand(rule.inputs, root, camera.EXTENSIONS)]
+	units = []
+	for o in camera.convert(files, opts, out, g.get("combine")):
+
+		def write_cam(placed, o=o):
+			res = [_save(o.path, o.data, "gcam")]
+			if preview is not None:
+				for clip in camera.read_gcam(o.data):
+					f = camera.preview_png(clip, preview / f"{o.path.stem}_{clip.name}.png")
+					res.append(Written(f, f.stat().st_size, "preview"))
+			return res
+
+		notes = [f"{camera.clip_name(e.path.name)}: {n}" for e in o.clips for n in e.path.notes]
+		units.append(Unit("camera", o.path.name, [], write_cam, o.inputs, fixed_bytes=len(o.data), notes=notes,
+			info={"clips": [camera.describe(e) for e in o.clips]}))
+	return units
+
+
+BUILDERS = {"textures": texture_units, "pbr": pbr_units, "hdr": hdr_units, "sphere": sphere_units, "sky": sky_units,
+	"camera": camera_units}
 
 
 # -- placing and writing ------------------------------------------------------------------------------
@@ -645,4 +676,13 @@ container = "tpl"    # tpl | bti | gct
 # [[sky]]
 # inputs = ["sky/canyon.hdr"]
 # tonemap = "aces"     # aces | reinhard | hable | agx | clip
+
+# [[camera]]
+# inputs = ["cutscenes/*.glb", "maps/c1a0.bsp"]   # glTF, DAE/FBX (Assimp), JSON, CSV, BSP trigger_cameras
+# output = "media"
+# combine = "cam_c1a0.gcam"   # gxbake budget counts media/cam_<map>.gcam
+# encoding = "fixed"   # fixed (s16 values, u16 ticks) | f32
+# pos_tol = 0.25       # GoldSrc units
+# rot_tol = 0.15       # degrees
+# max_bytes = "4K"
 '''
