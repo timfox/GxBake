@@ -10,13 +10,19 @@ Copy both files into `engine/platform/gamecube/`, add `gc_pack.c` to the GameCub
 
 ## Where each one hooks in
 
-These hooks are based on the port's source as of 2026-11-18. None of them has been built or run on hardware.
+The `.gsk` and `.dsp` readers are wired into the HL1 port on a local branch (`gxbake-packing`, 2026-11-19), at the hooks below. That build compiles and boots in Dolphin, but neither path has run in a game yet. The other hooks are from reading the source.
 
 ### Indexed skins (`.gsk`): half the skin memory, same pixels
 
-In `Mod_GCAttachStudioSkins` (`engine/common/mod_studio.c`), before `Mod_GCLoadStudioTexFile`:
+On HL1 `master` the hook is `Mod_StudioLoadTextures` / `R_StudioLoadTexture` in `ref/gx/r_studio.c`, beside the baked-CMPR route (`R_GCBakedCmprSkin`, `STUDIO_NF_GC_CMPR`). Older trees had `Mod_GCAttachStudioSkins` in `engine/common/mod_studio.c`. The HL1 branch:
 
-1. Try `gc_studio/<name>.gsk` and load it 32-byte aligned (`memalign(32, …)`). Then call `DCFlushRange` on it.
+- reads only the 32-byte entry table from the `.gsk`, using `gc_gsk_entry`'s layout;
+- copies each skin's texels and TLUT into the existing studio skin window (`R_GCBakedGskSkin`, `r_image.c`);
+- binds them in `R_GXNativeTexture` (`r_gx_world.c`), rotating TLUTs through `GX_TLUT12`–`15`.
+
+`-gcnogsk` turns this off. The steps in general:
+
+1. Try `gc_studio/<name>.gsk` and load it 32-byte aligned (`memalign(32, …)`), or just its table and then each skin on demand. Then call `DCFlushRange` on the bytes GX will read.
 2. For each entry from `gc_gsk_entry`, the texels and the TLUT are already GX-tiled. Point the skin's texture object at them with `gc_gsk_bind` instead of building RGB565 in `R_StudioLoadTexture` / `R_GXSkinBuildTiled`. This removes that per-pixel CPU loop.
 3. A CI skin needs its TLUT loaded in a TLUT slot (`GX_TLUT0`–`GX_TLUT15`) while it draws. The simplest way is to give each resident skin a slot round-robin and re-call `GX_LoadTlut` when a skin is bound (512 bytes).
 4. If the `.gsk` is missing, the current RGB565 path is unchanged.
@@ -25,13 +31,21 @@ For `v_*.mdl` view models, GxBake has already applied `R_GXSkinBuildTiled`'s chr
 
 ### DSP ADPCM sound (`.dsp`): 3.5× less sound memory
 
-The simplest version decodes at load. In `Sound_LoadWAV`'s caller (`S_LoadSound`), when `sound/<name>.dsp` exists, decode it once into the PCM buffer the mixer already uses: `gc_dsp_parse`, then `gc_dsp_decode(&dsp, 0, dsp.samples, &st, pcm)`. Loop points come from `dsp.loop_start` / `dsp.loop_end`. This saves disc space and lets the ARAM sfx store hold 3.5× more, but the MEM1 cache still holds PCM.
+The simplest version decodes at load. On HL1 this is `FS_LoadSound` (`snd_main.c`). One ASND voice is fed by the software mixer (`snddma_gamecube.c`), so the decoded PCM goes into the usual sound cache. Watch out: most HL1 effects are 8-bit WAVs, and decoding `.dsp` to s16 doubles their MEM1 size. Sounds over the per-file cap are sent to ARAM by their `.wav` size before `FS_LoadSound` runs, so they never see the `.dsp`. Decode-at-load therefore only pays for 16-bit sounds, and the in-mixer version below is the real win. When `sound/<name>.dsp` exists, decode it once into the PCM buffer the mixer already uses: `gc_dsp_parse`, then `gc_dsp_decode(&dsp, 0, dsp.samples, &st, pcm)`. Loop points come from `dsp.loop_start` / `dsp.loop_end`. This saves disc space and lets the ARAM sfx store hold 3.5× more, but the MEM1 cache still holds PCM.
 
 The full win keeps the `.dsp` bytes in the MEM1 cache and the ARAM store, and decodes in the mixer as it pulls samples. `gc_dsp_decode` streams: keep a `gc_dsp_state_t` per channel and call it with consecutive ranges. When a looping sound wraps, seed the state from `dsp.loop_h1` / `loop_h2` at `loop_start`. With that, the 128 KiB cache and the 20 KiB per-file cap hold 3.5× more audio.
 
 ### Music (`.gcpcm` → `.L.dsp` / `.R.dsp`)
 
 In `engine/client/avi/avi_gc.c`, where the GCPCM stream is read in chunks, read the two `.dsp` files instead. Decode each chunk with `gc_dsp_decode` into the s16 stereo buffer that `ASND_AddVoice` takes. Disc traffic for music drops from 192 KB/s to 55 KB/s.
+
+### s16 vertices (`.gsv`)
+
+Studio vertices are transformed on the CPU in `R_StudioDrawPoints` (`ref/gx/r_studio.c`): `Matrix3x4_VectorTransform` into `g_studio.verts`. Load `gc_studio/<name>.gsv` next to the model, and point each model's vertex and normal source at its `gc_gsv_entry` arrays. Then set a GQR with type s16 and scale `pos_frac` (and s8/`nrm_frac` for normals), and read them with `psq_l` in the transform loop. Before that is written, `gc_gsv_dequant` gives the same floats, so a first version can dequantise into the existing float arrays at load. That saves nothing, but it proves the data. The display-list routes (`R_GXActorDraw` in `r_gx_actor.c`, `R_GXStudioDLTryDraw` in `r_gx_studiodl.c`) can take s16 positions directly with `GX_SetVtxAttrFmt(…, GX_POS_XYZ, GX_S16, pos_frac)`.
+
+### Lightmap sizes (`gxbake lightmaps --plan`)
+
+The atlas is RGB565, built in `engine/common/mod_bmodel.c` (`Mod_GCBakeMenuLightmapAtlas`, `GC_GetLiveLightmapAtlas`). It is capped in `GC_PackCapLightmapAtlas` (`vid_gamecube.c`) and bound by `R_GXBindLightmapAtlas` (`r_gx_world.c`). The plan's per-face `new_w`/`new_h`/`page`/`x`/`y` replace the allocator's own placement. A face's lightmap UVs scale by `(new − 1) / (old − 1)` per axis. A 1×1 face samples a single texel.
 
 ### Yaz0 (`*.yaz0`)
 
