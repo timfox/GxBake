@@ -36,6 +36,10 @@ build or CI job.
 | [`sky`](#gxbake-sky) | turn a panorama, cubemap cross/strip, photo or six faces into the port's sky sides |
 | [`video`](#gxbake-video) | convert any video FFmpeg reads to a THP movie (the GameCube SDK's format: JPEG + DSP ADPCM) |
 | [`pack`](#gxbake-pack) | list, extract, build and edit .gct texture packs |
+| [`auto`](#gxbake-auto) | images to GX textures with the format and size picked automatically (TPL/BTI/GCT) |
+| [`pbr`](#gxbake-pbr) | bake PBR material sets (albedo/normal/roughness/metal/AO/height/emissive, glTF) for TEV |
+| [`hdr`](#gxbake-hdr) | EXR/HDR/PFM to tone-mapped textures, overbright lightmaps or GX sphere maps |
+| [`build`](#gxbake-build) | run a gxbake.toml/.json manifest: batch conversions under budgets, incremental |
 | [`gui`](#gxbake-gui) | open the desktop app |
 
 ## `gxbake convert`
@@ -426,8 +430,8 @@ Turn a panorama, cubemap cross/strip, photo or six faces into the port's sky sid
 
 ```
 gxbake sky inputs [inputs ...] --output OUTPUT [--name NAME] [--layout
-    {auto,equirect,cross,strip,faces,photo}] [--yaw YAW] [--fov FOV] [--exposure EXPOSURE] [--size
-    SIZE] [--env SIZE] [--preview PNG]
+    {auto,equirect,cross,strip,faces,photo}] [--yaw YAW] [--fov FOV] [--exposure EXPOSURE]
+    [--tonemap {aces,reinhard,hable,agx,clip}] [--size SIZE] [--env SIZE] [--preview PNG]
 ```
 
 | Argument | Default | Description |
@@ -439,6 +443,7 @@ gxbake sky inputs [inputs ...] --output OUTPUT [--name NAME] [--layout
 | `--yaw YAW` | `270.0` | engine yaw the image centre (or the cross's front) faces: 0 rt, 90 bk, 180 lf, 270 ft |
 | `--fov FOV` | `180.0` | photo layout: horizontal degrees the photo covers; mirrored copies fill the rest |
 | `--exposure EXPOSURE` |  | .hdr input: stops brighter (+) or darker (-) than auto |
+| `--tonemap {aces,reinhard,hable,agx,clip}` | `aces` | HDR input (.hdr/.exr/.pfm): tone-mapping curve |
 | `--size SIZE` | `128` | side size; the port loads only 128 |
 | `--env SIZE` |  | also write gfx/env/<name><side>.tga at SIZE (PC builds, the disc builder) |
 | `--preview PNG` |  | write the decoded sides as a cross to check seams and orientation |
@@ -575,6 +580,131 @@ gxbake pack merge packs [packs ...] --output OUTPUT
 | --- | --- | --- |
 | `packs` … |  | .gct files, in priority order (last wins) |
 | `-o OUTPUT`, `--output OUTPUT` |  | **Required.** .gct to write |
+
+## `gxbake auto`
+
+Images to GX textures with the format and size picked automatically (TPL/BTI/GCT).
+
+```
+gxbake auto inputs [inputs ...] --output OUTPUT [--min-db MIN_DB] [--max-edge MAX_EDGE] [--formats
+    FORMATS] [--no-mipmaps] [--budget SIZE] [--container {tpl,bti,gct}] [--preview DIR] [--jobs
+    JOBS] [--json] [--role {auto,color,world,ui,mask,normal,lightmap}] [--combine NAME.tpl]
+    [--no-recursive] [--npot] [--wrap {repeat,clamp}]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `inputs` … |  | images, folders (recursive) or globs |
+| `-o OUTPUT`, `--output OUTPUT` |  | **Required.** folder to write into |
+| `--min-db MIN_DB` | `38.0` | quality floor: the smallest format whose PSNR against the source stays above this wins |
+| `--max-edge MAX_EDGE` | `256` | largest texture side |
+| `--formats FORMATS` |  | comma list of GX formats to allow (I4, I8, IA4, IA8, CI4, CI8, CMPR, RGB565, RGB5A3, RGBA8) |
+| `--no-mipmaps` |  | level 0 only |
+| `--budget SIZE` |  | total bytes for every texture written (e.g. 448K): formats and sizes step down where it costs least |
+| `--container {tpl,bti,gct}` |  | file format (default tpl) |
+| `--preview DIR` |  | also write each texture decoded as the GameCube samples it |
+| `-j JOBS`, `--jobs JOBS` | `1` | encode in this many processes |
+| `--json` |  | print the results as JSON |
+| `--role {auto,color,world,ui,mask,normal,lightmap}` | `auto` | which formats suit the content: ui keeps edges crisp (no CMPR), world is CMPR only, mask is I4/I8 |
+| `--combine NAME.tpl` |  | every image in one TPL, plus NAME.h with an index per image |
+| `--no-recursive` |  | do not descend into sub-folders |
+| `--npot` |  | keep non-power-of-two sizes (forces clamp; mips need powers of two) |
+| `--wrap {repeat,clamp}` | `repeat` | TPL wrap mode |
+
+## `gxbake pbr`
+
+Bake PBR material sets (albedo/normal/roughness/metal/AO/height/emissive, glTF) for TEV.
+
+```
+gxbake pbr inputs [inputs ...] --output OUTPUT [--min-db MIN_DB] [--max-edge MAX_EDGE] [--formats
+    FORMATS] [--no-mipmaps] [--budget SIZE] [--container {tpl,bti,gct}] [--preview DIR] [--jobs
+    JOBS] [--json] [--preset {prelit,lit,emboss,indirect}] [--env ENV] [--env-size ENV_SIZE]
+    [--env-roughness ENV_ROUGHNESS] [--tonemap {aces,reinhard,hable,agx,clip}] [--light LIGHT]
+    [--detail DETAIL] [--ao-strength AO_STRENGTH] [--spec-strength SPEC_STRENGTH] [--gct-base
+    NAME.gct] [--list]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `inputs` … |  | folders or files of material maps, or .gltf/.glb files |
+| `-o OUTPUT`, `--output OUTPUT` |  | **Required.** folder to write into |
+| `--min-db MIN_DB` | `36.0` | quality floor: the smallest format whose PSNR against the source stays above this wins |
+| `--max-edge MAX_EDGE` | `256` | largest texture side |
+| `--formats FORMATS` |  | comma list of GX formats to allow (I4, I8, IA4, IA8, CI4, CI8, CMPR, RGB565, RGB5A3, RGBA8) |
+| `--no-mipmaps` |  | level 0 only |
+| `--budget SIZE` |  | total bytes for every texture written (e.g. 448K): formats and sizes step down where it costs least |
+| `--container {tpl,bti,gct}` |  | file format (default tpl) |
+| `--preview DIR` |  | also write each texture decoded as the GameCube samples it |
+| `-j JOBS`, `--jobs JOBS` | `1` | encode in this many processes |
+| `--json` |  | print the results as JSON |
+| `--preset {prelit,lit,emboss,indirect}` | `lit` | prelit: one baked texture; lit: base (+spec, +glow) for engine lighting; emboss: + height for GX emboss bump; indirect: + IA8 normal and a sphere map for reflections |
+| `--env ENV` |  | indirect preset: panorama, cubemap or HDR to render the reflection sphere map from |
+| `--env-size ENV_SIZE` | `128` | sphere map size |
+| `--env-roughness ENV_ROUGHNESS` | `auto` | blur of the sphere map: 0-1, or auto (the material's median) |
+| `--tonemap {aces,reinhard,hable,agx,clip}` | `aces` | for an HDR --env |
+| `--light LIGHT` |  | tangent-space key light x,y,z for prelit (default upper left: -0.45,0.55,0.7) |
+| `--detail DETAIL` |  | how strongly normal-map detail is painted into the base (default 1) |
+| `--ao-strength AO_STRENGTH` |  | AO multiplier (default 1) |
+| `--spec-strength SPEC_STRENGTH` |  | prelit highlight strength (default 0.6) |
+| `--gct-base NAME.gct` |  | also pack every base map as CMPR in one .gct for the port |
+| `--list` |  | only show the material sets found and which file feeds each map |
+
+## `gxbake hdr`
+
+EXR/HDR/PFM to tone-mapped textures, overbright lightmaps or GX sphere maps.
+
+```
+gxbake hdr inputs [inputs ...] --output OUTPUT [--min-db MIN_DB] [--max-edge MAX_EDGE] [--formats
+    FORMATS] [--no-mipmaps] [--budget SIZE] [--container {tpl,bti,gct}] [--preview DIR] [--jobs
+    JOBS] [--json] [--mode {texture,lightmap,sphere}] [--tonemap {aces,reinhard,hable,agx,clip}]
+    [--exposure EXPOSURE] [--no-auto-exposure] [--white WHITE] [--overbright {auto,1,2,4}] [--gamma
+    GAMMA] [--role {auto,color,world,ui,mask,normal,lightmap}] [--size SIZE] [--yaw YAW] [--pitch
+    PITCH] [--roughness ROUGHNESS] [--layout {auto,equirect,cross,strip,faces,photo}]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `inputs` … |  | HDR images (also any 8-bit image), folders or globs |
+| `-o OUTPUT`, `--output OUTPUT` |  | **Required.** folder to write into |
+| `--min-db MIN_DB` | `38.0` | quality floor: the smallest format whose PSNR against the source stays above this wins |
+| `--max-edge MAX_EDGE` | `256` | largest texture side |
+| `--formats FORMATS` |  | comma list of GX formats to allow (I4, I8, IA4, IA8, CI4, CI8, CMPR, RGB565, RGB5A3, RGBA8) |
+| `--no-mipmaps` |  | level 0 only |
+| `--budget SIZE` |  | total bytes for every texture written (e.g. 448K): formats and sizes step down where it costs least |
+| `--container {tpl,bti,gct}` |  | file format (default tpl) |
+| `--preview DIR` |  | also write each texture decoded as the GameCube samples it |
+| `-j JOBS`, `--jobs JOBS` | `1` | encode in this many processes |
+| `--json` |  | print the results as JSON |
+| `--mode {texture,lightmap,sphere}` | `texture` | texture: tone-map; lightmap: store light/scale for a TEV stage scaled ×2/×4; sphere: render a sphere map for GX_TG_NRM reflections |
+| `--tonemap {aces,reinhard,hable,agx,clip}` | `aces` | texture and sphere modes: curve |
+| `--exposure EXPOSURE` |  | stops over the automatic exposure (lightmap: over 1.0) |
+| `--no-auto-exposure` |  | texture mode: use the values as they are, scaled only by --exposure |
+| `--white WHITE` | `4.0` | reinhard/hable: the input level that maps to white |
+| `--overbright {auto,1,2,4}` | `auto` | lightmap TEV scale; auto takes the smallest that clips at most 0.1%% of texels |
+| `--gamma GAMMA` | `1.0` | lightmap: store light^(1/gamma) (1 = linear, what TEV multiplies) |
+| `--role {auto,color,world,ui,mask,normal,lightmap}` |  | format set (default lightmap for lightmaps, else auto) |
+| `--size SIZE` | `128` | sphere mode: map size |
+| `--yaw YAW` | `270.0` | sphere mode: engine yaw the camera faces (270 = -Y, the sky's ft) |
+| `--pitch PITCH` |  | sphere mode: camera pitch in degrees |
+| `--roughness ROUGHNESS` |  | sphere mode: blur, 0 (mirror) to 1 (very rough) |
+| `--layout {auto,equirect,cross,strip,faces,photo}` | `auto` | sphere mode: how to read the source |
+
+## `gxbake build`
+
+Run a gxbake.toml/.json manifest: batch conversions under budgets, incremental.
+
+```
+gxbake build [manifest] [--init] [--force] [--dry-run] [--jobs JOBS] [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `manifest` |  | manifest file or folder holding gxbake.toml (default: here) |
+| `--init` |  | write a commented example gxbake.toml |
+| `--force` |  | rebuild everything (and let --init overwrite) |
+| `--dry-run` |  | show what would be built |
+| `-j JOBS`, `--jobs JOBS` |  | worker processes (default: [build] jobs, or 1) |
+| `--json` |  | print the build report as JSON |
 
 ## `gxbake gui`
 

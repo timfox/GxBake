@@ -16,6 +16,10 @@
 	gxbake lumps <map.bsp|wd_<map>.gcd|<map>.gcmeta|folder...> [-o OUT] [--textures] [--json]
 	gxbake sky <panorama|cross|strip|six faces> -o OUT [--name NAME] [--yaw 270]
 	gxbake video <videos...> -o OUT [--max 512x448] [--quality 80] [--max-kbps N] [--max-size SIZE]
+	gxbake auto <images or folders...> -o OUT [--role auto|ui|world|mask] [--budget 448K] [--combine ui.tpl]
+	gxbake pbr <material folders|maps|.gltf|.glb...> -o OUT [--preset prelit|lit|emboss|indirect] [--env PANO]
+	gxbake hdr <exr|hdr|pfm...> -o OUT [--mode texture|lightmap|sphere] [--tonemap aces|reinhard|hable|agx|clip]
+	gxbake build [gxbake.toml] [--init] [--force] [--dry-run] [-j N] [--json]
 	gxbake rs <main_file_cache.dat2|.dat> [--find NAME] [--json]
 	gxbake ff7 <.hrc|.p|.a|.tex|<base>aa> [--anims] [--json]
 	gxbake ffxi <DAT|.spw|.bgw|FINAL FANTASY XI folder> [--id N] [--textures DIR] [--wav OUT] [--obj DIR [--prefabs]] [--json]
@@ -33,6 +37,7 @@ from . import __version__
 import json
 
 from .core import audit, budget, disc, sfx, skybox
+from .core.hdr import TONEMAPS
 from .core.project import CONVERTIBLE, Project, Settings
 
 
@@ -504,7 +509,8 @@ def _extract(args) -> int:
 
 
 def _sky(args) -> int:
-	opts = skybox.SkyOptions(layout=args.layout, yaw=args.yaw, fov=args.fov, exposure=args.exposure, size=args.size)
+	opts = skybox.SkyOptions(layout=args.layout, yaw=args.yaw, fov=args.fov, exposure=args.exposure, size=args.size,
+		tonemap=args.tonemap)
 	paths = [Path(p) for p in args.inputs]
 	try:
 		sky = skybox.build(paths, opts, args.name)
@@ -824,6 +830,203 @@ def _add_pack_parser(sub) -> None:
 	a.set_defaults(fn=_pack_merge)
 
 
+# -- automatic GX formats, PBR, HDR and manifest builds --------------------------------------------------
+
+
+def _print_group(g, as_json: bool = False) -> None:
+	from .core import autotex
+
+	if as_json:
+		print(json.dumps({"budget": g.budget, "total": g.total, "fits": g.fits, "units": [
+			{"kind": r.unit.kind, "name": r.unit.name, "textures": [autotex.summary(p) for p in r.placed],
+				"files": [str(w.path) for w in r.written], "notes": r.unit.notes} for r in g.units]}, indent=1))
+		return
+	for r in g.units:
+		for p in r.placed:
+			o = p.option
+			db = "lossless" if o.db == float("inf") else f"{o.db:5.1f} dB"
+			flag = "  (below min-db to fit the budget)" if p.under else ""
+			print(f"  {p.job.name:40} {o.fmt:6} {o.width:4}x{o.height:<4} {len(p.image.levels)} lv "
+				f"{audit.human_bytes(p.image.size):>9}  {db}{flag}")
+		for n in r.unit.notes:
+			print(f"  note ({r.unit.name}): {n}", file=sys.stderr)
+	files = [w for r in g.units for w in r.written]
+	print(f"wrote {len(files)} files; textures {audit.human_bytes(g.total)}"
+		+ (f" of {audit.human_bytes(g.budget)} budget" if g.budget else "")
+		+ ("" if g.fits else "  — OVER BUDGET even at the smallest options"))
+
+
+def _rule_opts(args, **extra) -> dict:
+	o = {"min_db": args.min_db, "max_edge": args.max_edge, "mipmaps": not args.no_mipmaps}
+	if getattr(args, "formats", None):
+		o["formats"] = args.formats
+	if getattr(args, "container", None):
+		o["container"] = args.container
+	o.update({k: v for k, v in extra.items() if v is not None})
+	return o
+
+
+def _run_rules(args, kind: str, options: dict) -> int:
+	from .core import build
+
+	rule = build.Rule(kind, list(args.inputs), "", options)
+	out = Path(args.output)
+	preview = Path(args.preview) if getattr(args, "preview", None) else None
+	try:
+		units = build.BUILDERS[kind](rule, Path.cwd(), out, {}, preview)
+		if not units:
+			print("nothing to convert", file=sys.stderr)
+			return 1
+		g = build.run_units(units, budget.parse_size(args.budget) if args.budget else 0, args.jobs)
+	except (OSError, ValueError, RuntimeError) as exc:
+		print(f"error: {exc}", file=sys.stderr)
+		return 1
+	_print_group(g, args.json)
+	return 0 if g.fits else 2
+
+
+def _auto(args) -> int:
+	return _run_rules(args, "textures", _rule_opts(args, role=args.role, combine=args.combine,
+		recursive=not args.no_recursive, pow2=not args.npot, wrap=args.wrap))
+
+
+def _pbr(args) -> int:
+	from .core import build, pbr
+
+	if args.list:
+		sets = pbr.find_sets([Path(p) for p in args.inputs if not p.lower().endswith((".gltf", ".glb"))])
+		for name, chans in sets.items():
+			print(f"{name}: " + ", ".join(f"{c}={p.name}" for c, p in sorted(chans.items())))
+		for p in args.inputs:
+			if p.lower().endswith((".gltf", ".glb")):
+				for m in pbr.load_gltf(Path(p)):
+					print(f"{m.name} (glTF): " + ", ".join(f"{c}={s}" for c, s in sorted(m.sources.items())))
+		return 0
+	return _run_rules(args, "pbr", _rule_opts(args, preset=args.preset, env=args.env, env_size=args.env_size,
+		env_roughness=args.env_roughness, light=args.light, detail=args.detail, ao_strength=args.ao_strength,
+		spec_strength=args.spec_strength, gct_base=args.gct_base, tonemap=args.tonemap))
+
+
+def _hdr(args) -> int:
+	if args.mode == "sphere":
+		return _run_rules(args, "sphere", _rule_opts(args, size=args.size, yaw=args.yaw, pitch=args.pitch,
+			roughness=args.roughness, tonemap=args.tonemap, exposure=args.exposure, layout=args.layout))
+	return _run_rules(args, "hdr", _rule_opts(args, mode=args.mode, tonemap=args.tonemap, exposure=args.exposure,
+		white=args.white, overbright=args.overbright, gamma=args.gamma, role=args.role,
+		auto_exposure=not args.no_auto_exposure))
+
+
+def _build(args) -> int:
+	from .core import build
+
+	if args.init:
+		dest = Path(args.manifest or "gxbake.toml")
+		if dest.exists() and not args.force:
+			print(f"{dest} exists (use --force to overwrite)", file=sys.stderr)
+			return 1
+		dest.write_text(build.EXAMPLE_MANIFEST, encoding="utf-8")
+		print(f"wrote {dest}")
+		return 0
+	man = build.find_manifest(Path(args.manifest or "."))
+	if man is None:
+		print("no gxbake.toml or gxbake.json here (gxbake build --init writes an example)", file=sys.stderr)
+		return 1
+	log = (lambda s: None) if args.json else (lambda s: print(s, file=sys.stderr))
+	try:
+		rep = build.build(man, force=args.force, dry_run=args.dry_run, workers=args.jobs, log=log)
+	except (OSError, ValueError, RuntimeError) as exc:
+		print(f"error: {exc}", file=sys.stderr)
+		return 1
+	if args.json:
+		print(json.dumps(rep.to_json(), indent=1))
+	else:
+		for name, g in rep.groups.items():
+			if not g.skipped and not args.dry_run:
+				print(f"[{name}]")
+				_print_group(g)
+	return 0 if rep.fits else 2
+
+
+def _add_auto_opts(p, max_edge: int = 256, min_db: float = 38.0) -> None:
+	from .core import autotex
+
+	p.add_argument("-o", "--output", required=True, help="folder to write into")
+	p.add_argument("--min-db", type=float, default=min_db,
+		help="quality floor: the smallest format whose PSNR against the source stays above this wins")
+	p.add_argument("--max-edge", type=int, default=max_edge, help="largest texture side")
+	p.add_argument("--formats", help=f"comma list of GX formats to allow ({', '.join(autotex.ALL_FORMATS)})")
+	p.add_argument("--no-mipmaps", action="store_true", help="level 0 only")
+	p.add_argument("--budget", metavar="SIZE",
+		help="total bytes for every texture written (e.g. 448K): formats and sizes step down where it costs least")
+	p.add_argument("--container", choices=("tpl", "bti", "gct"), help="file format (default tpl)")
+	p.add_argument("--preview", metavar="DIR", help="also write each texture decoded as the GameCube samples it")
+	p.add_argument("-j", "--jobs", type=int, default=1, help="encode in this many processes")
+	p.add_argument("--json", action="store_true", help="print the results as JSON")
+
+
+def _add_auto_parsers(sub) -> None:
+	from .core import autotex, pbr
+
+	a = sub.add_parser("auto", help="images to GX textures with the format and size picked automatically (TPL/BTI/GCT)")
+	a.add_argument("inputs", nargs="+", help="images, folders (recursive) or globs")
+	_add_auto_opts(a)
+	a.add_argument("--role", choices=tuple(autotex.ROLES), default="auto",
+		help="which formats suit the content: ui keeps edges crisp (no CMPR), world is CMPR only, mask is I4/I8")
+	a.add_argument("--combine", metavar="NAME.tpl", help="every image in one TPL, plus NAME.h with an index per image")
+	a.add_argument("--no-recursive", action="store_true", help="do not descend into sub-folders")
+	a.add_argument("--npot", action="store_true", help="keep non-power-of-two sizes (forces clamp; mips need powers of two)")
+	a.add_argument("--wrap", choices=("repeat", "clamp"), default="repeat", help="TPL wrap mode")
+	a.set_defaults(fn=_auto)
+
+	p = sub.add_parser("pbr", help="bake PBR material sets (albedo/normal/roughness/metal/AO/height/emissive, glTF) for TEV")
+	p.add_argument("inputs", nargs="+", help="folders or files of material maps, or .gltf/.glb files")
+	_add_auto_opts(p, min_db=36.0)
+	p.add_argument("--preset", choices=pbr.PRESETS, default="lit",
+		help="prelit: one baked texture; lit: base (+spec, +glow) for engine lighting; emboss: + height for GX "
+		"emboss bump; indirect: + IA8 normal and a sphere map for reflections")
+	p.add_argument("--env", help="indirect preset: panorama, cubemap or HDR to render the reflection sphere map from")
+	p.add_argument("--env-size", type=int, default=128, help="sphere map size")
+	p.add_argument("--env-roughness", default="auto", help="blur of the sphere map: 0-1, or auto (the material's median)")
+	p.add_argument("--tonemap", choices=TONEMAPS, default="aces", help="for an HDR --env")
+	p.add_argument("--light", help="tangent-space key light x,y,z for prelit (default upper left: -0.45,0.55,0.7)")
+	p.add_argument("--detail", type=float, help="how strongly normal-map detail is painted into the base (default 1)")
+	p.add_argument("--ao-strength", type=float, help="AO multiplier (default 1)")
+	p.add_argument("--spec-strength", type=float, help="prelit highlight strength (default 0.6)")
+	p.add_argument("--gct-base", metavar="NAME.gct", help="also pack every base map as CMPR in one .gct for the port")
+	p.add_argument("--list", action="store_true", help="only show the material sets found and which file feeds each map")
+	p.set_defaults(fn=_pbr)
+
+	h = sub.add_parser("hdr", help="EXR/HDR/PFM to tone-mapped textures, overbright lightmaps or GX sphere maps")
+	h.add_argument("inputs", nargs="+", help="HDR images (also any 8-bit image), folders or globs")
+	_add_auto_opts(h)
+	h.add_argument("--mode", choices=("texture", "lightmap", "sphere"), default="texture",
+		help="texture: tone-map; lightmap: store light/scale for a TEV stage scaled ×2/×4; "
+		"sphere: render a sphere map for GX_TG_NRM reflections")
+	h.add_argument("--tonemap", choices=TONEMAPS, default="aces", help="texture and sphere modes: curve")
+	h.add_argument("--exposure", type=float, default=0.0, help="stops over the automatic exposure (lightmap: over 1.0)")
+	h.add_argument("--no-auto-exposure", action="store_true", help="texture mode: use the values as they are, scaled only by --exposure")
+	h.add_argument("--white", type=float, default=4.0, help="reinhard/hable: the input level that maps to white")
+	h.add_argument("--overbright", choices=("auto", "1", "2", "4"), default="auto",
+		help="lightmap TEV scale; auto takes the smallest that clips at most 0.1%% of texels")
+	h.add_argument("--gamma", type=float, default=1.0, help="lightmap: store light^(1/gamma) (1 = linear, what TEV multiplies)")
+	h.add_argument("--role", choices=tuple(autotex.ROLES), help="format set (default lightmap for lightmaps, else auto)")
+	h.add_argument("--size", type=int, default=128, help="sphere mode: map size")
+	h.add_argument("--yaw", type=float, default=270.0, help="sphere mode: engine yaw the camera faces (270 = -Y, the sky's ft)")
+	h.add_argument("--pitch", type=float, default=0.0, help="sphere mode: camera pitch in degrees")
+	h.add_argument("--roughness", type=float, default=0.0, help="sphere mode: blur, 0 (mirror) to 1 (very rough)")
+	h.add_argument("--layout", choices=skybox.LAYOUTS, default="auto", help="sphere mode: how to read the source")
+	h.set_defaults(fn=_hdr)
+
+	b = sub.add_parser("build", help="run a gxbake.toml/.json manifest: batch conversions under budgets, incremental")
+	b.add_argument("manifest", nargs="?", help="manifest file or folder holding gxbake.toml (default: here)")
+	b.add_argument("--init", action="store_true", help="write a commented example gxbake.toml")
+	b.add_argument("--force", action="store_true", help="rebuild everything (and let --init overwrite)")
+	b.add_argument("--dry-run", action="store_true", help="show what would be built")
+	b.add_argument("-j", "--jobs", type=int, help="worker processes (default: [build] jobs, or 1)")
+	b.add_argument("--json", action="store_true", help="print the build report as JSON")
+	b.set_defaults(fn=_build)
+
+
 def build_parser() -> argparse.ArgumentParser:
 	"""Every subcommand and option. docs/cli.md is generated from this (python -m gxbake.clidoc)."""
 	from .core import squeeze
@@ -1088,6 +1291,7 @@ def build_parser() -> argparse.ArgumentParser:
 	sk.add_argument("--fov", type=float, default=180.0,
 		help="photo layout: horizontal degrees the photo covers; mirrored copies fill the rest")
 	sk.add_argument("--exposure", type=float, default=0.0, help=".hdr input: stops brighter (+) or darker (-) than auto")
+	sk.add_argument("--tonemap", choices=TONEMAPS, default="aces", help="HDR input (.hdr/.exr/.pfm): tone-mapping curve")
 	sk.add_argument("--size", type=int, default=skybox.SKY_SIZE, help="side size; the port loads only 128")
 	sk.add_argument("--env", type=int, metavar="SIZE",
 		help="also write gfx/env/<name><side>.tga at SIZE (PC builds, the disc builder)")
@@ -1117,6 +1321,7 @@ def build_parser() -> argparse.ArgumentParser:
 	v.set_defaults(fn=_video)
 
 	_add_pack_parser(sub)
+	_add_auto_parsers(sub)
 
 	g = sub.add_parser("gui", help="open the desktop app")
 	g.add_argument("paths", nargs="*", help="files or folders to open")
