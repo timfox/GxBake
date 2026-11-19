@@ -30,6 +30,7 @@ build or CI job.
 | [`lumps`](#gxbake-lumps) | list, extract and sort the lumps of a map or of the port's baked map files (.gcd, _lf.gcd, .gcmeta) |
 | [`slim`](#gxbake-slim) | show where a studio model's bytes go and thin its animation |
 | [`lightmaps`](#gxbake-lightmaps) | pick each face's lightmap size by error and pack the atlas |
+| [`gi`](#gxbake-gi) | bake radiosity lightmaps (bounces, sky, emissive textures, AO) into a GoldSrc BSP and GX atlas pages (TPL + .gclm) |
 | [`squeeze`](#gxbake-squeeze) | measure smarter packing on a staged tree, and write what the port reads today |
 | [`adpcm`](#gxbake-adpcm) | encode WAV or .gcpcm audio as GameCube DSP ADPCM (.dsp, one per channel) |
 | [`yaz0`](#gxbake-yaz0) | Yaz0-compress files (Nintendo LZ), or decompress with -d |
@@ -370,6 +371,59 @@ gxbake lightmaps path [--page PAGE] [--packer {quake,shelf,skyline}] [--pad PAD]
 | `--flat-tol FLAT_TOL` | `2` | a face within ±N of its mean becomes 1×1 |
 | `--no-resize` |  | keep every face's size; only repack |
 | `--plan OUT.json` |  | write per-face sizes and atlas positions for a world baker |
+
+## `gxbake gi`
+
+Bake radiosity lightmaps (bounces, sky, emissive textures, AO) into a GoldSrc BSP and GX atlas pages (TPL + .gclm).
+
+```
+gxbake gi maps [maps ...] --output OUTPUT [--bounces BOUNCES] [--patch PATCH] [--rays RAYS]
+    [--gather GATHER] [--ao AO] [--ao-radius AO_RADIUS] [--rad RAD] [--texlight NAME=R G B I] [--wad
+    WAD] [--light-scale LIGHT_SCALE] [--sun-scale SUN_SCALE] [--sky-scale SKY_SCALE]
+    [--texlight-scale TEXLIGHT_SCALE] [--reflect REFLECT] [--ambient AMBIENT] [--exposure EXPOSURE]
+    [--gamma GAMMA] [--calibrate] [--entity-shadows] [--no-vis] [--page PAGE] [--format FORMAT]
+    [--formats FORMATS] [--min-db MIN_DB] [--budget SIZE] [--overbright {auto,1,2,4}] [--tone
+    {port,linear}] [--atlas-gamma ATLAS_GAMMA] [--no-shrink] [--no-bsp] [--no-atlas] [--preview]
+    [--json]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `maps` … |  | GoldSrc BSPs (v30) |
+| `-o OUTPUT`, `--output OUTPUT` |  | **Required.** folder for the relit .bsp, <map>_lm.tpl, <map>.gclm, <map>_lm.gxm |
+| `--bounces BOUNCES` | `3` | light bounces between surfaces (0: direct and sky only) |
+| `--patch PATCH` | `64.0` | radiosity patch size in world units |
+| `--rays RAYS` | `96` | hemisphere rays per patch |
+| `--gather GATHER` |  | final-gather rays per luxel (sharper bounce light; slower) |
+| `--ao AO` |  | ambient occlusion strength 0..1 on indirect and sky light |
+| `--ao-radius AO_RADIUS` | `96.0` | how far ambient occlusion looks, world units |
+| `--rad RAD` |  | lights.rad file: TEXNAME r g b intensity per line (repeatable) |
+| `--texlight NAME=R G B I` |  | one texture light, e.g. "~light1=255 255 220 800" (repeatable) |
+| `--wad WAD` |  | WAD file or folder for texture colours (repeatable) |
+| `--light-scale LIGHT_SCALE` | `1.0` | multiply point and spot lights |
+| `--sun-scale SUN_SCALE` | `1.0` | multiply the light_environment sun |
+| `--sky-scale SKY_SCALE` | `1.0` | multiply the sky's diffuse light |
+| `--texlight-scale TEXLIGHT_SCALE` | `1.0` | multiply texture lights |
+| `--reflect REFLECT` | `1.0` | multiply texture reflectance (bounce strength) |
+| `--ambient AMBIENT` |  | light added everywhere, 0..1 (one value or r g b) |
+| `--exposure EXPOSURE` |  | stops over the baked light |
+| `--gamma GAMMA` | `0.55` | BSP bytes = light^gamma (HLRAD's -gamma) |
+| `--calibrate` |  | scale to match the map's existing lighting (median) |
+| `--entity-shadows` |  | brush entities (doors, func_wall) cast shadows too |
+| `--no-vis` |  | do not cull lights with the map's PVS |
+| `--page PAGE` | `256` | atlas page side (the last page shrinks to fit) |
+| `--format FORMAT` |  | force one GX format for every page (default: auto per page) |
+| `--formats FORMATS` |  | comma list of formats auto may pick (default CMPR,RGB565,I4,I8) |
+| `--min-db MIN_DB` | `40.0` | quality floor for format choice and half-size faces |
+| `--budget SIZE` |  | atlas bytes per map (e.g. 800K, the port's lightmap window) |
+| `--overbright {auto,1,2,4}` | `auto` | atlas holds light / N for a TEV stage scaled ×N; auto picks the smallest that clips ≤ 0.1 %% |
+| `--tone {port,linear}` | `port` | port: pages hold what the port shows for the relit BSP (2 x byte, the x2 lightmap stage), overbright kept; linear: pages hold light itself |
+| `--atlas-gamma ATLAS_GAMMA` | `1.0` | linear tone: atlas stores (light/N)^(1/gamma) |
+| `--no-shrink` |  | keep every face at the engine's grid in the atlas |
+| `--no-bsp` |  | do not write the relit BSP |
+| `--no-atlas` |  | do not write atlas pages |
+| `--preview` |  | also write the pages decoded as GX samples them (preview/) |
+| `--json` |  | print the report as JSON |
 
 ## `gxbake squeeze`
 
