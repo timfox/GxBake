@@ -278,6 +278,51 @@ void gc_cam_proj_mtx( const gc_cam_pose_t *pose, float aspect, float m[4][4] )
 	m[3][2] = -1.0f;
 }
 
+int gc_cam_play( gc_cam_player_t *pl, const uint8_t *blob, size_t len, const char *name, double now )
+{
+	int i = gc_cam_find( blob, len, name );
+
+	pl->active = 0;
+	if( i < 0 || gc_cam_clip( blob, len, i, &pl->clip ))
+		return -1;
+	pl->blob = blob;
+	pl->len = len;
+	pl->start = now;
+	pl->active = 1;
+	return 0;
+}
+
+int gc_cam_update( gc_cam_player_t *pl, double now, float aspect, gc_cam_view_t *view )
+{
+	double t;
+
+	if( !pl->active )
+		return 0;
+	t = now - pl->start;
+	if( t < 0.0 )
+		t = 0.0;
+	if( !pl->clip.loop && t > (double)pl->clip.duration )
+	{
+		pl->active = 0;
+		return 0;
+	}
+	if( pl->clip.loop && pl->clip.duration > 0.0f )	/* wrap in double, so hours of looping keep float precision */
+		t -= (double)pl->clip.duration * (double)(long)( t / (double)pl->clip.duration );
+	view->t = (float)t;
+	gc_cam_sample( &pl->clip, view->t, &view->pose );
+	view->vieworg[0] = view->pose.origin[0];
+	view->vieworg[1] = view->pose.origin[1];
+	view->vieworg[2] = view->pose.origin[2];
+	gc_cam_angles( &view->pose, view->viewangles );
+	view->fov_x = gc_cam_fov_x( view->pose.fov_y, pl->clip.aspect > 0.0f ? pl->clip.aspect : aspect );
+	return 1;
+}
+
+void gc_cam_stop( gc_cam_player_t *pl )
+{
+	pl->active = 0;
+}
+
 #ifdef GC_CAM_GX
 #include <ogc/gx.h>
 

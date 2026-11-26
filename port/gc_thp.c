@@ -125,7 +125,8 @@ uint32_t gc_thp_audio( const uint8_t *block, size_t len, int16_t *out, uint32_t 
 
 			if( q >= 8 )
 				q -= 16;
-			v = ((q << (fh[0] & 15)) << 11) + 1024 + c1 * h1 + c2 * h2;
+			v = q * (int32_t)( 1L << ((fh[0] & 15) + 11) ) + 1024	/* q << shift << 11, without shifting a negative */
+				+ c1 * h1 + c2 * h2;
 			v >>= 11;	/* arithmetic shift, as on Gekko */
 			if( v < -32768 ) v = -32768;
 			if( v > 32767 ) v = 32767;
@@ -557,4 +558,93 @@ void gc_thp_i8_tiled( const uint8_t *plane, int width, int height, uint8_t *dst 
 		memcpy( dst, plane + (size_t)(ty + r) * width + tx, 8 );
 		dst += 8;
 	}
+}
+
+/* --- playback ----------------------------------------------------------------------- */
+
+int gc_thp_player_init( gc_thp_player_t *pl, const gc_thp_t *thp, int loop )
+{
+	if( !thp->frames || !thp->first_frame_bytes || thp->fps <= 0.0f )
+		return -1;
+	pl->thp = *thp;
+	pl->loop = loop != 0;
+	pl->read = 0;
+	pl->offset = thp->first_frame;
+	pl->bytes = thp->first_frame_bytes;
+	pl->clock = 0;
+	return 0;
+}
+
+uint32_t gc_thp_player_rate( const gc_thp_player_t *pl )
+{
+	return pl->thp.audio_channels ? pl->thp.audio_rate : 1000;
+}
+
+int gc_thp_player_next( const gc_thp_player_t *pl, uint32_t *offset, uint32_t *bytes )
+{
+	if( !pl->loop && pl->read >= pl->thp.frames )
+		return 0;
+	*offset = pl->offset;
+	*bytes = pl->bytes;
+	return 1;
+}
+
+static uint32_t frame_ms( const gc_thp_t *thp, uint32_t k )
+{
+	/* exact for whole-millisecond frame times; wraps like the clock after 2^32 ms */
+	double t = (double)k * 1000.0 / (double)thp->fps + 0.5;
+
+	t -= 4294967296.0 * (double)(uint32_t)( t / 4294967296.0 );
+	return (uint32_t)t;
+}
+
+int gc_thp_player_take( gc_thp_player_t *pl, const uint8_t *buf, size_t len, gc_thp_cue_t *cue )
+{
+	const gc_thp_t *thp = &pl->thp;
+	uint32_t index;
+
+	if( !pl->loop && pl->read >= thp->frames )
+		return -1;
+	if( len < pl->bytes || gc_thp_frame( thp, buf, pl->bytes, &cue->fr ))
+		return -1;
+	if( cue->fr.audio && cue->fr.audio_bytes < 8 )
+		return -1;
+	index = pl->read % thp->frames;
+	cue->index = index;
+	cue->pass = pl->read / thp->frames;
+	if( thp->audio_channels )
+	{
+		cue->samples = cue->fr.audio ? rd32( cue->fr.audio + 4 ) : 0;
+		cue->due = pl->clock;
+		pl->clock += cue->samples;
+		cue->until = pl->clock;
+	}
+	else
+	{
+		cue->samples = 0;
+		cue->due = frame_ms( thp, pl->read );
+		cue->until = frame_ms( thp, pl->read + 1 );
+	}
+	pl->read++;
+	if( index + 1 == thp->frames )
+	{
+		/* the last frame's next_bytes names frame 0, but the header is the authority */
+		pl->offset = thp->first_frame;
+		pl->bytes = thp->first_frame_bytes;
+	}
+	else
+	{
+		pl->offset += pl->bytes;
+		pl->bytes = cue->fr.next_bytes;
+	}
+	return 0;
+}
+
+int gc_thp_player_decide( const gc_thp_cue_t *cue, uint32_t now )
+{
+	if( (int32_t)( now - cue->due ) < 0 )
+		return GC_THP_WAIT;
+	if( (int32_t)( now - cue->until ) >= 0 )
+		return GC_THP_SKIP;
+	return GC_THP_SHOW;
 }

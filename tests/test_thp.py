@@ -261,3 +261,72 @@ def test_c_reader_matches_ffmpeg(tmp_path, source):
 	theirs = np.frombuffer(ff, np.uint8).astype(int)
 	assert len(ours) == len(theirs)
 	assert np.abs(ours - theirs).max() <= 1 and (ours != theirs).mean() < 0.02
+
+
+def _player(tmp_path):
+	exe = tmp_path / "test_gc_thp_play"
+	subprocess.run([CC, "-std=c89", "-pedantic", "-Wall", "-Wextra", "-Werror", "-O2",
+		str(PORT / "gc_thp.c"), str(PORT / "test_gc_thp_play.c"), "-o", str(exe)], check=True)
+
+	def play(path, loop=0, takes=0, cost=0):
+		res = subprocess.run([exe, path, str(loop), str(takes), str(cost), tmp_path / "pcm"], capture_output=True, text=True)
+		assert res.returncode == 0, res
+		lines = res.stdout.split("\n")
+		rows = [(ln.split()[0], *map(int, ln.split()[1:])) for ln in lines[1:] if ln]
+		return int(lines[0]), rows, np.fromfile(tmp_path / "pcm", "<i2").reshape(-1, 2)
+
+	return play
+
+
+@pytest.mark.skipif(CC is None, reason="no C compiler")
+def test_c_player_in_time_shows_every_frame(tmp_path):
+	path, _pics, enc = _movie(tmp_path, frames=10, fps=29.97)
+	data = path.read_bytes()
+	rate, rows, pcm = _player(tmp_path)(path)
+	assert rate == 32000
+	assert [r[0] for r in rows] == ["S"] * 10
+	assert [tuple(r[1:5]) for r in rows] == thp.cues(data)
+	# the clock is the audio: frame k is due where its sound starts
+	assert [r[3] for r in rows] == enc.bounds[:-1] and rows[-1][4] == enc.bounds[-1]
+	blocks = np.concatenate([thp.decode_audio_block(a) for _, a in thp.iter_frames(data)])
+	assert (pcm == blocks).all()
+
+
+@pytest.mark.skipif(CC is None, reason="no C compiler")
+def test_c_player_loops_with_continuous_clock(tmp_path):
+	path, _pics, enc = _movie(tmp_path, frames=7, fps=24.0)
+	data = path.read_bytes()
+	_rate, rows, pcm = _player(tmp_path)(path, loop=1, takes=7 * 3 + 2)
+	assert [tuple(r[1:5]) for r in rows] == thp.cues(data, passes=4)[:23]
+	assert [r[1] for r in rows] == list(range(7)) * 3 + [0, 1]
+	assert [r[2] for r in rows] == [0] * 7 + [1] * 7 + [2] * 7 + [3, 3]
+	one = np.concatenate([thp.decode_audio_block(a) for _, a in thp.iter_frames(data)])
+	assert (pcm[:3 * len(one)] == np.concatenate([one] * 3)).all()
+	# a non-looping player stops after the last frame
+	assert len(_player(tmp_path)(path, loop=0, takes=100)[1]) == 7
+
+
+@pytest.mark.skipif(CC is None, reason="no C compiler")
+def test_c_player_skips_pictures_not_sound_when_late(tmp_path):
+	path, _pics, enc = _movie(tmp_path, frames=24, fps=30.0)
+	frame = 32000 / 30
+	_rate, rows, pcm = _player(tmp_path)(path, cost=int(frame * 2.5))	# decoding takes 2.5 frames
+	shown = [r for r in rows if r[0] == "S"]
+	skipped = [r for r in rows if r[0] == "K"]
+	assert len(rows) == 24 and skipped and len(shown) < 24
+	assert [r[1] for r in rows] == list(range(24))	# every frame read, in order
+	for _, _i, _p, due, until, now in shown:
+		assert due <= now < until	# never early, never a frame late
+	for _, _i, _p, _due, until, now in skipped:
+		assert now >= until
+	assert len(pcm) == enc.bounds[-1]	# all the sound was queued
+
+
+@pytest.mark.skipif(CC is None, reason="no C compiler")
+def test_c_player_without_audio_uses_milliseconds(tmp_path):
+	path, _pics, _ = _movie(tmp_path, frames=12, fps=29.97, audio=False)
+	rate, rows, pcm = _player(tmp_path)(path, loop=1, takes=30)
+	assert rate == 1000 and len(pcm) == 0
+	assert [tuple(r[1:5]) for r in rows] == thp.cues(path.read_bytes(), passes=3)[:30]
+	assert rows[1][3] == 33 and rows[12][3] == 400 and rows[12][2] == 1
+	assert all(r[0] == "S" for r in rows)

@@ -47,6 +47,7 @@ The SDK's THP player is Nintendo's, so the port needs its own. `port/gc_thp.c` /
 - `gc_thp_jpeg`: a picture to Y, Cb and Cr planes (accurate integer IDCT, 9-bit Huffman lookup, no allocation).
 - `gc_thp_rgb565_tiled`: the planes to a `GX_TF_RGB565` texture, the same kind of texture the GCVID player draws today.
 - `gc_thp_i8_tiled`: one plane to a `GX_TF_I8` texture, for a later path that converts YUV to RGB in TEV instead of on the CPU.
+- `gc_thp_player_init` / `_next` / `_take` / `_decide`: playback bookkeeping with no I/O. It says which bytes to read next (looping included), when each picture is due on the audio clock (sample pairs played, so picture and sound cannot drift apart; milliseconds for a silent movie), and whether to show, wait or skip a picture. Sound is never skipped. `gxbake.core.thp.cues` gives the same timings in Python.
 
 See [port/README.md](../port/README.md#thp-movies-thp) for where it hooks into `avi_gc.c`. None of it has run on hardware yet. The SDK decoder reached 640×480 at 30 fps with paired-single and locked-cache tricks; plain C will be slower, so start at 448×336 or smaller and raise it once the decode time per frame is measured on the console.
 
