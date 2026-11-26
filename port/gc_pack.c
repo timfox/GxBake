@@ -127,7 +127,8 @@ uint32_t gc_dsp_decode( const gc_dsp_t *dsp, uint32_t first, uint32_t count, gc_
 
 			if( n >= 8 )
 				n -= 16;
-			v = ((n << e) << 11) + 1024 + c1 * h1 + c2 * h2;
+			v = n * (int32_t)( 1L << (e + 11) ) + 1024	/* n << e << 11, without shifting a negative */
+				+ c1 * h1 + c2 * h2;
 			v >>= 11;	/* arithmetic shift, as on Gekko */
 			if( v < -32768 ) v = -32768;
 			if( v > 32767 ) v = 32767;

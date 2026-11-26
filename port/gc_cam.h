@@ -12,6 +12,10 @@ near/far planes. This file samples them and turns a pose into what the renderer 
   gc_cam_view_mtx    a GX view matrix (Mtx, 3x4): world -> camera, camera looking down -Z
   gc_cam_proj_mtx    a GX perspective matrix (Mtx44), the same numbers as guPerspective
   gc_cam_load        (GC_CAM_GX) GX_LoadProjectionMtx with that matrix
+  gc_cam_play / gc_cam_update / gc_cam_stop
+                     a scripted camera: start a clip by name at the game's clock, then
+                     each frame get origin, GoldSrc angles and fov_x to overwrite the
+                     refdef with, until the clip ends (never, if it loops)
 
 Coordinates are the engine's: Z up, GoldSrc units; the camera looks down +X with +Y to its
 left and +Z up. The file is read in place: plain C89, byte-wise big-endian reads, bounds
@@ -89,6 +93,36 @@ float gc_cam_fov_x( float fov_y, float aspect );
 void gc_cam_view_mtx( const gc_cam_pose_t *pose, float m[3][4] );
 /* Perspective projection as guPerspective( fov_y, aspect, near, far ) builds it. */
 void gc_cam_proj_mtx( const gc_cam_pose_t *pose, float aspect, float m[4][4] );
+
+/* A scripted camera. The player keeps a pointer to the blob, which must stay loaded. */
+typedef struct
+{
+	const uint8_t *blob;
+	size_t len;
+	gc_cam_clip_t clip;
+	double start;		/* the clock when gc_cam_play was called, seconds */
+	int active;
+} gc_cam_player_t;
+
+typedef struct
+{
+	gc_cam_pose_t pose;
+	float t;		/* seconds into the clip */
+	float vieworg[3];
+	float viewangles[3];	/* gc_cam_angles */
+	float fov_x;		/* gc_cam_fov_x( fov_y, the clip's aspect or the caller's ) */
+} gc_cam_view_t;
+
+/* Start the named clip (case-insensitive) at clock time now (e.g. cl.time). 0 on success;
+ * on failure the player is left stopped. */
+int gc_cam_play( gc_cam_player_t *pl, const uint8_t *blob, size_t len, const char *name, double now );
+/* The view at clock time now. Returns 1 and fills view while the clip runs: from its start
+ * to its duration inclusive, or forever when it loops. Returns 0 (and stops) once a
+ * one-shot clip has ended, or if the player is stopped; the caller then keeps its own view.
+ * aspect is the screen's width / height, used for fov_x when the clip stores none; pass
+ * 4.0f / 3.0f for HL's fov_x convention. */
+int gc_cam_update( gc_cam_player_t *pl, double now, float aspect, gc_cam_view_t *view );
+void gc_cam_stop( gc_cam_player_t *pl );
 
 #ifdef GC_CAM_GX
 /* Load the projection into GX (GX_PERSPECTIVE) and return the view matrix for the

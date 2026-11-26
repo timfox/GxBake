@@ -21,6 +21,25 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
 
+  port-sanitize:
+    # The port's C readers, built with AddressSanitizer and UBSan and run on GxBake's output.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - name: Wrap cc with the sanitizers
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\nexec /usr/bin/gcc -fsanitize=address,undefined -fno-sanitize-recover=undefined "$@"\n' > "$RUNNER_TEMP/bin/cc"
+          chmod +x "$RUNNER_TEMP/bin/cc"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: pytest -q tests/test_port_c.py tests/test_port_mat.py tests/test_thp.py tests/test_camera.py
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+
   usd:
     # FreeUSD compiles a C++ extension; pip caches the wheel for the pinned commit.
     runs-on: ubuntu-latest

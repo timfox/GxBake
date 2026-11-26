@@ -366,3 +366,36 @@ def test_c_rejects_bad_files(harness, tmp_path):
 	assert subprocess.run([harness[0], "list", f]).returncode == 1
 	f = write(tmp_path, "ok.gcam", data)
 	assert subprocess.run([harness[0], "sample", f, "missing", "0"]).returncode == 1
+
+
+def test_c_player_runs_a_clip_on_the_game_clock(harness, tmp_path):
+	once = _wiggle(2.0)
+	looped = _wiggle(2.0)
+	looped.name, looped.loop = "loop", True
+	data, _ = camera.encode_all([once, looped], camera.CameraOptions(encoding="f32"))
+	f = write(tmp_path, "c.gcam", data)
+	g_once, g_loop = camera.read_gcam(data)
+	start = 5000.25
+	at = [start - 1, start, start + 0.7, start + g_once.duration, start + g_once.duration + 0.01, start + 3]
+
+	def play(name, times):
+		res = subprocess.run([harness[0], "play", f, name, repr(start), *map(repr, times)], check=True,
+			capture_output=True, text=True)
+		return [list(map(float, r.split())) for r in res.stdout.splitlines()]
+
+	rows = play("ORBIT", at)
+	assert [r[0] for r in rows] == [1, 1, 1, 1, 0, 0]	# ends after its duration, and stays ended
+	for r, now in zip(rows[:4], at[:4]):
+		t = min(max(now - start, 0), g_once.duration)
+		assert abs(r[1] - t) < 1e-4
+		s = g_once.sample(t)
+		assert np.allclose(r[2:5], s["pos"][0], atol=1e-2)
+		assert abs(r[8] - camera.fov_y_to_x(s["fov"][0])) < 1e-3
+	# a looping clip wraps, and stays precise hours into the game clock
+	hours = [start + 3600 * 7 + 0.3, start + 3600 * 7 + 0.3 + g_loop.duration]
+	rows = play("loop", hours)
+	assert all(r[0] == 1 for r in rows)
+	want = (3600 * 7 + 0.3) % g_loop.duration
+	assert abs(rows[0][1] - want) < 1e-3 and abs(rows[1][1] - want) < 1e-3
+	assert np.allclose(rows[0][2:5], g_loop.sample(want)["pos"][0], atol=0.05)
+	assert subprocess.run([harness[0], "play", f, "missing", "0", "0"]).returncode == 1

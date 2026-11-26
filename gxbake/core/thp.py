@@ -542,6 +542,30 @@ def iter_frames(data: bytes):
 		size = nxt
 
 
+def cues(data: bytes, passes: int = 1) -> list[tuple[int, int, int, int]]:
+	"""When each frame's picture is due, as port/gc_thp.c's player gives it: (index, pass, due,
+	until) in clock ticks, which are sample pairs of audio when the movie has sound (so the
+	picture follows the sound) and milliseconds otherwise. `passes` > 1 plays it looped."""
+	info = read_info(data)
+	blocks = [a for _, a in iter_frames(data)]
+	out, clock, k = [], 0, 0
+	fps = float(info.fps)
+
+	def ms(n: int) -> int:
+		return int(n * 1000.0 / fps + 0.5) & 0xFFFFFFFF
+
+	for p in range(passes):
+		for i, a in enumerate(blocks):
+			if info.audio_channels:
+				n = struct.unpack_from(">I", a, 4)[0] if a else 0
+				out.append((i, p, clock, (clock + n) & 0xFFFFFFFF))
+				clock = (clock + n) & 0xFFFFFFFF
+			else:
+				out.append((i, p, ms(k), ms(k + 1)))
+			k += 1
+	return out
+
+
 def decode_audio_block(block: bytes) -> "np.ndarray":
 	"""One frame's audio block → s16 samples, shape (n, channels)."""
 	size, n = struct.unpack_from(">II", block, 0)

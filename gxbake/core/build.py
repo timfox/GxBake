@@ -482,6 +482,9 @@ def camera_units(rule: Rule, root: Path, out: Path, defaults: dict, preview: Pat
 		notes = [f"{camera.clip_name(e.path.name)}: {n}" for e in o.clips for n in e.path.notes]
 		units.append(Unit("camera", o.path.name, [], write_cam, o.inputs, fixed_bytes=len(o.data), notes=notes,
 			info={"clips": [camera.describe(e) for e in o.clips]}))
+	return units
+
+
 def gi_units(rule: Rule, root: Path, out: Path, defaults: dict, preview: Path | None = None, log=None) -> list[Unit]:
 	"""Radiosity lightmaps: each BSP is baked here, its atlas pages become jobs, and the writer
 	saves the relit BSP, the TPL pages, the .gclm face table and the .gxm."""
@@ -510,7 +513,7 @@ def gi_units(rule: Rule, root: Path, out: Path, defaults: dict, preview: Path | 
 
 
 BUILDERS = {"textures": texture_units, "pbr": pbr_units, "hdr": hdr_units, "sphere": sphere_units, "sky": sky_units,
-	"gi": gi_units}
+	"camera": camera_units, "gi": gi_units}
 
 
 # -- placing and writing ------------------------------------------------------------------------------
@@ -726,6 +729,15 @@ container = "tpl"    # tpl | bti | gct
 # [[sky]]
 # inputs = ["sky/canyon.hdr"]
 # tonemap = "aces"     # aces | reinhard | hable | agx | clip
+
+# [[camera]]
+# inputs = ["cutscenes/*.glb", "maps/c1a0.bsp"]   # glTF, DAE/FBX (Assimp), JSON, CSV, BSP trigger_cameras
+# output = "media"
+# combine = "cam_c1a0.gcam"   # gxbake budget counts media/cam_<map>.gcam
+# encoding = "fixed"   # fixed (s16 values, u16 ticks) | f32
+# pos_tol = 0.25       # GoldSrc units
+# rot_tol = 0.15       # degrees
+# max_bytes = "4K"
 
 # [[gi]]               # radiosity lightmaps: relit .bsp + GX atlas pages (.tpl/.gclm/.gxm)
 # inputs = ["maps/*.bsp"]
